@@ -1,0 +1,30 @@
+[workspace]
+members = ["core", "layer"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/dentiny/open-arrow-sink"
+
+[workspace.dependencies]
+arrow-array = "59"
+arrow-schema = "59"
+async-trait = "0.1"
+thiserror = "2"
+futures = "0.3"
+open-arrow-sink-core = { path = "core", version = "0.1.0" }
+open-arrow-sink-layer = { path = "layer", version = "0.1.0" }
+
+[package]
+name = "open-arrow-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Composable, independent Arrow RecordBatch sinks"
+
+[dependencies]
+open-arrow-sink-core.workspace = true
+open-arrow-sink-layer.workspace = true
