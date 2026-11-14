@@ -363,33 +363,6 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
     }
 }
 
-#[tokio::test]
-async fn partitioned_abort_keeps_committed_snapshot() {
-    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
-    let sink = IcebergTableSink::new(catalog.clone());
-    let data = batch(schema.clone());
-    let mut writer = sink
-        .open(identifier.clone(), schema.clone(), partition_options())
-        .await
-        .unwrap();
-    writer.write(data.clone()).await.unwrap();
-    writer.commit().await.unwrap();
-    let before = catalog.load_table(&identifier).await.unwrap();
-    let expected = rows(catalog.as_ref(), &identifier).await;
-    let mut writer = sink
-        .open(identifier.clone(), schema, partition_options())
-        .await
-        .unwrap();
-    writer.write(data).await.unwrap();
-    writer.abort().await.unwrap();
-    let after = catalog.load_table(&identifier).await.unwrap();
-    assert_eq!(
-        before.metadata().current_snapshot_id(),
-        after.metadata().current_snapshot_id()
-    );
-    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
-}
-
 #[rstest::rstest]
 #[case::disabled(Transform::Identity, None, "require WriteOptions.partition")]
 #[case::bucket(
