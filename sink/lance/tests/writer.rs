@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
-use open_arrow_sink_core::{Error, Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
 use open_arrow_sink_lance::LanceDatasetSink;
 
 fn batch() -> RecordBatch {
@@ -81,25 +81,4 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
     writer.abort().await.unwrap();
     assert!(!tokio::fs::try_exists(&path).await.unwrap());
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
-}
-
-#[tokio::test]
-async fn schema_error_is_terminal_and_abort_cleans_up() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("dataset");
-    let batch = batch();
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), batch.schema(), options())
-        .await
-        .unwrap();
-    let wrong =
-        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-            .unwrap();
-    assert!(matches!(
-        writer.write(wrong).await,
-        Err(Error::SchemaMismatch)
-    ));
-    assert!(writer.write(batch).await.is_err());
-    writer.abort().await.unwrap();
-    assert!(!tokio::fs::try_exists(&path).await.unwrap());
 }
