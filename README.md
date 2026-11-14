@@ -86,7 +86,7 @@ limits may also cause rolling before the target is reached.
 The Lance sink provides `LanceIndexLayer` for Scalar, Vector, Text, and BloomFilter
 indexes. Configuration is validated before writing, and indexes are built after
 the dataset's data commit. See the [Lance documentation](sink/lance/README.md) for
-configuration, failure reports, and index-only retries.
+configuration and index construction failure reports.
 
 ## Implementing a sink
 

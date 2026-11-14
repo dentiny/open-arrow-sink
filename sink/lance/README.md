@@ -3,7 +3,7 @@
 `LanceDatasetSink` creates a new local Lance dataset from Arrow batches. It requires
 a Tokio runtime and a new UTF-8 directory path whose parent already exists.
 Existing paths are rejected. Keep exclusive ownership of the destination until the
-session ends, including index construction and any retries.
+session ends, including index construction.
 
 ```rust,ignore
 use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
@@ -76,25 +76,6 @@ previously created indexes remain visible, regardless of `cleanup_on_error`.
 `Error::Backend` contains an `IndexCommitError` with an `IndexBuildReport`: destination,
 row count, original data version, latest confirmed version, and each index's state.
 A failure to reopen the committed dataset leaves the version fields unknown.
-
-```rust,ignore
-use open_arrow_sink::{Error, lance::{IndexCommitError, retry_indexes}};
-
-if let Err(Error::Backend(error)) = writer.commit().await {
-    if let Some(error) = error.downcast_ref::<IndexCommitError>() {
-        // Persist the report if recovery must survive a process restart.
-        // Reconcile the cause first; a permanent training error will fail again.
-        let report = retry_indexes(error.report.clone()).await?;
-    }
-}
-```
-
-`retry_indexes` never writes rows and skips successful indexes after checking their
-UUIDs and names. It requires the current dataset version to match the report's
-latest confirmed version. A changed version or uncertain index publication requires
-caller reconciliation; retry does not silently replace an index or accept stale
-state. Exclusive destination ownership is required, including during retry. These
-checks are not a distributed lock against external writers.
 
 A runnable index construction example (destination must not exist):
 

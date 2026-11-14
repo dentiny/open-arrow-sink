@@ -9,7 +9,7 @@ use lance_index::scalar::FullTextSearchQuery;
 use open_arrow_sink_core::{Error, Ordering, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_lance::{
     IndexBuildState, IndexCommitError, LanceDatasetSink, LanceIndexKind as Kind, LanceIndexLayer,
-    LanceIndexSpec as Spec, retry_indexes,
+    LanceIndexSpec as Spec,
 };
 
 fn options() -> WriteOptions {
@@ -187,7 +187,7 @@ fn failed_vector_input() -> RecordBatch {
 }
 
 #[tokio::test]
-async fn index_failure_preserves_data_and_retry_does_not_rebuild_successful_indexes() {
+async fn index_failure_preserves_committed_data_and_successful_indexes() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("failed-index");
     let batch = failed_vector_input();
@@ -218,80 +218,6 @@ async fn index_failure_preserves_data_and_retry_does_not_rebuild_successful_inde
         IndexBuildState::Failed { .. }
     ));
     assert!(error.report.data_version.unwrap() < error.report.latest_version.unwrap());
-    let retried = retry_indexes(error.report.clone()).await.unwrap_err();
-    assert_eq!(retried.report.latest_version, error.report.latest_version);
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 2);
-    assert_eq!(
-        dataset.load_indices().await.unwrap()[0].uuid,
-        indexes[0].uuid
-    );
-    // A stale report must fail before creating any more indexes.
-    let mut stale = retried.report;
-    stale.latest_version = stale.data_version;
-    assert!(
-        retry_indexes(stale)
-            .await
-            .unwrap_err()
-            .message
-            .contains("version changed")
-    );
-}
-
-#[tokio::test]
-async fn retry_can_finish_pending_indexes_without_writing_rows_or_replacing_existing_indexes() {
-    use open_arrow_sink_lance::{IndexBuildReport, IndexBuildResult};
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("retry");
-    let batch = vectors(64);
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), batch.schema(), options())
-        .await
-        .unwrap();
-    writer.write(batch).await.unwrap();
-    writer.commit().await.unwrap();
-    let version = Dataset::open(path.to_str().unwrap())
-        .await
-        .unwrap()
-        .version_id();
-    let report = IndexBuildReport {
-        path: path.clone(),
-        rows_written: 64,
-        data_version: Some(version),
-        latest_version: Some(version),
-        indexes: vec![IndexBuildResult {
-            spec: Spec::new("id", Kind::Scalar),
-            state: IndexBuildState::Pending,
-        }],
-    };
-    let report = retry_indexes(report).await.unwrap();
-    let IndexBuildState::Complete { uuid } = &report.indexes[0].state else {
-        panic!("index not completed")
-    };
-    let report = retry_indexes(report.clone()).await.unwrap();
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 64);
-    assert_eq!(dataset.version_id(), report.latest_version.unwrap());
-    assert_eq!(
-        dataset.load_indices().await.unwrap()[0].uuid.to_string(),
-        *uuid
-    );
-    // Even after reconciliation to the current version, a pending name collision
-    // must not replace an existing index.
-    let mut collision = report;
-    collision.indexes[0].state = IndexBuildState::Pending;
-    assert!(retry_indexes(collision).await.is_err());
-    assert_eq!(
-        Dataset::open(path.to_str().unwrap())
-            .await
-            .unwrap()
-            .load_indices()
-            .await
-            .unwrap()[0]
-            .uuid
-            .to_string(),
-        *uuid
-    );
 }
 
 #[tokio::test]

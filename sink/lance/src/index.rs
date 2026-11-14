@@ -1,7 +1,6 @@
 //! Lance-specific indexes built after the data commit.
-use std::{collections::HashSet, fmt, path::PathBuf};
+use std::{fmt, path::PathBuf};
 
-use arrow_schema::{DataType, Schema};
 use lance::{
     Dataset,
     index::{DatasetIndexExt, vector::VectorIndexParams},
@@ -16,7 +15,7 @@ use open_arrow_sink_core::{
     Writer, async_trait, validation,
 };
 
-use crate::{LanceDatasetSink, error::backend};
+use crate::{LanceDatasetSink, error::backend, validation::validate_indexes};
 
 /// One index per column. Vector indexes use IVF_FLAT with L2 distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,8 +170,7 @@ pub struct IndexBuildResult {
     pub state: IndexBuildState,
 }
 
-/// Recovery information for an index failure. Data is already committed.
-/// Preserve this report and exclusive ownership of the destination for retry.
+/// Failure details for index construction after data has already committed.
 #[derive(Debug, Clone)]
 pub struct IndexBuildReport {
     pub path: PathBuf,
@@ -202,64 +200,11 @@ impl fmt::Display for IndexCommitError {
 }
 impl std::error::Error for IndexCommitError {}
 
-/// Retry failed or pending indexes without writing data again. A changed dataset
-/// version or an unknown commit outcome requires caller reconciliation first.
-pub async fn retry_indexes(
-    report: IndexBuildReport,
-) -> std::result::Result<IndexBuildReport, IndexCommitError> {
-    let result = async {
-        let uri = report
-            .path
-            .to_str()
-            .ok_or_else(|| "Lance requires a UTF-8 path".to_owned())?;
-        let dataset = Dataset::open(uri).await.map_err(|e| e.to_string())?;
-        if report.latest_version != Some(dataset.version_id()) {
-            return Err(format!(
-                "dataset version changed: expected {:?}, found {}",
-                report.latest_version,
-                dataset.version_id()
-            ));
-        }
-        let schema: Schema = dataset.schema().into();
-        validate_indexes(
-            &schema,
-            &report
-                .indexes
-                .iter()
-                .map(|i| i.spec.clone())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| e.to_string())?;
-        let existing = dataset.load_indices().await.map_err(|e| e.to_string())?;
-        for index in &report.indexes {
-            if let IndexBuildState::Complete { uuid } = &index.state
-                && !existing
-                    .iter()
-                    .any(|i| i.uuid.to_string() == *uuid && i.name == index.spec.name())
-            {
-                return Err(format!(
-                    "completed index {} no longer matches dataset metadata",
-                    index.spec.name()
-                ));
-            }
-        }
-        Ok(dataset)
-    }
-    .await;
-    match result {
-        Ok(mut dataset) => build(&mut dataset, report).await,
-        Err(message) => Err(IndexCommitError { report, message }),
-    }
-}
-
 async fn build(
     dataset: &mut Dataset,
     mut report: IndexBuildReport,
 ) -> std::result::Result<IndexBuildReport, IndexCommitError> {
     for index in &mut report.indexes {
-        if matches!(index.state, IndexBuildState::Complete { .. }) {
-            continue;
-        }
         let result = create_index(dataset, &index.spec).await;
         match result {
             Ok(uuid) => {
@@ -271,8 +216,7 @@ async fn build(
                 index.state = IndexBuildState::Failed {
                     error: error.to_string(),
                 };
-                // Retain the last confirmed version. If native publication was
-                // uncertain, retry's version guard refuses automatic continuation.
+                // Retain the last confirmed version if publication is uncertain.
                 return Err(IndexCommitError { report, message });
             }
         }
@@ -307,7 +251,7 @@ async fn create_index(dataset: &mut Dataset, spec: &LanceIndexSpec) -> lance::Re
             )),
         ),
     };
-    // Never replace an existing index, including on retry after an uncertain result.
+    // Never replace an existing index.
     let index = dataset
         .create_index(
             &[&spec.column],
@@ -318,85 +262,6 @@ async fn create_index(dataset: &mut Dataset, spec: &LanceIndexSpec) -> lance::Re
         )
         .await?;
     Ok(index.uuid.to_string())
-}
-
-fn validate_indexes(schema: &Schema, indexes: &[LanceIndexSpec]) -> Result<()> {
-    use DataType::*;
-    let mut seen = HashSet::new();
-    for index in indexes {
-        if !seen.insert(&index.column) {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "multiple indexes requested for column {}",
-                index.column
-            )));
-        }
-        let field = schema.field_with_name(&index.column).map_err(|_| {
-            open_arrow_sink_core::Error::Unsupported(format!(
-                "index column not found: {}",
-                index.column
-            ))
-        })?;
-        let supported = match index.kind {
-            LanceIndexKind::Scalar => matches!(
-                field.data_type(),
-                Boolean
-                    | Int8
-                    | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float16
-                    | Float32
-                    | Float64
-                    | Decimal128(_, _)
-                    | Utf8
-                    | LargeUtf8
-                    | Utf8View
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-            // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
-            // Int8 is rejected even though the older reference allowed it.
-            LanceIndexKind::Vector => {
-                matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
-            }
-            LanceIndexKind::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
-            LanceIndexKind::BloomFilter => matches!(
-                field.data_type(),
-                Int8 | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float32
-                    | Float64
-                    | Utf8
-                    | LargeUtf8
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-        };
-        if !supported {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "cannot create {:?} index on column {} with type {}",
-                index.kind,
-                index.column,
-                field.data_type()
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -2,6 +2,7 @@
 
 mod error;
 mod sink;
+mod validation;
 mod writer;
 
 pub use sink::LanceDatasetSink;
@@ -9,5 +10,5 @@ pub use sink::LanceDatasetSink;
 mod index;
 pub use index::{
     IndexBuildReport, IndexBuildResult, IndexBuildState, IndexCommitError, IndexedLanceSink,
-    LanceIndexKind, LanceIndexLayer, LanceIndexSpec, retry_indexes,
+    LanceIndexKind, LanceIndexLayer, LanceIndexSpec,
 };
