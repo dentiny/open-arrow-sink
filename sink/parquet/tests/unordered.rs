@@ -2,8 +2,8 @@ use std::{num::NonZeroUsize, path::Path, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions, Writer};
-use open_arrow_sink_layer::{OrderingLayer, RebatchLayer, UnorderedWriteLayer};
+use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_layer::{OrderingLayer, UnorderedWriteLayer};
 use open_arrow_sink_parquet::ParquetDirectorySink;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -81,40 +81,22 @@ async fn verify_rows(directory: &Path) {
 }
 
 #[tokio::test]
-async fn preopens_files_and_round_trips_with_rolling_and_both_rebatch_orders() {
-    for mode in 0..3 {
-        let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("output");
-        let parallel = UnorderedWriteLayer::new(count(3));
-        let rebatch = RebatchLayer::new(count(5));
-        let mut writer: Box<dyn Writer> = match mode {
-            0 => ParquetDirectorySink
-                .layer(parallel)
-                .open(directory.clone(), batch().schema(), options())
-                .await
-                .unwrap(),
-            1 => ParquetDirectorySink
-                .layer(rebatch)
-                .layer(parallel)
-                .open(directory.clone(), batch().schema(), options())
-                .await
-                .unwrap(),
-            _ => ParquetDirectorySink
-                .layer(parallel)
-                .layer(rebatch)
-                .open(directory.clone(), batch().schema(), options())
-                .await
-                .unwrap(),
-        };
-        assert_eq!(files(&directory).await.len(), 3);
-        writer.write(batch().slice(0, 0)).await.unwrap();
-        for _ in 0..12 {
-            writer.write(batch()).await.unwrap();
-        }
-        assert_eq!(writer.commit().await.unwrap().rows_written, 36);
-        assert!(files(&directory).await.len() > 3);
-        verify_rows(&directory).await;
+async fn preopens_files_and_round_trips_with_rolling() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("output");
+    let mut writer = ParquetDirectorySink
+        .layer(UnorderedWriteLayer::new(count(3)))
+        .open(directory.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    assert_eq!(files(&directory).await.len(), 3);
+    writer.write(batch().slice(0, 0)).await.unwrap();
+    for _ in 0..12 {
+        writer.write(batch()).await.unwrap();
     }
+    assert_eq!(writer.commit().await.unwrap().rows_written, 36);
+    assert!(files(&directory).await.len() > 3);
+    verify_rows(&directory).await;
 }
 
 #[tokio::test]
