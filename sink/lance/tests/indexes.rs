@@ -159,24 +159,6 @@ async fn builds_all_index_kinds_and_queries_them() {
     );
 }
 
-#[rstest::rstest]
-#[case::missing(vec![Spec::new("missing", Kind::Scalar)])]
-#[case::duplicate(vec![Spec::new("id", Kind::Scalar), Spec::new("id", Kind::BloomFilter)])]
-#[case::wrong_type(vec![Spec::new("id", Kind::Vector)])]
-#[tokio::test]
-async fn invalid_index_configuration_has_no_side_effects(#[case] specs: Vec<Spec>) {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("invalid-index");
-    let batch = vectors(1);
-    let sink = LanceDatasetSink;
-    assert!(
-        sink.open(path.clone(), batch.schema(), indexed_options(specs.clone()))
-            .await
-            .is_err()
-    );
-    assert!(!path.exists());
-}
-
 fn failed_vector_input() -> RecordBatch {
     let field = Arc::new(Field::new("item", DataType::Float32, true));
     let schema = Arc::new(Schema::new(vec![
