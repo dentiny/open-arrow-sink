@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch.schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
+                ..WriteOptions::default()
             },
         )
         .await?;

@@ -13,6 +13,7 @@ pub(crate) struct ParquetDirectoryWriter {
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     rows_written: u64,
+    cleanup: bool,
 }
 
 #[async_trait]
@@ -34,7 +35,10 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        let writer = self.writer.take().ok_or_else(closed)?;
+        let Some(writer) = self.writer.take() else {
+            let _ = self.cleanup().await;
+            return Err(closed());
+        };
         if let Err(error) = writer.close().await {
             let _ = self.cleanup().await;
             return Err(backend(error));
@@ -55,16 +59,21 @@ impl ParquetDirectoryWriter {
         directory: PathBuf,
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
+        cleanup: bool,
     ) -> Self {
         Self {
             directory,
             schema,
             writer: Some(writer),
             rows_written: 0,
+            cleanup,
         }
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
+        if !self.cleanup {
+            return Ok(());
+        }
         let path = self.directory.join("part-00000.parquet");
         match fs::remove_file(path).await {
             Ok(()) => {}
