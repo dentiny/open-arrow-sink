@@ -3865,7 +3865,10 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "lance",
+ "lance-index",
+ "lance-linalg",
  "more-asserts",
  "open-arrow-sink-core",
  "rstest",
