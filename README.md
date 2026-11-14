@@ -99,8 +99,7 @@ write modes, schema evolution or transaction framework is included in this chang
 
 ## Development
 
-CI checks Rust formatting, Clippy warnings, and Cargo manifest formatting and
-validity on pull requests and pushes to `main`. Install Taplo once with
+Run the checks below locally to lint Rust code and Cargo manifests. Install Taplo with
 `cargo install taplo-cli --version 0.10.0 --locked`. Clippy also requires `protoc`
 for the Lance dependencies (`protobuf-compiler` on Ubuntu).
 
