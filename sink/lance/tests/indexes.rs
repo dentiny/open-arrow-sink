@@ -217,7 +217,8 @@ async fn index_failure_preserves_committed_data_and_successful_indexes() {
     assert_eq!(dataset.count_rows(None).await.unwrap(), 2);
     let indexes = dataset.load_indices().await.unwrap();
     assert_eq!(indexes.len(), 1);
-    assert!(error.report.data_version.unwrap() < error.report.latest_version.unwrap());
+    assert!(error.message.contains("Vector"));
+    assert!(error.message.contains("vector"));
 }
 
 #[tokio::test]

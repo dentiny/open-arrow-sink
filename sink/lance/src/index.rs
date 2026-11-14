@@ -8,30 +8,21 @@ use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
-use open_arrow_sink_core::{IndexBuildReport, IndexCommitError, IndexSpec, IndexType};
+use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
 
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
-    destination: String,
-    rows_written: u64,
-    indexes: Vec<IndexSpec>,
+    indexes: &[IndexSpec],
 ) -> std::result::Result<(), IndexCommitError> {
-    if indexes.is_empty() {
-        return Ok(());
-    }
-    let version = dataset.version_id();
-    let mut report = IndexBuildReport {
-        destination,
-        rows_written,
-        data_version: Some(version),
-        latest_version: Some(version),
-    };
-    for spec in &indexes {
-        if let Err(error) = create_index(dataset, spec).await {
-            let message = format!("{}: {error}", index_name(spec));
-            return Err(IndexCommitError { report, message });
-        }
-        report.latest_version = Some(dataset.version_id());
+    for spec in indexes {
+        create_index(dataset, spec)
+            .await
+            .map_err(|error| IndexCommitError {
+                message: format!(
+                    "creating {:?} index on '{}': {error}",
+                    spec.index_type, spec.column
+                ),
+            })?;
     }
     Ok(())
 }

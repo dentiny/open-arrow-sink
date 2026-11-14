@@ -95,14 +95,9 @@ impl Writer for LanceWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        build_indexes(
-            &mut dataset,
-            self.path.display().to_string(),
-            self.rows,
-            self.indexes,
-        )
-        .await
-        .map_err(backend)?;
+        build_indexes(&mut dataset, &self.indexes)
+            .await
+            .map_err(backend)?;
         Ok(WriteSummary {
             rows_written: self.rows,
         })

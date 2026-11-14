@@ -69,7 +69,7 @@ writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
 
-`IndexType`, `IndexSpec`, construction results, and `IndexCommitError` are defined
+`IndexType`, `IndexSpec`, and `IndexCommitError` are defined
 in `open-arrow-sink-core` and re-exported by the facade. They have no Lance SDK
 dependency. Lance lists Scalar, Vector, Text, and BloomFilter in
 `SinkCapability.supported_indexes`. Parquet and Iceberg expose empty lists and
@@ -98,9 +98,8 @@ Index creation uses the dataset handle returned by the native data commit. It ru
 sequentially and may publish additional versions. Names are deterministic and existing
 indexes are never replaced. If construction fails, the data and previously created
 indexes remain visible regardless of `cleanup_on_error`. `Error::Backend` contains
-an `IndexCommitError` with a shared `IndexBuildReport`: destination, row count,
-original data version, and latest confirmed version. The error message identifies
-the index whose construction failed; construction stops at the first error.
+an `IndexCommitError` whose message identifies the index type and column whose
+construction failed. Construction stops at the first error.
 
 A runnable index construction example (destination must not exist):
 

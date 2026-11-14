@@ -1,7 +1,3 @@
-use std::fmt;
-
-use crate::IndexBuildReport;
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,20 +10,10 @@ pub enum Error {
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Returned inside `open_arrow_sink_core::Error::Backend`; downcast to inspect.
-#[derive(Debug)]
+/// Index construction failed after data was committed.
+/// Returned inside `Error::Backend`; downcast to inspect the error context.
+#[derive(Debug, thiserror::Error)]
+#[error("data committed; index construction failed: {message}")]
 pub struct IndexCommitError {
-    pub report: IndexBuildReport,
     pub message: String,
 }
-
-impl fmt::Display for IndexCommitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "data committed at {:?}; indexing {} failed: {}",
-            self.report.data_version, self.report.destination, self.message
-        )
-    }
-}
-impl std::error::Error for IndexCommitError {}

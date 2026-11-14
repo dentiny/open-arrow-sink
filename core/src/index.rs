@@ -1,4 +1,4 @@
-//! Backend-independent index requests and construction results.
+//! Backend-independent index requests.
 
 /// Logical index type. Each backend chooses its concrete implementation
 /// and validates supported Arrow types before writing.
@@ -24,14 +24,4 @@ impl IndexSpec {
             index_type,
         }
     }
-}
-
-/// Construction details after data publication. Optional version numbers use
-/// the backend's native interpretation.
-#[derive(Debug, Clone)]
-pub struct IndexBuildReport {
-    pub destination: String,
-    pub rows_written: u64,
-    pub data_version: Option<u64>,
-    pub latest_version: Option<u64>,
 }

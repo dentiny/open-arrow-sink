@@ -14,7 +14,7 @@ pub use arrow_schema::SchemaRef;
 pub use async_trait::async_trait;
 pub use capability::SinkCapability;
 pub use error::{Error, IndexCommitError, Result};
-pub use index::{IndexBuildReport, IndexSpec, IndexType};
+pub use index::{IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, WriteOptions};
 pub use result::WriteSummary;
