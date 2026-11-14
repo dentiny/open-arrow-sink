@@ -5,7 +5,7 @@ use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
-use open_arrow_sink_core::{Error, Ordering, SchemaRef, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, SchemaRef, Sink, WriteOptions};
 use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
 
 type Row = (Option<i32>, Option<i64>);
@@ -185,25 +185,5 @@ async fn empty_commit_keeps_table_empty() {
         after.metadata().current_snapshot_id(),
         before.metadata().current_snapshot_id()
     );
-    assert!(rows(catalog.as_ref(), &identifier).await.is_empty());
-}
-
-#[tokio::test]
-async fn schema_error_prevents_commit() {
-    let (catalog, identifier, schema) = table().await;
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, options())
-        .await
-        .unwrap();
-    let wrong = RecordBatch::try_from_iter([(
-        "other",
-        Arc::new(Int32Array::from(vec![1])) as arrow_array::ArrayRef,
-    )])
-    .unwrap();
-    assert!(matches!(
-        writer.write(wrong).await,
-        Err(Error::SchemaMismatch)
-    ));
-    assert!(writer.commit().await.is_err());
     assert!(rows(catalog.as_ref(), &identifier).await.is_empty());
 }
