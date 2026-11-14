@@ -577,17 +577,60 @@ async fn temporal_partitions_round_trip_and_record_metadata(
 }
 
 #[rstest::rstest]
-#[case::bucket16(Transform::Bucket(16), PartitionType::Bucket, vec![Some(34), Some(34), None], vec![Some(Literal::int(3)), None])]
-#[case::bucket10(Transform::Bucket(10), PartitionType::Bucket, vec![Some(34), Some(34), None], vec![Some(Literal::int(9)), None])]
-#[case::truncate10(Transform::Truncate(10), PartitionType::Truncate, vec![Some(-1), Some(21), Some(29), None], vec![Some(Literal::long(-10)), Some(Literal::long(20)), None])]
-#[case::truncate100(Transform::Truncate(100), PartitionType::Truncate, vec![Some(-1), Some(21), Some(29), None], vec![Some(Literal::long(-100)), Some(Literal::long(0)), None])]
-#[case::void(Transform::Void, PartitionType::Void, vec![Some(-1), Some(21), Some(29), None], vec![None])]
+#[case::sixteen_buckets(16, 3)]
+#[case::ten_buckets(10, 9)]
 #[tokio::test]
-async fn remaining_partitions_round_trip_and_record_metadata(
-    #[case] transform: Transform,
-    #[case] partition_type: PartitionType,
-    #[case] values: Vec<Option<i64>>,
-    #[case] keys: Vec<Option<Literal>>,
+async fn bucket_partitions_round_trip_and_record_metadata(
+    #[case] buckets: u32,
+    #[case] expected_bucket: i32,
+) {
+    assert_numeric_partition_round_trip(
+        Transform::Bucket(buckets),
+        PartitionType::Bucket,
+        vec![Some(34), Some(34), None],
+        vec![Some(Literal::int(expected_bucket)), None],
+    )
+    .await;
+}
+
+#[rstest::rstest]
+#[case::width_ten(10, -10, 20)]
+#[case::width_hundred(100, -100, 0)]
+#[tokio::test]
+async fn truncate_partitions_round_trip_and_record_metadata(
+    #[case] width: u32,
+    #[case] negative_key: i64,
+    #[case] positive_key: i64,
+) {
+    assert_numeric_partition_round_trip(
+        Transform::Truncate(width),
+        PartitionType::Truncate,
+        vec![Some(-1), Some(21), Some(29), None],
+        vec![
+            Some(Literal::long(negative_key)),
+            Some(Literal::long(positive_key)),
+            None,
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn void_partitions_round_trip_and_record_metadata() {
+    assert_numeric_partition_round_trip(
+        Transform::Void,
+        PartitionType::Void,
+        vec![Some(-1), Some(21), Some(29), None],
+        vec![None],
+    )
+    .await;
+}
+
+async fn assert_numeric_partition_round_trip(
+    transform: Transform,
+    partition_type: PartitionType,
+    values: Vec<Option<i64>>,
+    keys: Vec<Option<Literal>>,
 ) {
     let spec = UnboundPartitionSpec::builder()
         .add_partition_field(2, "value_partition", transform)
