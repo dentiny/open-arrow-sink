@@ -49,7 +49,6 @@ impl<S: Sink> Sink for RebatchSink<S> {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
         let inner = self.inner.open(request, schema, options).await?;
         Ok(Box::new(RebatchWriter {
             inner,
