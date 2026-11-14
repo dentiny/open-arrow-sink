@@ -229,3 +229,41 @@ async fn target_file_size_rolls_files_without_losing_rows(
     expected.sort_unstable();
     assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
 }
+
+#[tokio::test]
+async fn rejects_index_requests_before_loading_table() {
+    use open_arrow_sink_core::{Error, IndexKind, IndexSpec};
+    let (catalog, identifier, schema) = table().await;
+    let sink = IcebergTableSink::new(catalog.clone());
+    assert!(!sink.capability().indexes);
+    let before = catalog.load_table(&identifier).await.unwrap();
+    for kind in [
+        IndexKind::Scalar,
+        IndexKind::Vector,
+        IndexKind::Text,
+        IndexKind::BloomFilter,
+    ] {
+        // An absent table proves capability validation precedes catalog loading:
+        // the result must be Unsupported rather than a catalog NotFound error.
+        let missing = TableIdent::new(identifier.namespace.clone(), "missing".into());
+        let result = sink
+            .open(
+                missing,
+                schema.clone(),
+                WriteOptions {
+                    indexes: vec![IndexSpec::new("id", kind)],
+                    ..options()
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Unsupported(message)) if message == "index construction")
+        );
+    }
+    let after = catalog.load_table(&identifier).await.unwrap();
+    assert_eq!(
+        before.metadata().current_snapshot_id(),
+        after.metadata().current_snapshot_id()
+    );
+    assert!(rows(catalog.as_ref(), &identifier).await.is_empty());
+}

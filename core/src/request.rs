@@ -1,3 +1,5 @@
+use crate::IndexSpec;
+
 /// Input-order policy or guarantee; this does not sort rows by column values.
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -8,9 +10,12 @@ pub enum Ordering {
     Unordered,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
     pub ordering: Ordering,
+    /// Indexes to construct after writing. Empty by default; unsupported sinks
+    /// reject nonempty requests before opening a writer.
+    pub indexes: Vec<IndexSpec>,
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
@@ -23,6 +28,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             ordering: Ordering::default(),
+            indexes: Vec::new(),
             target_file_size: None,
             cleanup_on_error: true,
         }

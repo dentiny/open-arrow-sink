@@ -2,8 +2,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use lance::{Dataset, index::DatasetIndexExt};
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
-use open_arrow_sink_lance::{LanceDatasetSink, LanceIndexKind, LanceIndexLayer, LanceIndexSpec};
+use open_arrow_sink_core::{IndexKind, IndexSpec, Ordering, Sink, WriteOptions};
+use open_arrow_sink_lance::LanceDatasetSink;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,16 +22,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ])) as ArrayRef,
         ),
     ])?;
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(vec![
-        LanceIndexSpec::new("id", LanceIndexKind::Scalar),
-        LanceIndexSpec::new("text", LanceIndexKind::Text),
-    ]));
-    let mut writer = sink
+    let mut writer = LanceDatasetSink
         .open(
             destination.clone(),
             batch.schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
+                indexes: vec![
+                    IndexSpec::new("id", IndexKind::Scalar),
+                    IndexSpec::new("text", IndexKind::Text),
+                ],
                 ..Default::default()
             },
         )

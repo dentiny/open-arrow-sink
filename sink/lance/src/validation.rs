@@ -1,21 +1,11 @@
 //! Index configuration validation before destination creation.
-use std::collections::HashSet;
-
 use arrow_schema::{DataType, Schema};
-use open_arrow_sink_core::Result;
+use open_arrow_sink_core::{IndexKind, IndexSpec, Result, validation};
 
-use crate::index::{LanceIndexKind, LanceIndexSpec};
-
-pub(crate) fn validate_indexes(schema: &Schema, indexes: &[LanceIndexSpec]) -> Result<()> {
+pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
-    let mut seen = HashSet::new();
+    validation::validate_indexes(schema, indexes)?;
     for index in indexes {
-        if !seen.insert(&index.column) {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "multiple indexes requested for column {}",
-                index.column
-            )));
-        }
         let field = schema.field_with_name(&index.column).map_err(|_| {
             open_arrow_sink_core::Error::Unsupported(format!(
                 "index column not found: {}",
@@ -23,7 +13,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[LanceIndexSpec]) -> R
             ))
         })?;
         let supported = match index.kind {
-            LanceIndexKind::Scalar => matches!(
+            IndexKind::Scalar => matches!(
                 field.data_type(),
                 Boolean
                     | Int8
@@ -49,11 +39,11 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[LanceIndexSpec]) -> R
             ),
             // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
             // Int8 is rejected even though the older reference allowed it.
-            LanceIndexKind::Vector => {
+            IndexKind::Vector => {
                 matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
             }
-            LanceIndexKind::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
-            LanceIndexKind::BloomFilter => matches!(
+            IndexKind::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
+            IndexKind::BloomFilter => matches!(
                 field.data_type(),
                 Int8 | Int16
                     | Int32

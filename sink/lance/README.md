@@ -46,36 +46,60 @@ cargo run -p open-arrow-sink-lance --example write_lance -- /tmp/new-example.lan
 
 The native Lance dependency needs `protoc` available when building from source.
 
-## Index layer
+## Index construction
 
-`LanceIndexLayer` wraps `LanceDatasetSink` and creates indexes after the data commit.
-It supports Scalar (BTree), Vector (IVF_FLAT with L2), Text (Inverted), and BloomFilter.
-The index list is validated against the fixed session schema before a destination
-is created. Missing columns, duplicate column definitions, and unsupported types
-are rejected. Vector columns must be fixed-size lists of Float16, Float32, or
-Float64 with a positive dimension. Types are checked against Lance 14.0.1 rather
-than blindly inheriting the older reference's vector type matrix.
+Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
 
 ```rust,ignore
-use open_arrow_sink::{SinkExt, lance::{LanceDatasetSink, LanceIndexKind, LanceIndexLayer, LanceIndexSpec}};
+use open_arrow_sink::{IndexKind, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let sink = LanceDatasetSink.layer(LanceIndexLayer::new(vec![
-    LanceIndexSpec::new("id", LanceIndexKind::Scalar),
-    LanceIndexSpec::new("embedding", LanceIndexKind::Vector),
-]));
+let mut writer = LanceDatasetSink.open(
+    "./indexed.lance".into(),
+    schema,
+    WriteOptions {
+        ordering: Ordering::Unordered,
+        indexes: vec![
+            IndexSpec::new("id", IndexKind::Scalar),
+            IndexSpec::new("embedding", IndexKind::Vector),
+        ],
+        ..WriteOptions::default()
+    },
+).await?;
+writer.write(batch).await?;
+let summary = writer.commit().await?;
 ```
 
-Each column can have one requested index. Names are deterministic and existing
-indexes are never replaced. Index builds run sequentially on the committed dataset.
-The vector IVF partition count is `clamp(ceil(dataset_rows / 8192), 1, 4096)`.
-Training failures, including insufficient usable vectors, are returned explicitly.
+`IndexKind`, `IndexSpec`, construction results, and `IndexCommitError` are defined
+in `open-arrow-sink-core` and re-exported by the facade. They have no Lance SDK
+dependency. Lance advertises `SinkCapability.indexes = true`; Parquet and Iceberg
+currently advertise `false` and reject index requests before destination I/O.
+
+The shared `validation.rs` checks index column existence and uniqueness. Lance's
+`validation.rs` checks each requested kind against its supported Arrow types before
+creating a directory or writer. Each column can have one requested index. Lance's
+concrete mappings are:
+
+| Shared kind | Lance implementation |
+| --- | --- |
+| Scalar | BTree |
+| Vector | IVF_FLAT with L2 |
+| Text | Inverted with default parameters |
+| BloomFilter | Bloom filter |
+
+Vector columns must be fixed-size lists of Float16, Float32, or Float64 with a
+positive dimension. The default IVF partition count is
+`clamp(ceil(dataset_rows / 8192), 1, 4096)`. Unsupported types fail before writing;
+training failures, including insufficient usable vectors, are returned explicitly.
 An empty index list preserves the underlying sink behavior.
 
-Index creation can publish additional dataset versions. If it fails, the data and
-previously created indexes remain visible, regardless of `cleanup_on_error`.
-`Error::Backend` contains an `IndexCommitError` with an `IndexBuildReport`: destination,
-row count, original data version, latest confirmed version, and each index's state.
-A failure to reopen the committed dataset leaves the version fields unknown.
+Index creation uses the dataset handle returned by the native data commit. It runs
+sequentially and may publish additional versions. Names are deterministic and existing
+indexes are never replaced. If construction fails, the data and previously created
+indexes remain visible regardless of `cleanup_on_error`. `Error::Backend` contains
+an `IndexCommitError` with a shared `IndexBuildReport`: destination, row count,
+original data version, latest confirmed version, and each requested index's state.
+The complete state carries an opaque backend index ID; for Lance this is its UUID.
+The failed index and any remaining pending indexes are reported without retrying.
 
 A runnable index construction example (destination must not exist):
 

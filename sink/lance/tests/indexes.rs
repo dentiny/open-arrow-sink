@@ -6,16 +6,23 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_index::scalar::FullTextSearchQuery;
-use open_arrow_sink_core::{Error, Ordering, Sink, SinkExt, WriteOptions};
-use open_arrow_sink_lance::{
-    IndexBuildState, IndexCommitError, LanceDatasetSink, LanceIndexKind as Kind, LanceIndexLayer,
-    LanceIndexSpec as Spec,
+use open_arrow_sink_core::{
+    Error, IndexBuildState, IndexCommitError, IndexKind as Kind, IndexSpec as Spec, Ordering, Sink,
+    WriteOptions,
 };
+use open_arrow_sink_lance::LanceDatasetSink;
 
 fn options() -> WriteOptions {
     WriteOptions {
         ordering: Ordering::Unordered,
         ..Default::default()
+    }
+}
+
+fn indexed_options(indexes: Vec<Spec>) -> WriteOptions {
+    WriteOptions {
+        indexes,
+        ..options()
     }
 }
 
@@ -65,9 +72,9 @@ async fn builds_all_index_kinds_and_queries_them() {
         Spec::new("category", Kind::BloomFilter),
         Spec::new("vector", Kind::Vector),
     ];
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(specs.clone()));
+    let sink = LanceDatasetSink;
     let mut writer = sink
-        .open(path.clone(), batch.schema(), options())
+        .open(path.clone(), batch.schema(), indexed_options(specs.clone()))
         .await
         .unwrap();
     writer.write(batch.slice(0, 100)).await.unwrap();
@@ -79,9 +86,10 @@ async fn builds_all_index_kinds_and_queries_them() {
         .iter()
         .zip(["BTree", "Inverted", "BloomFilter", "IVF_FLAT"])
     {
+        let field_id = u32::try_from(dataset.schema().field(&spec.column).unwrap().id).unwrap();
         let description = descriptions
             .iter()
-            .find(|d| d.name() == spec.name())
+            .find(|d| d.field_ids() == [field_id])
             .unwrap();
         assert_eq!(
             description.index_type().to_lowercase(),
@@ -161,9 +169,9 @@ async fn invalid_index_configuration_has_no_side_effects(#[case] specs: Vec<Spec
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("invalid-index");
     let batch = vectors(1);
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(specs));
+    let sink = LanceDatasetSink;
     assert!(
-        sink.open(path.clone(), batch.schema(), options())
+        sink.open(path.clone(), batch.schema(), indexed_options(specs.clone()))
             .await
             .is_err()
     );
@@ -191,12 +199,13 @@ async fn index_failure_preserves_committed_data_and_successful_indexes() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("failed-index");
     let batch = failed_vector_input();
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(vec![
+    let sink = LanceDatasetSink;
+    let indexes = vec![
         Spec::new("id", Kind::Scalar),
         Spec::new("vector", Kind::Vector),
-    ]));
+    ];
     let mut writer = sink
-        .open(path.clone(), batch.schema(), options())
+        .open(path.clone(), batch.schema(), indexed_options(indexes))
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
@@ -224,7 +233,7 @@ async fn index_failure_preserves_committed_data_and_successful_indexes() {
 async fn empty_index_list_preserves_empty_dataset_commit() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("no-indexes");
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(vec![]));
+    let sink = LanceDatasetSink;
     let writer = sink
         .open(path.clone(), vectors(0).schema(), options())
         .await
@@ -240,23 +249,38 @@ async fn indexed_sink_preserves_ordering_existing_destination_and_abort_contract
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("indexed");
     let batch = vectors(4);
-    let sink = LanceDatasetSink.layer(LanceIndexLayer::new(vec![Spec::new("id", Kind::Scalar)]));
+    let sink = LanceDatasetSink;
     assert!(
-        sink.open(path.clone(), batch.schema(), WriteOptions::default())
-            .await
-            .is_err()
+        sink.open(
+            path.clone(),
+            batch.schema(),
+            WriteOptions {
+                ordering: Ordering::PreserveInput,
+                ..indexed_options(vec![Spec::new("id", Kind::Scalar)])
+            }
+        )
+        .await
+        .is_err()
     );
     assert!(!path.exists());
     let mut writer = sink
-        .open(path.clone(), batch.schema(), options())
+        .open(
+            path.clone(),
+            batch.schema(),
+            indexed_options(vec![Spec::new("id", Kind::Scalar)]),
+        )
         .await
         .unwrap();
     writer.write(batch.clone()).await.unwrap();
     assert!(Dataset::open(path.to_str().unwrap()).await.is_err());
     assert!(
-        sink.open(path.clone(), batch.schema(), options())
-            .await
-            .is_err()
+        sink.open(
+            path.clone(),
+            batch.schema(),
+            indexed_options(vec![Spec::new("id", Kind::Scalar)])
+        )
+        .await
+        .is_err()
     );
     writer.abort().await.unwrap();
     assert!(!path.exists());
