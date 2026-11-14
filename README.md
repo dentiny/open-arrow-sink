@@ -22,7 +22,9 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend must reject this policy if it cannot provide that guarantee. Writing
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput }`
+or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
+request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
 
 `Ordering::Unordered` allows reordering rows and batches without losing or

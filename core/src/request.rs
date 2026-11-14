@@ -1,4 +1,5 @@
-/// Ordering within one session; this does not sort rows by column values.
+/// Input-order policy or guarantee; this does not sort rows by column values.
+/// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Ordering {
     #[default]

@@ -10,7 +10,7 @@ use open_arrow_sink_core::{
 use open_arrow_sink_layer::OrderingLayer;
 
 struct TestSink {
-    preserve_input_order: bool,
+    ordering: Ordering,
     opened: Arc<Mutex<Vec<WriteOptions>>>,
 }
 
@@ -45,7 +45,7 @@ impl Sink for TestSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            preserve_input_order: self.preserve_input_order,
+            ordering: self.ordering,
         }
     }
 
@@ -66,11 +66,11 @@ fn unordered_policy_reaches_backend_and_writer_is_usable() {
     block_on(async {
         let opened = Arc::new(Mutex::new(Vec::new()));
         let sink = TestSink {
-            preserve_input_order: false,
+            ordering: Ordering::Unordered,
             opened: opened.clone(),
         }
         .layer(OrderingLayer::new(Ordering::Unordered));
-        assert!(!sink.capability().preserve_input_order);
+        assert_eq!(sink.capability().ordering, Ordering::Unordered);
         let batch = RecordBatch::try_from_iter([(
             "value",
             Arc::new(Int64Array::from(vec![1, 2, 3])) as arrow_array::ArrayRef,
@@ -92,7 +92,7 @@ fn unsupported_ordering_is_rejected_before_backend_open() {
     block_on(async {
         let opened = Arc::new(Mutex::new(Vec::new()));
         let sink = TestSink {
-            preserve_input_order: false,
+            ordering: Ordering::Unordered,
             opened: opened.clone(),
         }
         .layer(OrderingLayer::new(Ordering::PreserveInput));

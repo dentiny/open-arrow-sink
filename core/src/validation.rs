@@ -4,7 +4,8 @@ use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
-    if options.ordering == Ordering::PreserveInput && !capability.preserve_input_order {
+    if options.ordering == Ordering::PreserveInput && capability.ordering != Ordering::PreserveInput
+    {
         return Err(Error::Unsupported("preserving input row order".into()));
     }
     Ok(())
@@ -28,14 +29,15 @@ mod tests {
 
     #[test]
     fn validates_ordering() {
-        for preserve_input_order in [false, true] {
+        for guaranteed_ordering in [Ordering::Unordered, Ordering::PreserveInput] {
             let cap = SinkCapability {
-                preserve_input_order,
+                ordering: guaranteed_ordering,
             };
             for ordering in [Ordering::PreserveInput, Ordering::Unordered] {
                 assert_eq!(
                     validate_options(&WriteOptions { ordering }, cap).is_ok(),
-                    ordering == Ordering::Unordered || preserve_input_order,
+                    ordering == Ordering::Unordered
+                        || guaranteed_ordering == Ordering::PreserveInput,
                 );
             }
         }

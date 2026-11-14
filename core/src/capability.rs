@@ -1,7 +1,11 @@
+use crate::Ordering;
+
 /// Guarantees provided by the configured sink.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Each sink must explicitly declare its ordering guarantee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SinkCapability {
-    /// Preserve input row order in the target's documented read order.
-    /// Sequential I/O completion alone does not provide this guarantee.
-    pub preserve_input_order: bool,
+    /// `PreserveInput` guarantees input row order in the target's documented
+    /// read order; `Unordered` provides no input-order guarantee.
+    /// Sequential I/O completion alone does not guarantee logical row order.
+    pub ordering: Ordering,
 }
