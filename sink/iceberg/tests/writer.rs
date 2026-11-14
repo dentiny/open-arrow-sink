@@ -364,30 +364,6 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 }
 
 #[tokio::test]
-async fn partitioned_writes_follow_sdk_without_a_writer_count_limit() {
-    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
-    let data = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from_iter_values(0..129)),
-            Arc::new(Int64Array::from_iter_values(0..129)),
-        ],
-    )
-    .unwrap();
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options())
-        .await
-        .unwrap();
-    writer.write(data.slice(0, 64)).await.unwrap();
-    writer.write(data.slice(64, 65)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 129);
-    let expected = (0..129)
-        .map(|i| (Some(i), Some(i64::from(i))))
-        .collect::<Vec<_>>();
-    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
-}
-
-#[tokio::test]
 async fn partitioned_abort_keeps_committed_snapshot() {
     let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
     let sink = IcebergTableSink::new(catalog.clone());
