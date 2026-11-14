@@ -29,12 +29,7 @@ impl Writer for ParquetDirectoryWriter {
         // Taking ownership also makes a failed or cancelled write terminal.
         let mut writer = self.writer.take().ok_or_else(closed)?;
         validation::validate_batch(&self.schema, &batch)?;
-        if self.file_rows > 0
-            && batch.num_rows() > 0
-            && self
-                .target_file_size
-                .is_some_and(|size| writer.bytes_written() >= size)
-        {
+        if self.should_roll_file(writer.bytes_written(), batch.num_rows()) {
             writer.close().await.map_err(backend)?;
             let file = OpenOptions::new()
                 .write(true)
@@ -92,6 +87,14 @@ impl ParquetDirectoryWriter {
             files_created: 1,
             file_rows: 0,
         }
+    }
+
+    fn should_roll_file(&self, bytes_written: usize, incoming_rows: usize) -> bool {
+        self.file_rows > 0
+            && incoming_rows > 0
+            && self
+                .target_file_size
+                .is_some_and(|size| bytes_written >= size)
     }
 
     fn file_path(&self, index: usize) -> PathBuf {
