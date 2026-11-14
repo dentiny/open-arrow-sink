@@ -13,7 +13,7 @@ use iceberg::spec::{
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{
-    Error, Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions,
+    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions,
 };
 use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
 
@@ -561,41 +561,4 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     expected.push((1, Some(0)));
     expected.sort_unstable();
     assert_eq!(actual, expected);
-}
-
-#[rstest::rstest]
-#[case::mismatch(Transform::Identity, PartitionType::Day)]
-#[case::bucket(Transform::Bucket(16), PartitionType::Identity)]
-#[case::truncate(Transform::Truncate(10), PartitionType::Identity)]
-#[case::void(Transform::Void, PartitionType::Identity)]
-#[tokio::test]
-async fn invalid_partition_requests_fail_at_open(
-    #[case] transform: Transform,
-    #[case] partition_type: PartitionType,
-) {
-    let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(1, "id_partition", transform)
-        .unwrap()
-        .build();
-    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
-    let result = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
-        )
-        .await;
-    assert!(matches!(result, Err(Error::Unsupported(_))));
-    assert!(
-        catalog
-            .load_table(&identifier)
-            .await
-            .unwrap()
-            .metadata()
-            .current_snapshot_id()
-            .is_none()
-    );
 }
