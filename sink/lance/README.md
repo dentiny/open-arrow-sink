@@ -94,12 +94,16 @@ positive dimension. The default IVF partition count is
 training failures, including insufficient usable vectors, are returned explicitly.
 An empty index list preserves the underlying sink behavior.
 
-Index creation uses the dataset handle returned by the native data commit. It runs
-sequentially and may publish additional versions. Names are deterministic and existing
-indexes are never replaced. If construction fails, the data and previously created
-indexes remain visible regardless of `cleanup_on_error`. `Error::Backend` contains
-an `IndexCommitError` whose message identifies the index type and column whose
-construction failed. Construction stops at the first error.
+Index creation clones the dataset handle returned by the native data commit and
+spawns one Tokio task per requested index. Each task builds and commits its index
+through Lance, potentially publishing another dataset version. Names are deterministic
+and existing indexes are never replaced. All started tasks are awaited, including
+when one fails, and the original dataset handle is refreshed after they finish.
+The first observed error is returned after all tasks complete. Successfully built
+indexes and committed data remain visible regardless of `cleanup_on_error`.
+`Error::Backend` contains an `IndexCommitError` identifying the failed index type
+and column, or a task failure if a worker panics. Dropping the commit future aborts
+the task set; native publication may still have an uncertain outcome.
 
 A runnable index construction example (destination must not exist):
 

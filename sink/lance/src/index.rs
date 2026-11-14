@@ -9,22 +9,55 @@ use lance_index::{
 };
 use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
+use tokio::task::JoinSet;
 
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
     indexes: &[IndexSpec],
 ) -> std::result::Result<(), IndexCommitError> {
-    for spec in indexes {
-        create_index(dataset, spec)
-            .await
-            .map_err(|error| IndexCommitError {
-                message: format!(
-                    "creating {:?} index on '{}': {error}",
-                    spec.index_type, spec.column
-                ),
-            })?;
+    if indexes.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let mut tasks = JoinSet::new();
+    for spec in indexes {
+        let mut dataset = dataset.clone();
+        let spec = spec.clone();
+        tasks.spawn(async move {
+            create_index(&mut dataset, &spec)
+                .await
+                .map_err(|error| IndexCommitError {
+                    message: format!(
+                        "creating {:?} index on '{}': {error}",
+                        spec.index_type, spec.column
+                    ),
+                })
+        });
+    }
+
+    // Drain every started task even after an error, so returning never detaches
+    // index commits that could keep modifying the dataset in the background.
+    let mut first_error = None;
+    while let Some(result) = tasks.join_next().await {
+        let result = result.unwrap_or_else(|error| {
+            Err(IndexCommitError {
+                message: format!("index construction task failed: {error}"),
+            })
+        });
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    }
+    // Each task commits through its own handle. Refresh the caller's snapshot
+    // after all tasks finish, including when only some indexes succeeded.
+    if let Err(error) = dataset.checkout_latest().await {
+        first_error.get_or_insert_with(|| IndexCommitError {
+            message: format!("refreshing dataset after index construction: {error}"),
+        });
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<()> {

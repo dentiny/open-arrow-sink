@@ -60,7 +60,7 @@ fn vectors(count: usize) -> RecordBatch {
     .unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn builds_all_index_kinds_and_queries_them() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("indexed");
@@ -193,15 +193,15 @@ fn failed_vector_input() -> RecordBatch {
     .unwrap()
 }
 
-#[tokio::test]
-async fn index_failure_preserves_committed_data_and_successful_indexes() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_index_failure_waits_for_other_indexes_and_preserves_data() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("failed-index");
     let batch = failed_vector_input();
     let sink = LanceDatasetSink;
     let indexes = vec![
-        Spec::new("id", Kind::Scalar),
         Spec::new("vector", Kind::Vector),
+        Spec::new("id", Kind::Scalar),
     ];
     let mut writer = sink
         .open(path.clone(), batch.schema(), indexed_options(indexes))
