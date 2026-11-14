@@ -10,9 +10,9 @@ description = "Minimal local Lance dataset sink"
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
-lance-index = { version = "=14.0.1", default-features = false }
-lance-linalg = { version = "=14.0.1", default-features = false }
-lance = { version = "=14.0.1", default-features = false }
+lance-index = { version = "14.0.1", default-features = false }
+lance-linalg = { version = "14.0.1", default-features = false }
+lance = { version = "14.0.1", default-features = false }
 tokio = { version = "1", features = ["fs", "rt", "sync"] }
 
 [dev-dependencies]
