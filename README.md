@@ -64,16 +64,20 @@ retain their input buffers, so this is a row bound, not a byte-memory limit.
 ## Downloading URL columns as blobs
 
 Enable `layer-download-blob` to use `DownloadBlobLayer`. Select top-level URL
-columns explicitly; each selected column is replaced in place with `LargeBinary`
+columns explicitly using a `HashSet<String>`; each selected column is replaced in
+place with `LargeBinary`
 containing the downloaded HTTP(S) response body. `Utf8`, `LargeUtf8`, and `Utf8View`
 inputs are supported. Nulls remain null without a request; empty files remain
 non-null empty binary values. Other columns and row order are preserved.
 
 ```rust,ignore
+use std::collections::HashSet;
 use open_arrow_sink::{SinkExt, layer::DownloadBlobLayer, lance::LanceDatasetSink};
 
 // Enable both `layer-download-blob` and `sink-lance`.
-let sink = LanceDatasetSink.layer(DownloadBlobLayer::new(["image_url", "audio_url"]));
+let url_columns: HashSet<String> = ["image_url", "audio_url"]
+    .map(str::to_owned).into_iter().collect();
+let sink = LanceDatasetSink.layer(DownloadBlobLayer::new(url_columns));
 // Open with the original URL schema and Ordering::Unordered for Lance.
 // writer.schema() continues to expose the original input schema.
 ```
@@ -94,9 +98,8 @@ input buffers. An inner rebatch layer can add its own buffering.
 
 A failed or cancelled write poisons the session: subsequent writes fail and
 `commit` aborts the inner writer. Earlier output chunks may already have been
-accepted; cleanup follows the backend's guarantees. Missing, duplicate, ambiguous,
-or non-string selected columns are rejected before the inner sink opens. Source
-field metadata is retained except for Arrow extension-type metadata, which no
+accepted; cleanup follows the backend's guarantees. Missing, ambiguous, or
+non-string selected columns are rejected before the inner sink opens. Source field metadata is retained except for Arrow extension-type metadata, which no
 longer describes the converted binary column. Only explicit top-level columns and
 HTTP(S) URLs are supported in this version.
 

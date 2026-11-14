@@ -22,16 +22,17 @@ fn failure(message: impl Into<String>) -> Error {
 /// Requires a Tokio runtime. Downloads run sequentially without retries.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
-    columns: Vec<String>,
+    columns: HashSet<String>,
     max_blob_bytes: NonZeroUsize,
     rows_per_batch: NonZeroUsize,
     timeout: Duration,
 }
 
 impl DownloadBlobLayer {
-    pub fn new(columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    /// Select URL columns by name; the set is resolved once when opening a writer.
+    pub fn new(columns: HashSet<String>) -> Self {
         Self {
-            columns: columns.into_iter().map(Into::into).collect(),
+            columns,
             max_blob_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
             rows_per_batch: NonZeroUsize::new(16).unwrap(),
             timeout: Duration::from_secs(30),
@@ -93,7 +94,6 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
                 "download timeout must be positive".into(),
             ));
         }
-        let mut seen = HashSet::new();
         let mut indices = Vec::new();
         let mut fields = schema.fields().to_vec();
         for name in &self.config.columns {
@@ -103,7 +103,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
                 .enumerate()
                 .filter(|(_, f)| f.name() == name)
                 .collect();
-            if !seen.insert(name) || matches.len() != 1 {
+            if matches.len() != 1 {
                 return Err(Error::Unsupported(format!(
                     "download column must exist and be unique: {name}"
                 )));
@@ -130,6 +130,8 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             );
             indices.push(index);
         }
+        // HashSet iteration order must not change the order of downloads.
+        indices.sort_unstable();
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let client = reqwest::Client::builder()
             .timeout(self.config.timeout)

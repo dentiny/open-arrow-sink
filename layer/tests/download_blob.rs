@@ -141,8 +141,13 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
     let batch = RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).unwrap();
     let capture = Capture::default();
     let sink = capture.clone().layer(
-        DownloadBlobLayer::new(["utf8", "large", "view"])
-            .with_rows_per_batch(NonZeroUsize::new(2).unwrap()),
+        DownloadBlobLayer::new(
+            ["utf8", "large", "view"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+        )
+        .with_rows_per_batch(NonZeroUsize::new(2).unwrap()),
     );
     let mut writer = sink
         .open((), schema.clone(), WriteOptions::default())
@@ -210,7 +215,9 @@ async fn empty_payload_is_distinct_from_null() {
     let capture = Capture::default();
     let mut writer = capture
         .clone()
-        .layer(DownloadBlobLayer::new(["url"]))
+        .layer(DownloadBlobLayer::new(
+            ["url"].map(str::to_owned).into_iter().collect(),
+        ))
         .open((), batch.schema(), WriteOptions::default())
         .await
         .unwrap();
@@ -237,7 +244,7 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows() {
         let server = server(response, Duration::ZERO).await;
         let batch = batch(vec![None, Some(&server.url)]);
         let capture = Capture::default();
-        let mut writer = capture.clone().layer(DownloadBlobLayer::new(["url"]).with_rows_per_batch(NonZeroUsize::new(1).unwrap()).with_max_blob_bytes(NonZeroUsize::new(3).unwrap())).open((), batch.schema(), WriteOptions::default()).await.unwrap();
+        let mut writer = capture.clone().layer(DownloadBlobLayer::new(["url"].map(str::to_owned).into_iter().collect()).with_rows_per_batch(NonZeroUsize::new(1).unwrap()).with_max_blob_bytes(NonZeroUsize::new(3).unwrap())).open((), batch.schema(), WriteOptions::default()).await.unwrap();
         assert!(writer.write(batch.clone()).await.is_err());
         assert!(writer.write(batch.slice(0, 1)).await.is_err());
         assert!(writer.commit().await.is_err());
@@ -264,7 +271,10 @@ async fn request_timeout_and_cancellation_prevent_commit() {
         };
         let mut writer = capture
             .clone()
-            .layer(DownloadBlobLayer::new(["url"]).with_timeout(timeout))
+            .layer(
+                DownloadBlobLayer::new(["url"].map(str::to_owned).into_iter().collect())
+                    .with_timeout(timeout),
+            )
             .open((), batch.schema(), WriteOptions::default())
             .await
             .unwrap();
@@ -288,24 +298,44 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
         Field::new("url", DataType::Utf8, true),
         Field::new("id", DataType::Int32, false),
     ]));
-    for columns in [vec!["missing"], vec!["id"], vec!["url", "url"]] {
+    for columns in [vec!["missing"], vec!["id"]] {
         let capture = Capture::default();
         assert!(
             capture
                 .clone()
-                .layer(DownloadBlobLayer::new(columns))
+                .layer(DownloadBlobLayer::new(
+                    columns.into_iter().map(str::to_owned).collect()
+                ))
                 .open((), schema.clone(), WriteOptions::default())
                 .await
                 .is_err()
         );
         assert!(capture.0.lock().unwrap().schema.is_none());
     }
+    let ambiguous = Arc::new(Schema::new(vec![
+        Field::new("url", DataType::Utf8, true),
+        Field::new("url", DataType::Utf8, true),
+    ]));
+    let capture = Capture::default();
+    assert!(
+        capture
+            .clone()
+            .layer(DownloadBlobLayer::new(
+                ["url".to_owned()].into_iter().collect()
+            ))
+            .open((), ambiguous, WriteOptions::default())
+            .await
+            .is_err()
+    );
+    assert!(capture.0.lock().unwrap().schema.is_none());
     for url in ["file:///tmp/blob", "not a url"] {
         let capture = Capture::default();
         let batch = batch(vec![Some(url)]);
         let mut writer = capture
             .clone()
-            .layer(DownloadBlobLayer::new(["url"]))
+            .layer(DownloadBlobLayer::new(
+                ["url"].map(str::to_owned).into_iter().collect(),
+            ))
             .open((), batch.schema(), WriteOptions::default())
             .await
             .unwrap();

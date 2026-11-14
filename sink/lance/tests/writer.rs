@@ -243,7 +243,9 @@ async fn downloaded_url_is_stored_as_native_lance_blob() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("download.lance");
     let mut writer = LanceDatasetSink
-        .layer(DownloadBlobLayer::new(["image"]))
+        .layer(DownloadBlobLayer::new(
+            ["image"].map(str::to_owned).into_iter().collect(),
+        ))
         .open(path.clone(), batch.schema(), options())
         .await
         .unwrap();
