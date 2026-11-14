@@ -15,6 +15,8 @@ pub(crate) struct ParquetDirectoryWriter {
     options: WriteOptions,
     rows_written: u64,
     files_created: usize,
+    first_file: usize,
+    file_stride: usize,
 }
 
 #[async_trait]
@@ -72,6 +74,8 @@ impl ParquetDirectoryWriter {
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
         options: WriteOptions,
+        first_file: usize,
+        file_stride: usize,
     ) -> Self {
         Self {
             directory,
@@ -80,6 +84,8 @@ impl ParquetDirectoryWriter {
             options,
             rows_written: 0,
             files_created: 1,
+            first_file,
+            file_stride,
         }
     }
 
@@ -93,6 +99,7 @@ impl ParquetDirectoryWriter {
     }
 
     fn file_path(&self, index: usize) -> PathBuf {
+        let index = self.first_file + index * self.file_stride;
         self.directory.join(format!("part-{index:05}.parquet"))
     }
 
@@ -108,6 +115,18 @@ impl ParquetDirectoryWriter {
             }
         }
         // Never recursively delete a directory: other files may have been added.
-        fs::remove_dir(&self.directory).await
+        match fs::remove_dir(&self.directory).await {
+            // Other shards or unrelated files can still own this directory.
+            Err(error)
+                if self.file_stride > 1
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+                    ) =>
+            {
+                Ok(())
+            }
+            result => result,
+        }
     }
 }

@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
+The library includes shared contracts, an ordering layer, optional rebatch and unordered write layers, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, optional RebatchLayer
+layer/      OrderingLayer, optional RebatchLayer and UnorderedWriteLayer
 src/        Public facade
 ```
 
@@ -40,6 +40,54 @@ let sink = backend.layer(OrderingLayer::new(Ordering::Unordered));
 The ordering layer overrides the session option and checks the inner capability
 before opening it. Install one ordering layer per sink. Layers wrap without I/O;
 the last installed layer is outermost.
+
+## Unordered concurrent writes
+
+Enable `layer-unordered` to use `UnorderedWriteLayer`. Unlike `OrderingLayer`,
+this layer pre-opens a fixed number of writers and drives their I/O concurrently:
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use open_arrow_sink::{Ordering, Sink, SinkExt, WriteOptions, layer::UnorderedWriteLayer};
+use open_arrow_sink::parquet::ParquetDirectorySink; // feature `sink-parquet`
+
+let sink = ParquetDirectorySink.layer(
+    UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()),
+);
+let mut writer = sink.open(directory, schema, WriteOptions {
+    ordering: Ordering::Unordered,
+    target_file_size: Some(256 * 1024 * 1024),
+    ..WriteOptions::default()
+}).await?;
+writer.write(batch).await?;
+let summary = writer.commit().await?;
+```
+
+The inner sink must implement `ParallelSink`; Parquet supports this today. The
+trait lets a backend reserve one destination and assign disjoint output files
+without cloning requests or opening the same directory repeatedly. Iceberg and
+Lance do not yet implement this trait. No source-library metadata is needed.
+
+At most one batch per writer is in flight. When all writers are busy, `write`
+waits for one to finish. An available writer accepts the next nonempty batch;
+there is no round-robin or file-order guarantee. Empty batches are validated and
+otherwise ignored. The bound is in batches, not bytes. Each backend also retains
+its own encoding buffers; a rebatch layer inside this layer buffers per writer.
+
+There are no spawned tasks: I/O progresses while `write`, `commit`, or `abort`
+is polled. A successful `write` means accepted; an asynchronous error may surface
+in a later call. An error or cancellation of `write` makes the session terminal;
+abort or drop it. Commit drains writes before committing each backend writer and
+sums their row counts. Abort waits for in-flight I/O and attempts to abort every
+writer, even if another abort fails. Drop never commits or performs async cleanup.
+
+`Ordering::PreserveInput` is rejected before opening files. An outer
+`OrderingLayer::new(Ordering::Unordered)` can explicitly enable reordering.
+`RebatchLayer` may be installed inside or outside the unordered layer.
+
+Commit is not atomic across files. If one writer fails to commit, remaining
+writers are aborted, but already committed files may remain visible. Cleanup
+honors `cleanup_on_error` and never removes another writer's or unrelated files.
 
 ## Rebatching
 

@@ -16,5 +16,5 @@ pub use error::{Error, Result};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, WriteOptions};
 pub use result::WriteSummary;
-pub use sink::Sink;
+pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;

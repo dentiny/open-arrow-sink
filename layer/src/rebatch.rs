@@ -2,8 +2,8 @@ use std::num::NonZeroUsize;
 
 use arrow_select::concat::concat_batches;
 use open_arrow_sink_core::{
-    Error, Layer, RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary,
-    Writer, async_trait, validation,
+    Error, Layer, ParallelSink, RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
+    WriteSummary, Writer, async_trait, validation,
 };
 
 /// Merge small batches and split large batches to a fixed row count.
@@ -64,6 +64,32 @@ struct RebatchWriter {
     rows: usize,
     pending: Vec<RecordBatch>,
     pending_rows: usize,
+}
+
+#[async_trait]
+impl<S: ParallelSink> ParallelSink for RebatchSink<S> {
+    async fn open_writers(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        options: WriteOptions,
+        writers: NonZeroUsize,
+    ) -> Result<Vec<Box<dyn Writer>>> {
+        Ok(self
+            .inner
+            .open_writers(request, schema, options, writers)
+            .await?
+            .into_iter()
+            .map(|inner| {
+                Box::new(RebatchWriter {
+                    inner,
+                    rows: self.rows.get(),
+                    pending: Vec::new(),
+                    pending_rows: 0,
+                }) as Box<dyn Writer>
+            })
+            .collect())
+    }
 }
 
 impl RebatchWriter {

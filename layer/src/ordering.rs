@@ -1,7 +1,9 @@
 use arrow_schema::SchemaRef;
 use open_arrow_sink_core::{
-    Layer, Ordering, Result, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
+    Layer, Ordering, ParallelSink, Result, Sink, SinkCapability, WriteOptions, Writer, async_trait,
+    validation,
 };
+use std::num::NonZeroUsize;
 
 /// Override the shared ordering policy for each session opened through this layer.
 /// This declares permission/requirements; backends implement the execution strategy.
@@ -50,5 +52,27 @@ impl<S: Sink> Sink for OrderingSink<S> {
         options.ordering = self.ordering;
         validation::validate_options(&options, self.inner.capability())?;
         self.inner.open(request, schema, options).await
+    }
+}
+
+#[async_trait]
+impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
+    async fn open_writers(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        mut options: WriteOptions,
+        writers: NonZeroUsize,
+    ) -> Result<Vec<Box<dyn Writer>>> {
+        options.ordering = self.ordering;
+        validation::validate_options(
+            &options,
+            SinkCapability {
+                ordering: Ordering::Unordered,
+            },
+        )?;
+        self.inner
+            .open_writers(request, schema, options, writers)
+            .await
     }
 }

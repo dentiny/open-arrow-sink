@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
-    validation,
+    Ordering, ParallelSink, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
+    async_trait, validation,
 };
 use parquet::arrow::AsyncArrowWriter;
 use tokio::fs::{self, OpenOptions};
@@ -33,35 +33,65 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
+        let mut writers = self
+            .open_writers(directory, schema, options, NonZeroUsize::new(1).unwrap())
+            .await?;
+        Ok(writers.pop().unwrap())
+    }
+}
+
+#[async_trait]
+impl ParallelSink for ParquetDirectorySink {
+    async fn open_writers(
+        &self,
+        directory: PathBuf,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<Vec<Box<dyn Writer>>> {
         validation::validate_options(&options, self.capability())?;
         fs::create_dir(&directory).await.map_err(backend)?;
-        let path = directory.join("part-00000.parquet");
-        let file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await
-        {
-            Ok(file) => file,
-            Err(error) => {
-                if options.cleanup_on_error {
-                    let _ = fs::remove_dir(&directory).await;
+        let mut writers: Vec<Box<dyn Writer>> = Vec::new();
+        for index in 0..count.get() {
+            let path = directory.join(format!("part-{index:05}.parquet"));
+            let opened = async {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .await
+                    .map_err(backend)?;
+                match AsyncArrowWriter::try_new(file, schema.clone(), None) {
+                    Ok(writer) => Ok(writer),
+                    Err(error) => {
+                        if options.cleanup_on_error {
+                            let _ = fs::remove_file(&path).await;
+                        }
+                        Err(backend(error))
+                    }
                 }
-                return Err(backend(error));
             }
-        };
-        let writer = match AsyncArrowWriter::try_new(file, schema.clone(), None) {
-            Ok(writer) => writer,
-            Err(error) => {
-                if options.cleanup_on_error {
-                    let _ = fs::remove_file(&path).await;
-                    let _ = fs::remove_dir(&directory).await;
+            .await;
+            match opened {
+                Ok(writer) => writers.push(Box::new(ParquetDirectoryWriter::new(
+                    directory.clone(),
+                    schema.clone(),
+                    writer,
+                    options,
+                    index,
+                    count.get(),
+                ))),
+                Err(error) => {
+                    for writer in writers {
+                        let _ = writer.abort().await;
+                    }
+                    if options.cleanup_on_error {
+                        let _ = fs::remove_dir(&directory).await;
+                    }
+                    return Err(error);
                 }
-                return Err(backend(error));
             }
-        };
-        Ok(Box::new(ParquetDirectoryWriter::new(
-            directory, schema, writer, options,
-        )))
+        }
+        Ok(writers)
     }
 }
