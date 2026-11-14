@@ -13,7 +13,7 @@ needs memory proportional to the incoming batch and encoding buffers.
 Commit completes the file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
 
-`WriteOptions.cleanup` defaults to `true`: abort removes this session's file and
+`WriteOptions.cleanup_on_error` defaults to `true`: abort removes this session's file and
 attempts to remove its directory; failed open/commit also attempts cleanup. Set it
 to `false` to retain session-created output on abort or failure. Cleanup never
 recursively deletes other files. Drop leaves incomplete output and never commits.

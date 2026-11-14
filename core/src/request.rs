@@ -13,14 +13,14 @@ pub struct WriteOptions {
     pub ordering: Ordering,
     /// Best-effort removal of session-created output on abort or failed open/commit.
     /// Enabled by default. Drop never performs asynchronous cleanup.
-    pub cleanup: bool,
+    pub cleanup_on_error: bool,
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             ordering: Ordering::default(),
-            cleanup: true,
+            cleanup_on_error: true,
         }
     }
 }

@@ -51,7 +51,7 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
   Equality includes column order, types, nullability and metadata; casts are explicit.
 - `commit` completes buffered writes using the backend's documented visibility
   semantics. The common interface does not promise atomic publication.
-- `abort` follows `WriteOptions.cleanup` (enabled by default). Cleanup is best
+- `abort` follows `WriteOptions.cleanup_on_error` (enabled by default). Cleanup is best
   effort and cannot promise rollback of visible data.
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,

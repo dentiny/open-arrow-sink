@@ -13,7 +13,7 @@ pub(crate) struct ParquetDirectoryWriter {
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     rows_written: u64,
-    cleanup: bool,
+    cleanup_on_error: bool,
 }
 
 #[async_trait]
@@ -59,19 +59,19 @@ impl ParquetDirectoryWriter {
         directory: PathBuf,
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
-        cleanup: bool,
+        cleanup_on_error: bool,
     ) -> Self {
         Self {
             directory,
             schema,
             writer: Some(writer),
             rows_written: 0,
-            cleanup,
+            cleanup_on_error,
         }
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
-        if !self.cleanup {
+        if !self.cleanup_on_error {
             return Ok(());
         }
         let path = self.directory.join("part-00000.parquet");

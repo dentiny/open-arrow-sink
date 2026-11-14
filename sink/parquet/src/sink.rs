@@ -44,7 +44,7 @@ impl Sink for ParquetDirectorySink {
         {
             Ok(file) => file,
             Err(error) => {
-                if options.cleanup {
+                if options.cleanup_on_error {
                     let _ = fs::remove_dir(&directory).await;
                 }
                 return Err(backend(error));
@@ -53,7 +53,7 @@ impl Sink for ParquetDirectorySink {
         let writer = match AsyncArrowWriter::try_new(file, schema.clone(), None) {
             Ok(writer) => writer,
             Err(error) => {
-                if options.cleanup {
+                if options.cleanup_on_error {
                     let _ = fs::remove_file(&path).await;
                     let _ = fs::remove_dir(&directory).await;
                 }
@@ -64,7 +64,7 @@ impl Sink for ParquetDirectorySink {
             directory,
             schema,
             writer,
-            options.cleanup,
+            options.cleanup_on_error,
         )))
     }
 }
