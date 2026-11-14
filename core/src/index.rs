@@ -26,26 +26,12 @@ impl IndexSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IndexBuildState {
-    Pending,
-    Complete { index_id: String },
-    Failed { error: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct IndexBuildResult {
-    pub spec: IndexSpec,
-    pub state: IndexBuildState,
-}
-
-/// Construction details after data publication. Identifiers and optional
-/// version numbers use the backend's native interpretation.
+/// Construction details after data publication. Optional version numbers use
+/// the backend's native interpretation.
 #[derive(Debug, Clone)]
 pub struct IndexBuildReport {
     pub destination: String,
     pub rows_written: u64,
     pub data_version: Option<u64>,
     pub latest_version: Option<u64>,
-    pub indexes: Vec<IndexBuildResult>,
 }

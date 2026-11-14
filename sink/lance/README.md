@@ -99,9 +99,8 @@ sequentially and may publish additional versions. Names are deterministic and ex
 indexes are never replaced. If construction fails, the data and previously created
 indexes remain visible regardless of `cleanup_on_error`. `Error::Backend` contains
 an `IndexCommitError` with a shared `IndexBuildReport`: destination, row count,
-original data version, latest confirmed version, and each requested index's state.
-The complete state carries an opaque backend index ID; for Lance this is its UUID.
-The failed index and any remaining pending indexes are reported without retrying.
+original data version, and latest confirmed version. The error message identifies
+the index whose construction failed; construction stops at the first error.
 
 A runnable index construction example (destination must not exist):
 

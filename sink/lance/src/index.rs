@@ -8,9 +8,7 @@ use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
-use open_arrow_sink_core::{
-    IndexBuildReport, IndexBuildResult, IndexBuildState, IndexCommitError, IndexSpec, IndexType,
-};
+use open_arrow_sink_core::{IndexBuildReport, IndexCommitError, IndexSpec, IndexType};
 
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
@@ -22,47 +20,23 @@ pub(crate) async fn build_indexes(
         return Ok(());
     }
     let version = dataset.version_id();
-    let report = IndexBuildReport {
+    let mut report = IndexBuildReport {
         destination,
         rows_written,
         data_version: Some(version),
         latest_version: Some(version),
-        indexes: indexes
-            .into_iter()
-            .map(|spec| IndexBuildResult {
-                spec,
-                state: IndexBuildState::Pending,
-            })
-            .collect(),
     };
-    build(dataset, report).await.map(|_| ())
-}
-
-async fn build(
-    dataset: &mut Dataset,
-    mut report: IndexBuildReport,
-) -> std::result::Result<IndexBuildReport, IndexCommitError> {
-    for index in &mut report.indexes {
-        let result = create_index(dataset, &index.spec).await;
-        match result {
-            Ok(uuid) => {
-                index.state = IndexBuildState::Complete { index_id: uuid };
-                report.latest_version = Some(dataset.version_id());
-            }
-            Err(error) => {
-                let message = format!("{}: {error}", index_name(&index.spec));
-                index.state = IndexBuildState::Failed {
-                    error: error.to_string(),
-                };
-                // Retain the last confirmed version if publication is uncertain.
-                return Err(IndexCommitError { report, message });
-            }
+    for spec in &indexes {
+        if let Err(error) = create_index(dataset, spec).await {
+            let message = format!("{}: {error}", index_name(spec));
+            return Err(IndexCommitError { report, message });
         }
+        report.latest_version = Some(dataset.version_id());
     }
-    Ok(report)
+    Ok(())
 }
 
-async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<String> {
+async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<()> {
     let (lance_type, params): (_, Box<dyn IndexParams>) = match spec.index_type {
         IndexType::Scalar => (
             LanceIndexType::BTree,
@@ -90,7 +64,7 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
         ),
     };
     // Never replace an existing index.
-    let index = dataset
+    dataset
         .create_index(
             &[&spec.column],
             lance_type,
@@ -99,7 +73,7 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             false,
         )
         .await?;
-    Ok(index.uuid.to_string())
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

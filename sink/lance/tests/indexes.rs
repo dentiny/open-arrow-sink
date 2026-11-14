@@ -7,8 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_index::scalar::FullTextSearchQuery;
 use open_arrow_sink_core::{
-    Error, IndexBuildState, IndexCommitError, IndexSpec as Spec, IndexType as Kind, Ordering, Sink,
-    WriteOptions,
+    Error, IndexCommitError, IndexSpec as Spec, IndexType as Kind, Ordering, Sink, WriteOptions,
 };
 use open_arrow_sink_lance::LanceDatasetSink;
 
@@ -218,14 +217,6 @@ async fn index_failure_preserves_committed_data_and_successful_indexes() {
     assert_eq!(dataset.count_rows(None).await.unwrap(), 2);
     let indexes = dataset.load_indices().await.unwrap();
     assert_eq!(indexes.len(), 1);
-    assert!(matches!(
-        error.report.indexes[0].state,
-        IndexBuildState::Complete { .. }
-    ));
-    assert!(matches!(
-        error.report.indexes[1].state,
-        IndexBuildState::Failed { .. }
-    ));
     assert!(error.report.data_version.unwrap() < error.report.latest_version.unwrap());
 }
 
