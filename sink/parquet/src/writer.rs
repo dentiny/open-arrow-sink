@@ -12,8 +12,8 @@ pub(crate) struct ParquetDirectoryWriter {
     directory: PathBuf,
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
-    rows_written: u64,
     options: WriteOptions,
+    rows_written: u64,
     files_created: usize,
     file_rows: usize,
 }
@@ -80,8 +80,8 @@ impl ParquetDirectoryWriter {
             directory,
             schema,
             writer: Some(writer),
-            rows_written: 0,
             options,
+            rows_written: 0,
             files_created: 1,
             file_rows: 0,
         }
