@@ -1,10 +1,10 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use parquet::arrow::AsyncArrowWriter;
-use tokio::fs::{self, File};
+use tokio::fs::{self, File, OpenOptions};
 
 use crate::error::{backend, closed};
 
@@ -14,6 +14,9 @@ pub(crate) struct ParquetDirectoryWriter {
     writer: Option<AsyncArrowWriter<File>>,
     rows_written: u64,
     cleanup_on_error: bool,
+    target_file_size: Option<usize>,
+    files_created: usize,
+    file_rows: usize,
 }
 
 #[async_trait]
@@ -26,10 +29,28 @@ impl Writer for ParquetDirectoryWriter {
         // Taking ownership also makes a failed or cancelled write terminal.
         let mut writer = self.writer.take().ok_or_else(closed)?;
         validation::validate_batch(&self.schema, &batch)?;
+        if self.file_rows > 0
+            && batch.num_rows() > 0
+            && self
+                .target_file_size
+                .is_some_and(|size| writer.bytes_written() >= size)
+        {
+            writer.close().await.map_err(backend)?;
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.file_path(self.files_created))
+                .await
+                .map_err(backend)?;
+            self.files_created += 1;
+            writer = AsyncArrowWriter::try_new(file, self.schema.clone(), None).map_err(backend)?;
+            self.file_rows = 0;
+        }
         writer.write(&batch).await.map_err(backend)?;
         // Flush each batch rather than retaining the complete input in memory.
         writer.flush().await.map_err(backend)?;
         self.rows_written += batch.num_rows() as u64;
+        self.file_rows += batch.num_rows();
         self.writer = Some(writer);
         Ok(())
     }
@@ -59,26 +80,34 @@ impl ParquetDirectoryWriter {
         directory: PathBuf,
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
-        cleanup_on_error: bool,
+        options: WriteOptions,
     ) -> Self {
         Self {
             directory,
             schema,
             writer: Some(writer),
             rows_written: 0,
-            cleanup_on_error,
+            cleanup_on_error: options.cleanup_on_error,
+            target_file_size: options.target_file_size,
+            files_created: 1,
+            file_rows: 0,
         }
+    }
+
+    fn file_path(&self, index: usize) -> PathBuf {
+        self.directory.join(format!("part-{index:05}.parquet"))
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
         if !self.cleanup_on_error {
             return Ok(());
         }
-        let path = self.directory.join("part-00000.parquet");
-        match fs::remove_file(path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        for index in 0..self.files_created {
+            match fs::remove_file(self.file_path(index)).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
         // Never recursively delete a directory: other files may have been added.
         fs::remove_dir(&self.directory).await

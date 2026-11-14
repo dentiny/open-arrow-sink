@@ -1,4 +1,4 @@
-//! Create-only local directory sink: one uncompressed Parquet file per session.
+//! Create-only local directory sink with optional target-size Parquet file rolling.
 
 mod error;
 mod sink;
