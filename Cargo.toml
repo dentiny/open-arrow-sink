@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "layer"]
+members = ["core", "layer", "sink/parquet"]
 resolver = "2"
 
 [workspace.package]
@@ -24,6 +24,11 @@ license.workspace = true
 repository.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"
 
+[features]
+default = []
+sink-parquet = ["dep:open-arrow-sink-parquet"]
+
 [dependencies]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
+open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.0", optional = true }

@@ -3,9 +3,9 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-This initial foundation contains only shared contracts and an ordering layer.
-Parquet directory, Iceberg table and Lance dataset implementations will follow
-under `sink/` in separate changes.
+The library includes shared contracts, an ordering layer, and an optional
+[local Parquet directory sink](sink/parquet/README.md) (`sink-parquet` feature).
+Iceberg table and Lance dataset implementations will follow separately.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors

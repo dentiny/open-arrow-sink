@@ -1,0 +1,16 @@
+[package]
+name = "open-arrow-sink-parquet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal local Parquet directory sink"
+
+[dependencies]
+open-arrow-sink-core.workspace = true
+parquet = { version = "58.4", default-features = false, features = ["arrow", "async"] }
+tokio = { version = "1", features = ["fs", "io-util"] }
+
+[dev-dependencies]
+arrow-array.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
