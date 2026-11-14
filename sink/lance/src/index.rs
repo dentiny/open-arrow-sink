@@ -98,7 +98,7 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             lance_type,
             Some(index_name(spec)),
             params.as_ref(),
-            false,
+            /*replace=*/ false,
         )
         .await?;
     Ok(())
