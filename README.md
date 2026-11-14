@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, an ordering layer, and optional
+The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
 [Parquet](sink/parquet/README.md) and [Iceberg](sink/iceberg/README.md) sinks.
 Lance dataset support will follow separately.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer
+layer/      OrderingLayer, optional RebatchLayer
 src/        Public facade
 ```
 
@@ -40,6 +40,25 @@ let sink = backend.layer(OrderingLayer::new(Ordering::Unordered));
 The ordering layer overrides the session option and checks the inner capability
 before opening it. Install one ordering layer per sink. Layers wrap without I/O;
 the last installed layer is outermost.
+
+## Rebatching
+
+Enable the facade feature `layer-rebatch` to use `RebatchLayer`:
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use open_arrow_sink::{SinkExt, layer::RebatchLayer};
+
+let sink = backend.layer(RebatchLayer::new(NonZeroUsize::new(64_000).unwrap()));
+```
+
+The layer merges small batches and splits large batches while preserving row order.
+Each forwarded batch has the configured row count, except the final partial batch
+sent by `commit`. Empty batches are ignored after schema validation. `abort` drops
+pending rows and aborts the inner writer. No background tasks or concurrency are added.
+
+Pending slices contain at most the configured number of rows. Arrow slices may
+retain their input buffers, so this is a row bound, not a byte-memory limit.
 
 ## Implementing a sink
 

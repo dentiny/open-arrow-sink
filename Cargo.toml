@@ -31,6 +31,7 @@ description = "Composable, independent Arrow RecordBatch sinks"
 [features]
 default = []
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
+layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
 
 [dependencies]
