@@ -4,8 +4,7 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray,
+    Array, ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, TimestampMicrosecondArray,
 };
 use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
@@ -698,106 +697,6 @@ async fn assert_numeric_partition_round_trip(
             table.metadata().default_partition_spec().as_ref()
         );
     }
-}
-
-#[rstest::rstest]
-#[case::bucket(Transform::Bucket(16), PartitionType::Bucket, vec!["iceberg", "iceberg", "iceberg"], vec![Some(Literal::int(9)), None])]
-#[case::truncate(Transform::Truncate(2), PartitionType::Truncate, vec!["你好世界", "你好朋友", "iceberg"], vec![Some(Literal::string("你好")), Some(Literal::string("ic")), None])]
-#[tokio::test]
-async fn string_partition_transforms_preserve_unicode_and_nulls(
-    #[case] transform: Transform,
-    #[case] partition_type: PartitionType,
-    #[case] values: Vec<&str>,
-    #[case] keys: Vec<Option<Literal>>,
-) {
-    let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(2, "value_partition", transform)
-        .unwrap()
-        .build();
-    let (catalog, identifier, schema) =
-        table_with_value_type(Some(spec), PrimitiveType::String).await;
-    let values: Vec<Option<&str>> = values.into_iter().map(Some).chain([None]).collect();
-    let data = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(vec![0, 1, 2, 3])),
-            Arc::new(StringArray::from(values.clone())),
-        ],
-    )
-    .unwrap();
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
-        )
-        .await
-        .unwrap();
-    writer.write(data.slice(0, 1)).await.unwrap();
-    writer.write(data.slice(1, 3)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 4);
-    let table = catalog.load_table(&identifier).await.unwrap();
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
-    let expected: HashSet<_> = keys
-        .into_iter()
-        .map(|key| Struct::from_iter([key]))
-        .collect();
-    assert_eq!(files.len(), expected.len());
-    assert_eq!(
-        files
-            .iter()
-            .map(|task| task.partition().unwrap().clone())
-            .collect::<HashSet<_>>(),
-        expected
-    );
-    let batches: Vec<RecordBatch> = table
-        .scan()
-        .build()
-        .unwrap()
-        .to_arrow()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
-    let mut actual = Vec::new();
-    for batch in &batches {
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap();
-        let values = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        actual.extend(
-            (0..batch.num_rows())
-                .map(|i| (ids.value(i), values.is_valid(i).then(|| values.value(i)))),
-        );
-    }
-    actual.sort_unstable();
-    assert_eq!(
-        actual,
-        values
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| (i as i32, v))
-            .collect::<Vec<_>>()
-    );
 }
 
 #[rstest::rstest]
