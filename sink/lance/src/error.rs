@@ -28,3 +28,43 @@ pub(crate) fn invalid_path() -> Error {
         "Lance requires a UTF-8 path",
     ))
 }
+
+pub(crate) fn missing_index_column(column: &str) -> Error {
+    Error::Unsupported(format!("index column not found: {column}"))
+}
+
+pub(crate) fn unsupported_index(
+    index: &open_arrow_sink_core::IndexSpec,
+    data_type: &arrow_schema::DataType,
+) -> Error {
+    Error::Unsupported(format!(
+        "cannot create {:?} index on column {} with type {}",
+        index.index_type, index.column, data_type
+    ))
+}
+
+pub(crate) fn index_creation(
+    spec: &open_arrow_sink_core::IndexSpec,
+    error: impl std::fmt::Display,
+) -> open_arrow_sink_core::IndexCommitError {
+    open_arrow_sink_core::IndexCommitError {
+        message: format!(
+            "creating {:?} index on '{}': {error}",
+            spec.index_type, spec.column
+        ),
+    }
+}
+
+pub(crate) fn index_task(error: impl std::fmt::Display) -> open_arrow_sink_core::IndexCommitError {
+    open_arrow_sink_core::IndexCommitError {
+        message: format!("index construction task failed: {error}"),
+    }
+}
+
+pub(crate) fn index_refresh(
+    error: impl std::fmt::Display,
+) -> open_arrow_sink_core::IndexCommitError {
+    open_arrow_sink_core::IndexCommitError {
+        message: format!("refreshing dataset after index construction: {error}"),
+    }
+}

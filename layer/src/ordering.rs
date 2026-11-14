@@ -69,6 +69,7 @@ impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
             &options,
             SinkCapability {
                 ordering: Ordering::Unordered,
+                ..self.inner.capability()
             },
         )?;
         self.inner

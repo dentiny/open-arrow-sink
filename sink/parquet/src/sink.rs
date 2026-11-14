@@ -24,6 +24,8 @@ impl Sink for ParquetDirectorySink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            supported_partitions: vec![],
+            supported_indexes: &[],
         }
     }
 
@@ -77,7 +79,7 @@ impl ParallelSink for ParquetDirectorySink {
                     directory.clone(),
                     schema.clone(),
                     writer,
-                    options,
+                    options.clone(),
                     index,
                     count.get(),
                 ))),

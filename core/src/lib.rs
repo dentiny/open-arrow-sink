@@ -1,6 +1,7 @@
 //! Contracts shared by sinks and layers. Backend implementations own I/O and commits.
 mod capability;
 mod error;
+mod index;
 mod layer;
 mod request;
 mod result;
@@ -11,10 +12,11 @@ mod writer;
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;
 pub use async_trait::async_trait;
-pub use capability::SinkCapability;
-pub use error::{Error, Result};
+pub use capability::{PartitionType, SinkCapability};
+pub use error::{Error, IndexCommitError, Result};
+pub use index::{IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
-pub use request::{Ordering, WriteOptions};
+pub use request::{Ordering, PartitionOptions, WriteOptions};
 pub use result::WriteSummary;
 pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;

@@ -45,6 +45,7 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            ..self.inner.capability()
         }
     }
 

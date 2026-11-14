@@ -39,3 +39,9 @@ buffering, cancellation, partial commit, and layer composition semantics.
 ```sh
 cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parquet-directory
 ```
+
+## Index requests
+
+This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
+`WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
+or accessing the destination. The default empty list keeps existing behavior.

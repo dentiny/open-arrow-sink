@@ -41,6 +41,8 @@ impl Sink for TestSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::PreserveInput,
+            supported_partitions: vec![],
+            supported_indexes: &[],
         }
     }
     async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
