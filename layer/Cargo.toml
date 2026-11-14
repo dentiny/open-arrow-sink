@@ -10,7 +10,3 @@ description = "Composable layers for Arrow RecordBatch sinks"
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
-
-[dev-dependencies]
-arrow-array.workspace = true
-futures.workspace = true

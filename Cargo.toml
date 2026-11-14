@@ -13,7 +13,6 @@ arrow-array = "59"
 arrow-schema = "59"
 async-trait = "0.1"
 thiserror = "2"
-futures = "0.3"
 open-arrow-sink-core = { path = "core", version = "0.1.0" }
 open-arrow-sink-layer = { path = "layer", version = "0.1.0" }
 

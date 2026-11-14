@@ -55,7 +55,6 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,
 write modes, schema evolution or transaction framework is included in this change.
-The integration test in `layer/tests/ordering.rs` shows a minimal custom backend.
 
 ## Development
 
