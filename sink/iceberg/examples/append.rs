@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             schema,
             WriteOptions {
                 ordering: Ordering::Unordered,
+                ..WriteOptions::default()
             },
         )
         .await?;
