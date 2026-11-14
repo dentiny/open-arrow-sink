@@ -1,4 +1,4 @@
 # Sinks
 
-Future backend crates: Parquet directory, Iceberg table and Lance dataset.
-This foundation PR intentionally includes no backend implementations.
+- [Parquet directory](parquet/README.md): create-only local directory, one file per session.
+- Iceberg table and Lance dataset: planned separately.
