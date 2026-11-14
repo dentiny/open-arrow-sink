@@ -1,5 +1,5 @@
 //! Lance-specific indexes built after the data commit.
-use std::{fmt, path::PathBuf};
+use std::path::PathBuf;
 
 use lance::{
     Dataset,
@@ -15,7 +15,11 @@ use open_arrow_sink_core::{
     Writer, async_trait, validation,
 };
 
-use crate::{LanceDatasetSink, error::backend, validation::validate_indexes};
+use crate::{
+    LanceDatasetSink,
+    error::{IndexCommitError, backend},
+    validation::validate_indexes,
+};
 
 /// One index per column. Vector indexes use IVF_FLAT with L2 distance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,26 +183,6 @@ pub struct IndexBuildReport {
     pub latest_version: Option<u64>,
     pub indexes: Vec<IndexBuildResult>,
 }
-
-/// Returned inside `open_arrow_sink_core::Error::Backend`; downcast to inspect.
-#[derive(Debug)]
-pub struct IndexCommitError {
-    pub report: IndexBuildReport,
-    pub message: String,
-}
-
-impl fmt::Display for IndexCommitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "data committed at {:?}; indexing {} failed: {}",
-            self.report.data_version,
-            self.report.path.display(),
-            self.message
-        )
-    }
-}
-impl std::error::Error for IndexCommitError {}
 
 async fn build(
     dataset: &mut Dataset,
