@@ -59,7 +59,6 @@ pub(crate) struct LanceWriter {
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
     failed: bool,
-    cleanup_on_error: bool,
 }
 
 #[async_trait]
@@ -104,11 +103,7 @@ impl Writer for LanceWriter {
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
-        if self.cleanup_on_error {
-            tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
-        } else {
-            Ok(())
-        }
+        tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
     }
 }
 
@@ -118,7 +113,6 @@ impl LanceWriter {
         path: PathBuf,
         uri: String,
         target_file_size: Option<usize>,
-        cleanup_on_error: bool,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -139,7 +133,6 @@ impl LanceWriter {
             task,
             rows: 0,
             failed: false,
-            cleanup_on_error,
         }
     }
 }

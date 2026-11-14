@@ -10,7 +10,6 @@ description = "Minimal local Lance dataset sink"
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
-arrow-select = "58.4"
 lance-index = { version = "=14.0.1", default-features = false }
 lance-linalg = { version = "=14.0.1", default-features = false }
 lance = { version = "=14.0.1", default-features = false }

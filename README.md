@@ -81,14 +81,12 @@ rejected before opening a destination. Backend-specific rolling is implemented
 separately; see each sink's README for support and granularity. Other backend
 limits may also cause rolling before the target is reached.
 
-## Lance partitions and indexes
+## Lance indexes
 
-The Lance sink provides `LanceIndexLayer` and `LancePartitionLayer`. Indexes are
-validated before writing and built after each dataset's data commit. Partitioned
-writes route rows into separate local Lance datasets, with explicit partition and
-batch limits. Both layers preserve the existing create-only, unordered contract.
-See the [Lance documentation](sink/lance/README.md) for composition, recovery reports,
-and index-only retries.
+The Lance sink provides `LanceIndexLayer` for Scalar, Vector, Text, and BloomFilter
+indexes. Configuration is validated before writing, and indexes are built after
+the dataset's data commit. See the [Lance documentation](sink/lance/README.md) for
+configuration, failure reports, and index-only retries.
 
 ## Implementing a sink
 

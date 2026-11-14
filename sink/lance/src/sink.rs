@@ -48,7 +48,6 @@ impl Sink for LanceDatasetSink {
             path,
             uri,
             options.target_file_size,
-            options.cleanup_on_error,
         )))
     }
 }

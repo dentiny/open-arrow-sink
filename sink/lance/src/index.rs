@@ -49,11 +49,11 @@ impl LanceIndexSpec {
             LanceIndexKind::Text => "text",
             LanceIndexKind::BloomFilter => "bloom",
         };
-        format!("oas_{kind}_{}", crate::hex(self.column.as_bytes()))
+        format!("oas_{kind}_{}", hex(self.column.as_bytes()))
     }
 }
 
-/// Install before `LancePartitionLayer` to build indexes in each partition.
+/// Build requested indexes after the dataset's data commit.
 #[derive(Debug, Clone)]
 pub struct LanceIndexLayer {
     indexes: Vec<LanceIndexSpec>,
@@ -78,13 +78,6 @@ impl Layer<LanceDatasetSink> for LanceIndexLayer {
             inner,
             indexes: self.indexes.clone(),
         }
-    }
-}
-
-impl crate::private::Sealed for IndexedLanceSink {}
-impl crate::LanceSink for IndexedLanceSink {
-    fn validate_schema(&self, schema: &Schema) -> Result<()> {
-        validate_indexes(schema, &self.indexes)
     }
 }
 
@@ -404,4 +397,13 @@ fn validate_indexes(schema: &Schema, indexes: &[LanceIndexSpec]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").unwrap();
+    }
+    encoded
 }
