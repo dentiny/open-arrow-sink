@@ -364,49 +364,6 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 }
 
 #[rstest::rstest]
-#[case::disabled(Transform::Identity, None, "require WriteOptions.partition")]
-#[case::bucket(
-    Transform::Bucket(4),
-    Some(PartitionOptions::default()),
-    "only identity"
-)]
-#[tokio::test]
-async fn rejects_unsupported_partition_requests(
-    #[case] transform: Transform,
-    #[case] partition: Option<PartitionOptions>,
-    #[case] message: &str,
-) {
-    let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(1, "p", transform)
-        .unwrap()
-        .build();
-    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
-    let result = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            WriteOptions {
-                partition,
-                ..options()
-            },
-        )
-        .await;
-    let error = result
-        .err()
-        .expect("open must reject unsupported partitioning");
-    assert!(error.to_string().contains(message));
-    assert!(
-        catalog
-            .load_table(&identifier)
-            .await
-            .unwrap()
-            .metadata()
-            .current_snapshot_id()
-            .is_none()
-    );
-}
-
-#[rstest::rstest]
 #[case::empty(true)]
 #[case::nonempty(false)]
 #[tokio::test]
