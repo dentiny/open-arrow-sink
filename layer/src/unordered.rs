@@ -6,7 +6,7 @@ use open_arrow_sink_core::{
     WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::error::failed;
+use crate::error::unsupported;
 
 /// Pre-open independent writers and dispatch batches to available writers.
 /// At most one batch per writer is in flight. Work progresses while write or
@@ -117,7 +117,7 @@ impl Writer for UnorderedWriter {
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         if self.failed {
-            return Err(failed());
+            return Err(unsupported());
         }
         // Cancellation and every error make the session terminal.
         self.failed = true;
@@ -150,7 +150,7 @@ impl Writer for UnorderedWriter {
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
         if self.failed {
             let _ = self.cleanup().await;
-            return Err(failed());
+            return Err(unsupported());
         }
         if let Err(error) = self.drain().await {
             let _ = self.cleanup().await;
