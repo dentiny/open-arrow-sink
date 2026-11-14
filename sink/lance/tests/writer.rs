@@ -70,7 +70,7 @@ async fn empty_commit_produces_readable_dataset() {
 async fn abort_removes_dataset_and_preserves_sibling_files() {
     let temp = tempfile::tempdir().unwrap();
     let sibling = temp.path().join("keep.txt");
-    std::fs::write(&sibling, "keep").unwrap();
+    tokio::fs::write(&sibling, "keep").await.unwrap();
     let path = temp.path().join("dataset");
     let batch = batch();
     let mut writer = LanceDatasetSink
@@ -79,8 +79,8 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!path.exists());
-    assert_eq!(std::fs::read_to_string(sibling).unwrap(), "keep");
+    assert!(!tokio::fs::try_exists(&path).await.unwrap());
+    assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
 #[tokio::test]
@@ -101,5 +101,5 @@ async fn schema_error_is_terminal_and_abort_cleans_up() {
     ));
     assert!(writer.write(batch).await.is_err());
     writer.abort().await.unwrap();
-    assert!(!path.exists());
+    assert!(!tokio::fs::try_exists(&path).await.unwrap());
 }
