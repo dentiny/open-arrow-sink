@@ -9,6 +9,7 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
+more-asserts = "0.3"
 rstest = { version = "0.26", default-features = false }
 tempfile = "3"
 arrow-array = "58.4"
