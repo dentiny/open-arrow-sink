@@ -43,6 +43,11 @@ impl Sink for LanceDatasetSink {
             })?
             .to_owned();
         tokio::fs::create_dir(&path).await.map_err(backend)?;
-        Ok(Box::new(LanceWriter::new(schema, path, uri)))
+        Ok(Box::new(LanceWriter::new(
+            schema,
+            path,
+            uri,
+            options.target_file_size,
+        )))
     }
 }
