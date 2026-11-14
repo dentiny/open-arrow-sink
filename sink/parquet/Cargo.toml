@@ -12,5 +12,6 @@ parquet = { version = "58.4", default-features = false, features = ["arrow", "as
 tokio = { version = "1", features = ["fs", "io-util"] }
 
 [dev-dependencies]
+futures = { version = "0.3", default-features = false, features = ["std"] }
 arrow-array.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

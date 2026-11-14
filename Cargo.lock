@@ -471,6 +471,7 @@ name = "open-arrow-sink-parquet"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "futures",
  "open-arrow-sink-core",
  "parquet",
  "tokio",

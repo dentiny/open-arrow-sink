@@ -1,9 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
 use open_arrow_sink_parquet::ParquetDirectorySink;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,12 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     writer.write(batch.clone()).await?;
     let summary = writer.commit().await?;
-    let mut reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(
-        directory.join("part-00000.parquet"),
-    )?)?
-    .build()?;
-    assert_eq!(reader.next().transpose()?.as_ref(), Some(&batch));
-    assert!(reader.next().is_none());
+    let file = tokio::fs::File::open(directory.join("part-00000.parquet")).await?;
+    let mut reader = ParquetRecordBatchStreamBuilder::new(file).await?.build()?;
+    assert_eq!(reader.try_next().await?.as_ref(), Some(&batch));
+    assert!(reader.try_next().await?.is_none());
     println!("Wrote and read back {} rows", summary.rows_written);
     Ok(())
 }
