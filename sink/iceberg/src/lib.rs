@@ -1,6 +1,7 @@
-//! Append batches to an existing, unpartitioned Iceberg table.
+//! Append batches to an existing Iceberg table.
 
 mod error;
+mod partition;
 mod sink;
 mod validation;
 mod writer;

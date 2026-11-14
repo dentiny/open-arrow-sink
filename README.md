@@ -23,7 +23,7 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput }`
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[] }`
 or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
@@ -103,6 +103,23 @@ non-string selected columns are rejected before the inner sink opens. Source fie
 longer describes the converted binary column. Only explicit top-level columns and
 HTTP(S) URLs are supported in this version.
 
+## Partitioning
+
+`WriteOptions.partition: Some(PartitionOptions::default())` enables routing using
+an existing destination's partition spec. `None` disables routing (the default).
+Only the Iceberg sink currently supports this option, for `Identity`, `Year`,
+`Month`, `Day`, `Hour`, `Bucket`, `Truncate`, and `Void` transforms; Parquet and
+Lance reject it before creating output. Backends declare supported transform categories
+through `SinkCapability.supported_partitions`; an empty list means partitioning
+is unsupported.
+The requested `PartitionOptions.partition_type` (default `Identity`) must be
+in that list and match every partition field in the destination spec. No
+partition layer is required. Bucket counts and truncate widths come from the
+destination spec. All-void specs write a single logical partition with null keys.
+
+The Iceberg adapter uses the SDK's fanout writer behavior. See the
+[Iceberg sink](sink/iceberg/README.md) for configuration and commit semantics.
+
 ## File size
 
 The shared `WriteOptions.target_file_size` option specifies a positive byte count:
@@ -124,11 +141,43 @@ rejected before opening a destination. Backend-specific rolling is implemented
 separately; see each sink's README for support and granularity. Other backend
 limits may also cause rolling before the target is reached.
 
+## Index construction
+
+Index requests are backend-independent `IndexSpec` and `IndexType` values in
+`WriteOptions.indexes`. The request list is empty by default.
+`SinkCapability.supported_indexes` lists the supported `IndexType` values. Each
+requested type must appear in that list. Lance supports Scalar, Vector, Text,
+and BloomFilter; Parquet and Iceberg expose empty lists and reject index requests
+before opening a writer or accessing the destination.
+General layers forward this capability and the options to their inner sink.
+
+```rust
+use open_arrow_sink::{IndexType, IndexSpec, Ordering, WriteOptions};
+
+let options = WriteOptions {
+    ordering: Ordering::Unordered,
+    indexes: vec![
+        IndexSpec::new("id", IndexType::Scalar),
+        IndexSpec::new("embedding", IndexType::Vector),
+    ],
+    ..WriteOptions::default()
+};
+```
+
+Backends choose the concrete implementation of each logical index type and validate
+column types before writing. Lance maps the four kinds to BTree, IVF_FLAT with L2,
+Inverted, and BloomFilter, then constructs them after committing the dataset's data.
+See the [Lance documentation](sink/lance/README.md) for construction failure semantics.
+`WriteOptions` owns its index list and implements `Clone`; clone options when
+reusing them across sessions.
+
 ## Implementing a sink
 
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
-- `open` calls `validation::validate_options` before side effects, then checks
+- `open` calls `validation::validate_options` before side effects, including the
+  index capability check. Index-capable backends call `validation::validate_indexes`
+  and check their supported column types before destination I/O, then check
   backend-specific destination constraints.
 - `write` calls `validation::validate_batch` against the fixed session schema.
   Equality includes column order, types, nullability and metadata; casts are explicit.
@@ -142,8 +191,17 @@ write modes, schema evolution or transaction framework is included in this chang
 
 ## Development
 
+Run the checks below locally to lint Rust code and Cargo manifests. Install Taplo with
+`cargo install taplo-cli --version 0.10.0 --locked`. Clippy also requires `protoc`
+for the Lance dependencies (`protobuf-compiler` on Ubuntu).
+
 ```sh
 cargo fmt --all --check
+taplo fmt --check
+taplo lint --no-schema
+cargo metadata --no-deps --locked --format-version 1 > /dev/null
 cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
+
+Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.

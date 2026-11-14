@@ -219,7 +219,8 @@ async fn marked_binary_uses_native_blob_v2_and_round_trips_null_empty_and_payloa
 async fn downloaded_url_is_stored_as_native_lance_blob() {
     use arrow_array::{LargeBinaryArray, StringArray};
     use lance::datatypes::BlobHandling;
-    use open_arrow_sink_core::SinkExt;
+    use lance::index::DatasetIndexExt;
+    use open_arrow_sink_core::{IndexSpec, IndexType, SinkExt};
     use open_arrow_sink_layer::DownloadBlobLayer;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -235,10 +236,13 @@ async fn downloaded_url_is_stored_as_native_lance_blob() {
             .await
             .unwrap();
     });
-    let batch = RecordBatch::try_from_iter([(
-        "image",
-        Arc::new(StringArray::from(vec![Some(url), None])) as ArrayRef,
-    )])
+    let batch = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+        (
+            "image",
+            Arc::new(StringArray::from(vec![Some(url), None])) as ArrayRef,
+        ),
+    ])
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("download.lance");
@@ -246,16 +250,29 @@ async fn downloaded_url_is_stored_as_native_lance_blob() {
         .layer(DownloadBlobLayer::new(
             ["image"].map(str::to_owned).into_iter().collect(),
         ))
-        .open(path.clone(), batch.schema(), options())
+        .open(
+            path.clone(),
+            batch.schema(),
+            WriteOptions {
+                indexes: vec![IndexSpec::new("id", IndexType::Scalar)],
+                ..options()
+            },
+        )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 2);
     server.await.unwrap();
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let indexes = dataset.load_indices().await.unwrap();
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(
+        indexes[0].fields,
+        vec![dataset.schema().field("id").unwrap().id]
+    );
     let native_schema = arrow_schema::Schema::from(dataset.schema());
     assert_eq!(
-        native_schema.field(0).metadata()["ARROW:extension:name"],
+        native_schema.field_with_name("image").unwrap().metadata()["ARROW:extension:name"],
         "lance.blob.v2"
     );
     let actual = dataset
@@ -265,7 +282,8 @@ async fn downloaded_url_is_stored_as_native_lance_blob() {
         .await
         .unwrap();
     let values = actual
-        .column(0)
+        .column_by_name("image")
+        .unwrap()
         .as_any()
         .downcast_ref::<LargeBinaryArray>()
         .unwrap();

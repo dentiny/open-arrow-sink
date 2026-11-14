@@ -9,3 +9,11 @@ pub enum Error {
     #[error("backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
+
+/// Index construction failed after data was committed.
+/// Returned inside `Error::Backend`; downcast to inspect the error context.
+#[derive(Debug, thiserror::Error)]
+#[error("data committed; index construction failed: {message}")]
+pub struct IndexCommitError {
+    pub message: String,
+}

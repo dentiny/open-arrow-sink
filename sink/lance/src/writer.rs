@@ -4,11 +4,11 @@ use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
 use lance::{Dataset, dataset::WriteParams};
 use open_arrow_sink_core::{
-    RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    IndexSpec, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::error::backend;
+use crate::{error::backend, index::build_indexes};
 
 enum Message {
     Batch(RecordBatch),
@@ -60,6 +60,7 @@ pub(crate) struct LanceWriter {
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
     failed: bool,
+    indexes: Vec<IndexSpec>,
 }
 
 #[async_trait]
@@ -95,7 +96,10 @@ impl Writer for LanceWriter {
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        self.task.await.map_err(backend)?.map_err(backend)?;
+        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        build_indexes(&mut dataset, &self.indexes)
+            .await
+            .map_err(backend)?;
         Ok(WriteSummary {
             rows_written: self.rows,
         })
@@ -116,6 +120,7 @@ impl LanceWriter {
         path: PathBuf,
         uri: String,
         target_file_size: Option<usize>,
+        indexes: Vec<IndexSpec>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -137,6 +142,7 @@ impl LanceWriter {
             task,
             rows: 0,
             failed: false,
+            indexes,
         }
     }
 }

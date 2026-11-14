@@ -40,6 +40,8 @@ impl Sink for Capture {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::PreserveInput,
+            supported_partitions: vec![],
+            supported_indexes: &[],
         }
     }
     async fn open(
