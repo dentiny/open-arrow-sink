@@ -3860,6 +3860,7 @@ dependencies = [
  "arrow-schema",
  "lance",
  "open-arrow-sink-core",
+ "tempfile",
  "tokio",
 ]
 
