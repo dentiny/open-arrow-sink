@@ -58,16 +58,6 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
             .inner
             .open_writers(request, schema.clone(), options, self.writers)
             .await?;
-        if writers.len() != self.writers.get()
-            || writers.iter().any(|writer| writer.schema() != &schema)
-        {
-            for writer in writers {
-                let _ = writer.abort().await;
-            }
-            return Err(Error::Unsupported(
-                "parallel sink returned an invalid writer set".into(),
-            ));
-        }
         Ok(Box::new(UnorderedWriter {
             schema,
             idle: writers,
