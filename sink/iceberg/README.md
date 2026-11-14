@@ -17,6 +17,10 @@ scans do not provide an input-row-order guarantee.
 Only file metadata accumulates until commit; rows are not collected in memory.
 An empty session leaves the table unchanged.
 
+`WriteOptions.target_file_size` sets the SDK rolling writer's target in bytes.
+`None` keeps the SDK default. This is a soft target checked between batches;
+row-group buffering and file footers may make actual files larger.
+
 `abort` drops the file writer and attempts to delete only that session's unique
 data prefix. Drop and failed/cancelled commits can leave orphan files. Commit
 errors may have an unknown publication outcome: reload/reconcile the table before
