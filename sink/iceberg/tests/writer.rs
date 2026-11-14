@@ -1,16 +1,27 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use arrow_array::{Array, Int32Array, Int64Array, RecordBatch};
 use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
-use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+use iceberg::spec::{
+    Literal, NestedField, PrimitiveType, Schema, Struct, Transform, Type, UnboundPartitionSpec,
+};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
-use open_arrow_sink_core::{Ordering, SchemaRef, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, PartitionOptions, SchemaRef, Sink, WriteOptions};
 use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
 
 type Row = (Option<i32>, Option<i64>);
 
 async fn table() -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
+    table_with_spec(None).await
+}
+
+async fn table_with_spec(
+    spec: Option<UnboundPartitionSpec>,
+) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
     let catalog: Arc<dyn Catalog> = Arc::new(
         MemoryCatalogBuilder::default()
             .load(
@@ -49,6 +60,7 @@ async fn table() -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
             TableCreation::builder()
                 .name("numbers".into())
                 .schema(schema)
+                .partition_spec_opt(spec)
                 .build(),
         )
         .await
@@ -228,4 +240,173 @@ async fn target_file_size_rolls_files_without_losing_rows(
     let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(3);
     expected.sort_unstable();
     assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+}
+
+fn identity_spec(composite: bool) -> UnboundPartitionSpec {
+    let builder = UnboundPartitionSpec::builder()
+        .add_partition_field(1, "id_partition", Transform::Identity)
+        .unwrap();
+    if composite {
+        builder
+            .add_partition_field(2, "value_partition", Transform::Identity)
+            .unwrap()
+            .build()
+    } else {
+        builder.build()
+    }
+}
+
+fn partition_options() -> WriteOptions {
+    WriteOptions {
+        partition: Some(PartitionOptions::default()),
+        ..options()
+    }
+}
+
+#[rstest::rstest]
+#[case::single(false)]
+#[case::composite(true)]
+#[tokio::test]
+async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: bool) {
+    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(composite))).await;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![
+                Some(1),
+                Some(2),
+                Some(1),
+                None,
+                Some(1),
+                Some(1),
+            ])),
+            Arc::new(Int64Array::from(vec![
+                Some(10),
+                Some(20),
+                Some(11),
+                Some(30),
+                None,
+                Some(10),
+            ])),
+        ],
+    )
+    .unwrap();
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(identifier.clone(), schema, partition_options())
+        .await
+        .unwrap();
+    writer.write(batch.slice(0, 0)).await.unwrap();
+    writer.write(batch.slice(0, 4)).await.unwrap();
+    writer.write(batch.slice(4, 2)).await.unwrap();
+    assert!(
+        catalog
+            .load_table(&identifier)
+            .await
+            .unwrap()
+            .metadata()
+            .current_snapshot_id()
+            .is_none()
+    );
+    assert_eq!(writer.commit().await.unwrap().rows_written, 6);
+    assert_eq!(
+        rows(catalog.as_ref(), &identifier).await,
+        vec![
+            (None, Some(30)),
+            (Some(1), None),
+            (Some(1), Some(10)),
+            (Some(1), Some(10)),
+            (Some(1), Some(11)),
+            (Some(2), Some(20)),
+        ]
+    );
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let expected: HashSet<Struct> = if composite {
+        [
+            (Some(1), Some(10)),
+            (Some(2), Some(20)),
+            (Some(1), Some(11)),
+            (None, Some(30)),
+            (Some(1), None),
+        ]
+        .into_iter()
+        .map(|(id, value)| Struct::from_iter([id.map(Literal::int), value.map(Literal::long)]))
+        .collect()
+    } else {
+        [Some(1), Some(2), None]
+            .into_iter()
+            .map(|id| Struct::from_iter([id.map(Literal::int)]))
+            .collect()
+    };
+    assert_eq!(files.len(), expected.len());
+    assert_eq!(
+        files
+            .iter()
+            .map(|task| task.partition().unwrap().clone())
+            .collect::<HashSet<_>>(),
+        expected
+    );
+    for task in files {
+        assert_eq!(
+            task.partition_spec().unwrap().as_ref(),
+            table.metadata().default_partition_spec().as_ref()
+        );
+    }
+}
+
+#[rstest::rstest]
+#[case::empty(true)]
+#[case::rolling(false)]
+#[tokio::test]
+async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
+    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
+    let data = batch(schema.clone());
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                target_file_size: Some(1),
+                ..partition_options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(data.slice(0, 0)).await.unwrap();
+    if !empty {
+        writer.write(data.clone()).await.unwrap();
+        writer.write(data).await.unwrap();
+    }
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        if empty { 0 } else { 6 }
+    );
+    let table = catalog.load_table(&identifier).await.unwrap();
+    if empty {
+        assert!(table.metadata().current_snapshot_id().is_none());
+    } else {
+        let files: Vec<_> = table
+            .scan()
+            .build()
+            .unwrap()
+            .plan_files()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 6);
+        let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(2);
+        expected.sort_unstable();
+        assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+    }
 }

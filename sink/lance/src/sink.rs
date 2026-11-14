@@ -19,6 +19,7 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            supported_partitions: vec![],
             supported_indexes: &[
                 IndexType::Scalar,
                 IndexType::Vector,

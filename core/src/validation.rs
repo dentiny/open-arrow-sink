@@ -6,6 +6,16 @@ use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
+    if let Some(partition) = options.partition
+        && !capability
+            .supported_partitions
+            .contains(&partition.partition_type)
+    {
+        return Err(Error::Unsupported(format!(
+            "partitioned writes with {:?}",
+            partition.partition_type
+        )));
+    }
     for index in &options.indexes {
         if !capability.supported_indexes.contains(&index.index_type) {
             return Err(Error::Unsupported(format!(
