@@ -79,7 +79,7 @@ async fn empty_commit_produces_readable_parquet() {
 async fn abort_removes_output_and_preserves_sibling_files() {
     let temp = tempfile::tempdir().unwrap();
     let sibling = temp.path().join("keep.txt");
-    std::fs::write(&sibling, "keep").unwrap();
+    tokio::fs::write(&sibling, "keep").await.unwrap();
     let directory = temp.path().join("output");
     let batch = batch();
     let mut writer = ParquetDirectorySink
@@ -88,8 +88,8 @@ async fn abort_removes_output_and_preserves_sibling_files() {
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!directory.exists());
-    assert_eq!(std::fs::read_to_string(sibling).unwrap(), "keep");
+    assert!(!tokio::fs::try_exists(&directory).await.unwrap());
+    assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
 #[tokio::test]
@@ -108,5 +108,5 @@ async fn schema_error_prevents_commit_and_cleans_up() {
         Err(Error::SchemaMismatch)
     ));
     assert!(writer.commit().await.is_err());
-    assert!(!directory.exists());
+    assert!(!tokio::fs::try_exists(&directory).await.unwrap());
 }
