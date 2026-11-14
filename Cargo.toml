@@ -30,6 +30,7 @@ description = "Composable, independent Arrow RecordBatch sinks"
 
 [features]
 default = []
+layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
 
 [dependencies]

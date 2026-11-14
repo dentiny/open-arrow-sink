@@ -462,6 +462,7 @@ name = "open-arrow-sink-layer"
 version = "0.1.0"
 dependencies = [
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "open-arrow-sink-core",
 ]
