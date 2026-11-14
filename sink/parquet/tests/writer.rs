@@ -160,3 +160,22 @@ async fn target_file_size_rolls_files_without_losing_rows(
     }
     assert_eq!(offset, 9);
 }
+
+#[tokio::test]
+async fn partition_option_is_rejected_before_creating_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("partitioned");
+    let result = ParquetDirectorySink
+        .open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                partition: Some(open_arrow_sink_core::PartitionOptions::default()),
+                ..options()
+            },
+        )
+        .await;
+    let error = result.err().expect("partitioning is unsupported");
+    assert!(error.to_string().contains("partitioned writes"));
+    assert!(!path.exists());
+}

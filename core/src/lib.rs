@@ -14,7 +14,7 @@ pub use async_trait::async_trait;
 pub use capability::SinkCapability;
 pub use error::{Error, Result};
 pub use layer::{Layer, SinkExt};
-pub use request::{Ordering, WriteOptions};
+pub use request::{Ordering, PartitionOptions, WriteOptions};
 pub use result::WriteSummary;
 pub use sink::Sink;
 pub use writer::Writer;

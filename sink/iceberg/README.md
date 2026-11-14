@@ -1,13 +1,14 @@
 # Iceberg table sink
 
-Append Arrow batches to an existing **unpartitioned** table using the Apache
+Append Arrow batches to an existing table using the Apache
 Iceberg Rust SDK. Enable facade feature `sink-iceberg`, or depend directly on
 `open-arrow-sink-iceberg`. The SDK is re-exported so callers can configure their
 own catalog and use its `TableIdent` as the request.
 
 `open` loads the table, checks that the session schema exactly matches
 `iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())`, and
-rejects partitioned or read-only tables. This includes Iceberg field-ID metadata
+rejects read-only tables. Partitioned tables require `WriteOptions.partition` and
+currently support only identity transforms. This includes Iceberg field-ID metadata
 on Arrow fields; derive the input schema with the SDK helper above rather than
 constructing metadata-free fields. Use `Ordering::Unordered`: Iceberg table
 scans do not provide an input-row-order guarantee.
@@ -16,6 +17,39 @@ scans do not provide an input-row-order guarantee.
 `commit` closes the files and publishes them with a native fast-append transaction.
 Only file metadata accumulates until commit; rows are not collected in memory.
 An empty session leaves the table unchanged.
+
+Enable identity partition routing with the shared write option:
+
+```rust
+use std::num::NonZeroUsize;
+use open_arrow_sink_core::{Ordering, PartitionOptions, WriteOptions};
+
+let options = WriteOptions {
+    ordering: Ordering::Unordered,
+    partition: Some(PartitionOptions {
+        max_open_writers: NonZeroUsize::new(128).unwrap(),
+    }),
+    ..WriteOptions::default()
+};
+```
+
+The table's default partition spec and current schema are fixed when the session
+opens. Do not repeat column names or transforms in the option. One or multiple
+identity fields and null partition values are supported. Other transforms are
+rejected at open. With partitioning disabled, partitioned tables remain rejected;
+enabling it on an unpartitioned table keeps the unpartitioned writer path.
+
+An internal adapter delegates partition calculation/batch splitting to the SDK's
+`RecordBatchPartitionSplitter` and routing to its `FanoutWriter`. Input can mix
+partitions in any order. Writers stay open until commit/abort, bounded by
+`max_open_writers` (default 128); exceeding this limit fails the session, with no
+eviction or automatic retry. This count is not a byte-memory limit. Splitting
+uses temporary memory proportional to the input batch; each active writer has
+its own Parquet buffers. File metadata also accumulates until commit.
+
+All partition writers close before a single fast-append transaction publishes
+the files. No partition is committed independently. Empty batches create no
+partition writers, and an empty session does not publish a snapshot.
 
 `WriteOptions.target_file_size` sets the SDK rolling writer's target in bytes.
 `None` keeps the SDK default. This is a soft target checked between batches;
@@ -27,7 +61,7 @@ errors may have an unknown publication outcome: reload/reconcile the table befor
 retrying; files are deliberately retained on failure to avoid deleting committed
 data. SDK catalog commit behavior (including its retry policy) applies.
 
-This first version has no table creation, partition routing, schema evolution,
+This first version has no table creation, non-identity partition transforms, schema evolution,
 overwrite, upsert, sorting or concurrency settings.
 
 ```sh

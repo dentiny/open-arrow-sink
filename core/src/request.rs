@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 /// Input-order policy or guarantee; this does not sort rows by column values.
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -8,9 +10,28 @@ pub enum Ordering {
     Unordered,
 }
 
+/// Enable partition routing using the destination's partition specification.
+/// Currently supported only by the Iceberg sink, for identity transforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionOptions {
+    /// Maximum distinct partitions held open in a session. Exceeding this limit
+    /// fails the write; writers are not evicted. This is not a byte-memory limit.
+    pub max_open_writers: NonZeroUsize,
+}
+
+impl Default for PartitionOptions {
+    fn default() -> Self {
+        Self {
+            max_open_writers: NonZeroUsize::new(128).unwrap(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WriteOptions {
     pub ordering: Ordering,
+    /// None disables partition routing; Some uses the destination partition spec.
+    pub partition: Option<PartitionOptions>,
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
@@ -23,6 +44,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             ordering: Ordering::default(),
+            partition: None,
             target_file_size: None,
             cleanup_on_error: true,
         }
