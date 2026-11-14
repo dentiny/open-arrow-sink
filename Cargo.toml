@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "layer"]
+members = ["core", "layer", "sink/lance"]
 resolver = "2"
 
 [workspace.package]
@@ -27,3 +27,12 @@ description = "Composable, independent Arrow RecordBatch sinks"
 [dependencies]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
+
+[features]
+default = []
+sink-lance = ["dep:open-arrow-sink-lance"]
+
+[dependencies.open-arrow-sink-lance]
+path = "sink/lance"
+version = "0.1.0"
+optional = true

@@ -1,4 +1,4 @@
 # Sinks
 
-Future backend crates: Parquet directory, Iceberg table and Lance dataset.
-This foundation PR intentionally includes no backend implementations.
+- [Lance dataset](lance/README.md): create-only local datasets.
+- Parquet directory and Iceberg table backends will follow in separate changes.
