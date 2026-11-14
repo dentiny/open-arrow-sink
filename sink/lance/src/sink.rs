@@ -29,6 +29,7 @@ impl Sink for LanceDatasetSink {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         validation::validate_options(&options, self.capability())?;
+        let storage_schema = crate::blob::storage_schema(&schema)?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.
         // TODO: Use OpenDAL to support remote storage beyond local paths.
@@ -45,6 +46,7 @@ impl Sink for LanceDatasetSink {
         tokio::fs::create_dir(&path).await.map_err(backend)?;
         Ok(Box::new(LanceWriter::new(
             schema,
+            storage_schema,
             path,
             uri,
             options.target_file_size,

@@ -3,13 +3,14 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
+The library includes shared contracts, ordering, optional rebatch and blob download
+layers, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, optional RebatchLayer
+layer/      OrderingLayer, optional RebatchLayer and DownloadBlobLayer
 src/        Public facade
 ```
 
@@ -59,6 +60,45 @@ pending rows and aborts the inner writer. No background tasks or concurrency are
 
 Pending slices contain at most the configured number of rows. Arrow slices may
 retain their input buffers, so this is a row bound, not a byte-memory limit.
+
+## Downloading URL columns as blobs
+
+Enable `layer-download-blob` to use `DownloadBlobLayer`. Select top-level URL
+columns explicitly; each selected column is replaced in place with `LargeBinary`
+containing the downloaded HTTP(S) response body. `Utf8`, `LargeUtf8`, and `Utf8View`
+inputs are supported. Nulls remain null without a request; empty files remain
+non-null empty binary values. Other columns and row order are preserved.
+
+```rust,ignore
+use open_arrow_sink::{SinkExt, layer::DownloadBlobLayer, lance::LanceDatasetSink};
+
+// Enable both `layer-download-blob` and `sink-lance`.
+let sink = LanceDatasetSink.layer(DownloadBlobLayer::new(["image_url", "audio_url"]));
+// Open with the original URL schema and Ordering::Unordered for Lance.
+// writer.schema() continues to expose the original input schema.
+```
+
+The layer marks output fields with `open-arrow-sink:blob = true`. The Lance sink
+maps these fields to native **Blob v2** columns and writes the downloaded bytes
+into Lance-owned storage. Other sinks receive ordinary `LargeBinary` values with
+the marker. Ordinary unmarked binary columns retain their existing behavior.
+
+Downloads run sequentially on a Tokio runtime, following HTTP redirects, with no
+retries. Defaults are a 30-second total request timeout, a 16 MiB limit per blob,
+and at most 16 rows per forwarded batch. Configure these with `with_timeout`,
+`with_max_blob_bytes`, and `with_rows_per_batch` (the latter two take
+`NonZeroUsize`). The size limit is checked while reading, including responses
+without a content length. Buffering scales with output rows × selected columns ×
+maximum blob size, plus a response and Arrow allocation overhead; slices can retain
+input buffers. An inner rebatch layer can add its own buffering.
+
+A failed or cancelled write poisons the session: subsequent writes fail and
+`commit` aborts the inner writer. Earlier output chunks may already have been
+accepted; cleanup follows the backend's guarantees. Missing, duplicate, ambiguous,
+or non-string selected columns are rejected before the inner sink opens. Source
+field metadata is retained except for Arrow extension-type metadata, which no
+longer describes the converted binary column. Only explicit top-level columns and
+HTTP(S) URLs are supported in this version.
 
 ## File size
 

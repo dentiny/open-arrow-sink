@@ -45,3 +45,20 @@ cargo run -p open-arrow-sink-lance --example write_lance -- /tmp/new-example.lan
 ```
 
 The native Lance dependency needs `protoc` available when building from source.
+
+## Downloaded blobs
+
+Compose this sink with `DownloadBlobLayer` (facade feature `layer-download-blob`)
+to download URL columns before writing. The layer produces `LargeBinary` fields
+marked with `open-arrow-sink:blob = true`; this sink converts those fields to native
+Lance Blob v2 (`ARROW:extension:name = lance.blob.v2`) with the payload in `data`,
+using the SDK's default 2.2 file format. Nulls and empty payloads remain distinct.
+Unmarked binary fields remain ordinary binary columns. Applications may also
+supply marked `LargeBinary` fields directly; invalid marked types are rejected
+before creating the destination.
+
+The writer reports and validates the input schema. The stored dataset schema
+contains native blob structs, so it intentionally differs for these columns.
+Lance's default scans return blob descriptors; use
+`dataset.scan().blob_handling(lance::datatypes::BlobHandling::AllBinary)` to
+materialize payloads as `LargeBinary`, or use Lance's blob read APIs for lazy reads.

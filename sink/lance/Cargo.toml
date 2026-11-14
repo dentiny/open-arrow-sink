@@ -17,4 +17,5 @@ tokio = { version = "1", features = ["fs", "rt", "sync"] }
 more-asserts.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
+open-arrow-sink-layer = { workspace = true, features = ["download-blob"] }

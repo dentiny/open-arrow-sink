@@ -18,3 +18,7 @@ pub use request::{Ordering, WriteOptions};
 pub use result::WriteSummary;
 pub use sink::Sink;
 pub use writer::Writer;
+
+/// Field metadata marking downloaded `LargeBinary` values as blob payloads.
+/// Backends may map these fields to native blob storage.
+pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";

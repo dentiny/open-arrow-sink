@@ -54,6 +54,7 @@ impl RecordBatchReader for ChannelReader {
 
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
+    storage_schema: SchemaRef,
     path: PathBuf,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
@@ -74,6 +75,7 @@ impl Writer for LanceWriter {
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
+        let batch = crate::blob::storage_batch(batch, &self.storage_schema)?;
         self.sender
             .as_ref()
             .unwrap()
@@ -110,13 +112,14 @@ impl Writer for LanceWriter {
 impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
+        storage_schema: SchemaRef,
         path: PathBuf,
         uri: String,
         target_file_size: Option<usize>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
-            schema: schema.clone(),
+            schema: storage_schema.clone(),
             receiver,
             finished: false,
         };
@@ -128,6 +131,7 @@ impl LanceWriter {
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
             schema,
+            storage_schema,
             path,
             sender: Some(sender),
             task,
