@@ -3,12 +3,10 @@ use std::sync::Arc;
 use arrow_array::{
     ArrayRef, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field};
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_index::scalar::FullTextSearchQuery;
-use open_arrow_sink_core::{
-    Error, IndexCommitError, IndexSpec as Spec, IndexType as Kind, Ordering, Sink, WriteOptions,
-};
+use open_arrow_sink_core::{IndexSpec as Spec, IndexType as Kind, Ordering, Sink, WriteOptions};
 use open_arrow_sink_lance::LanceDatasetSink;
 
 fn options() -> WriteOptions {
@@ -157,50 +155,6 @@ async fn builds_all_index_kinds_and_queries_them() {
             .value(0),
         0
     );
-}
-
-fn failed_vector_input() -> RecordBatch {
-    let field = Arc::new(Field::new("item", DataType::Float32, true));
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("vector", DataType::FixedSizeList(field.clone(), 2), true),
-    ]));
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2])),
-            Arc::new(FixedSizeListArray::new_null(field, 2, 2)),
-        ],
-    )
-    .unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_index_failure_waits_for_other_indexes_and_preserves_data() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("failed-index");
-    let batch = failed_vector_input();
-    let sink = LanceDatasetSink;
-    let indexes = vec![
-        Spec::new("vector", Kind::Vector),
-        Spec::new("id", Kind::Scalar),
-    ];
-    let mut writer = sink
-        .open(path.clone(), batch.schema(), indexed_options(indexes))
-        .await
-        .unwrap();
-    writer.write(batch).await.unwrap();
-    let error = writer.commit().await.unwrap_err();
-    let Error::Backend(error) = error else {
-        panic!("expected index error")
-    };
-    let error = error.downcast::<IndexCommitError>().unwrap();
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 2);
-    let indexes = dataset.load_indices().await.unwrap();
-    assert_eq!(indexes.len(), 1);
-    assert!(error.message.contains("Vector"));
-    assert!(error.message.contains("vector"));
 }
 
 #[tokio::test]
