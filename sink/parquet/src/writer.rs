@@ -15,7 +15,6 @@ pub(crate) struct ParquetDirectoryWriter {
     options: WriteOptions,
     rows_written: u64,
     files_created: usize,
-    cur_file_rows: usize,
 }
 
 #[async_trait]
@@ -28,7 +27,7 @@ impl Writer for ParquetDirectoryWriter {
         // Taking ownership also makes a failed or cancelled write terminal.
         let mut writer = self.writer.take().ok_or_else(closed)?;
         validation::validate_batch(&self.schema, &batch)?;
-        if self.should_roll_file(writer.bytes_written(), batch.num_rows()) {
+        if self.should_roll_file(&writer, batch.num_rows()) {
             writer.close().await.map_err(backend)?;
             let file = OpenOptions::new()
                 .write(true)
@@ -38,13 +37,11 @@ impl Writer for ParquetDirectoryWriter {
                 .map_err(backend)?;
             self.files_created += 1;
             writer = AsyncArrowWriter::try_new(file, self.schema.clone(), None).map_err(backend)?;
-            self.cur_file_rows = 0;
         }
         writer.write(&batch).await.map_err(backend)?;
         // Flush each batch rather than retaining the complete input in memory.
         writer.flush().await.map_err(backend)?;
         self.rows_written += batch.num_rows() as u64;
-        self.cur_file_rows += batch.num_rows();
         self.writer = Some(writer);
         Ok(())
     }
@@ -83,17 +80,16 @@ impl ParquetDirectoryWriter {
             options,
             rows_written: 0,
             files_created: 1,
-            cur_file_rows: 0,
         }
     }
 
-    fn should_roll_file(&self, bytes_written: usize, incoming_rows: usize) -> bool {
-        self.cur_file_rows > 0
+    fn should_roll_file(&self, writer: &AsyncArrowWriter<File>, incoming_rows: usize) -> bool {
+        !writer.flushed_row_groups().is_empty()
             && incoming_rows > 0
             && self
                 .options
                 .target_file_size
-                .is_some_and(|size| bytes_written >= size)
+                .is_some_and(|size| writer.bytes_written() >= size)
     }
 
     fn file_path(&self, index: usize) -> PathBuf {

@@ -127,9 +127,11 @@ async fn target_file_size_rolls_files_without_losing_rows() {
             )
             .await
             .unwrap();
+        writer.write(expected.slice(0, 0)).await.unwrap();
         for offset in [0, 3, 6] {
             writer.write(expected.slice(offset, 3)).await.unwrap();
         }
+        writer.write(expected.slice(0, 0)).await.unwrap();
         assert_eq!(writer.commit().await.unwrap().rows_written, 9);
         let mut entries = tokio::fs::read_dir(&directory).await.unwrap();
         let mut paths = Vec::new();
