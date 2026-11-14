@@ -135,7 +135,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let fragments = dataset.get_fragments();
     if should_roll {
-        assert!(fragments.len() > 1);
+        more_asserts::assert_gt!(fragments.len(), 1);
     } else {
         assert_eq!(fragments.len(), 1);
     }
