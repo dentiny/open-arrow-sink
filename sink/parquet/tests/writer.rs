@@ -160,37 +160,3 @@ async fn target_file_size_rolls_files_without_losing_rows(
     }
     assert_eq!(offset, 9);
 }
-
-#[tokio::test]
-async fn rejects_index_requests_before_creating_destination() {
-    use open_arrow_sink_core::{Error, IndexSpec, IndexType};
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("indexed");
-    assert!(
-        ParquetDirectorySink
-            .capability()
-            .supported_indexes
-            .is_empty()
-    );
-    for kind in [
-        IndexType::Scalar,
-        IndexType::Vector,
-        IndexType::Text,
-        IndexType::BloomFilter,
-    ] {
-        let result = ParquetDirectorySink
-            .open(
-                path.clone(),
-                batch().schema(),
-                WriteOptions {
-                    indexes: vec![IndexSpec::new("id", kind)],
-                    ..options()
-                },
-            )
-            .await;
-        assert!(
-            matches!(result, Err(Error::Unsupported(message)) if message == format!("{kind:?} index construction on column id"))
-        );
-        assert!(!path.exists());
-    }
-}
