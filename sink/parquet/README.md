@@ -26,8 +26,8 @@ recursively deletes other files. Drop leaves incomplete output and never commits
 
 No append, overwrite, partitioning, compression options, cloud storage or retries.
 
-For concurrent files, enable facade feature `layer-unordered` and wrap the sink
-in `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
+For concurrent files, wrap the sink in
+`UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
 files. Each writer rolls independently using disjoint indices (writer 0 owns
 0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.

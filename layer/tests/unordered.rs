@@ -1,5 +1,3 @@
-#![cfg(feature = "unordered")]
-
 use arrow_array::{Int64Array, RecordBatch};
 use futures::{FutureExt, channel::oneshot};
 use open_arrow_sink_core::{

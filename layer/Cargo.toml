@@ -9,14 +9,13 @@ description = "Composable layers for Arrow RecordBatch sinks"
 [features]
 default = []
 rebatch = ["dep:arrow-select"]
-unordered = ["dep:futures"]
 
 [dependencies]
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
 arrow-select = { version = "58.4", optional = true }
-futures = { workspace = true, optional = true }
+futures.workspace = true
 
 [dev-dependencies]
 arrow-array.workspace = true

@@ -36,7 +36,6 @@ default = []
 sink-lance = ["dep:open-arrow-sink-lance"]
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
 layer-rebatch = ["open-arrow-sink-layer/rebatch"]
-layer-unordered = ["open-arrow-sink-layer/unordered"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
 
 [dependencies]
