@@ -375,11 +375,22 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 }
 
 #[rstest::rstest]
-#[case::empty(true)]
-#[case::rolling(false)]
+#[case::identity_empty(Transform::Identity, PartitionType::Identity, true, 0)]
+#[case::identity_rolling(Transform::Identity, PartitionType::Identity, false, 6)]
+#[case::void_empty(Transform::Void, PartitionType::Void, true, 0)]
+#[case::void_rolling(Transform::Void, PartitionType::Void, false, 2)]
 #[tokio::test]
-async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
-    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
+async fn partitioned_empty_sessions_and_file_rolling(
+    #[case] transform: Transform,
+    #[case] partition_type: PartitionType,
+    #[case] empty: bool,
+    #[case] file_count: usize,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(1, "id_partition", transform)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
     let data = batch(schema.clone());
     let mut writer = IcebergTableSink::new(catalog.clone())
         .open(
@@ -387,7 +398,8 @@ async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
             schema,
             WriteOptions {
                 target_file_size: Some(1),
-                ..partition_options()
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
             },
         )
         .await
@@ -415,7 +427,7 @@ async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
             .try_collect()
             .await
             .unwrap();
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), file_count);
         let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(2);
         expected.sort_unstable();
         assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
@@ -561,4 +573,128 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     expected.push((1, Some(0)));
     expected.sort_unstable();
     assert_eq!(actual, expected);
+}
+
+#[rstest::rstest]
+#[case::sixteen_buckets(16, 3)]
+#[case::ten_buckets(10, 9)]
+#[tokio::test]
+async fn bucket_partitions_round_trip_and_record_metadata(
+    #[case] buckets: u32,
+    #[case] expected_bucket: i32,
+) {
+    assert_numeric_partition_round_trip(
+        Transform::Bucket(buckets),
+        PartitionType::Bucket,
+        vec![Some(34), Some(34), None],
+        vec![Some(Literal::int(expected_bucket)), None],
+    )
+    .await;
+}
+
+#[rstest::rstest]
+#[case::width_ten(10, -10, 20)]
+#[case::width_hundred(100, -100, 0)]
+#[tokio::test]
+async fn truncate_partitions_round_trip_and_record_metadata(
+    #[case] width: u32,
+    #[case] negative_key: i64,
+    #[case] positive_key: i64,
+) {
+    assert_numeric_partition_round_trip(
+        Transform::Truncate(width),
+        PartitionType::Truncate,
+        vec![Some(-1), Some(21), Some(29), None],
+        vec![
+            Some(Literal::long(negative_key)),
+            Some(Literal::long(positive_key)),
+            None,
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn void_partitions_round_trip_and_record_metadata() {
+    assert_numeric_partition_round_trip(
+        Transform::Void,
+        PartitionType::Void,
+        vec![Some(-1), Some(21), Some(29), None],
+        vec![None],
+    )
+    .await;
+}
+
+async fn assert_numeric_partition_round_trip(
+    transform: Transform,
+    partition_type: PartitionType,
+    values: Vec<Option<i64>>,
+    keys: Vec<Option<Literal>>,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(2, "value_partition", transform)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
+    let ids: Vec<i32> = (0..values.len() as i32).collect();
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(ids.clone())),
+            Arc::new(Int64Array::from(values.clone())),
+        ],
+    )
+    .unwrap();
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(data.slice(0, 0)).await.unwrap();
+    writer.write(data.slice(0, 1)).await.unwrap();
+    writer
+        .write(data.slice(1, data.num_rows() - 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        values.len() as u64
+    );
+    let expected_rows = ids.into_iter().map(Some).zip(values).collect::<Vec<_>>();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected_rows);
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let expected: HashSet<_> = keys
+        .into_iter()
+        .map(|key| Struct::from_iter([key]))
+        .collect();
+    assert_eq!(files.len(), expected.len());
+    assert_eq!(
+        files
+            .iter()
+            .map(|task| task.partition().unwrap().clone())
+            .collect::<HashSet<_>>(),
+        expected
+    );
+    for task in files {
+        assert_eq!(
+            task.partition_spec().unwrap().as_ref(),
+            table.metadata().default_partition_spec().as_ref()
+        );
+    }
 }

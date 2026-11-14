@@ -8,6 +8,12 @@ pub enum PartitionType {
     Month,
     Day,
     Hour,
+    /// Hash into buckets; the destination spec supplies the bucket count.
+    Bucket,
+    /// Truncate values; the destination spec supplies the width.
+    Truncate,
+    /// Always produce a null partition value.
+    Void,
 }
 
 /// Guarantees provided by the configured sink.

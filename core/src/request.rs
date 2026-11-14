@@ -16,7 +16,7 @@ pub enum Ordering {
 pub struct PartitionOptions {
     /// Requested partition transform. The sink must advertise this type, and
     /// every field in the destination spec must use it; this does not alter
-    /// the table spec.
+    /// the table spec. Bucket counts and truncate widths come from that spec.
     pub partition_type: PartitionType,
 }
 

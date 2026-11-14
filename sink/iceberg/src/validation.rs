@@ -20,6 +20,10 @@ pub(crate) fn validate_table(table: &Table, partition: Option<PartitionOptions>)
                 Transform::Month => PartitionType::Month,
                 Transform::Day => PartitionType::Day,
                 Transform::Hour => PartitionType::Hour,
+                // The SDK uses a signed 32-bit divisor when hashing buckets.
+                Transform::Bucket(n) if n > 0 && n <= i32::MAX as u32 => PartitionType::Bucket,
+                Transform::Truncate(width) if width > 0 => PartitionType::Truncate,
+                Transform::Void => PartitionType::Void,
                 transform => {
                     return Err(Error::Unsupported(format!(
                         "Iceberg partition transform {transform:?} on field {}",
