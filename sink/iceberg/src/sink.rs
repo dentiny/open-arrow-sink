@@ -44,6 +44,9 @@ impl Sink for IcebergTableSink {
                 PartitionType::Month,
                 PartitionType::Day,
                 PartitionType::Hour,
+                PartitionType::Bucket,
+                PartitionType::Truncate,
+                PartitionType::Void,
             ],
             supported_indexes: &[],
         }
@@ -87,7 +90,7 @@ impl Sink for IcebergTableSink {
         );
         let builder = DataFileWriterBuilder::new(rolling);
         let inner: Box<dyn IcebergWriter> = if options.partition.is_some()
-            && !metadata.default_partition_spec().fields().is_empty()
+            && !metadata.default_partition_spec().is_unpartitioned()
         {
             Box::new(
                 PartitionWriterAdapter::try_new(
@@ -101,7 +104,15 @@ impl Sink for IcebergTableSink {
             let partition = PartitionKey::new(
                 metadata.default_partition_spec().as_ref().clone(),
                 metadata.current_schema().clone(),
-                Struct::empty(),
+                // All-void specs are unpartitioned to the SDK, but their file
+                // metadata must retain one null value per partition field.
+                Struct::from_iter(
+                    metadata
+                        .default_partition_spec()
+                        .fields()
+                        .iter()
+                        .map(|_| None),
+                ),
             );
             Box::new(builder.build(Some(partition)).await.map_err(backend)?)
         };

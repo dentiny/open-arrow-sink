@@ -4,7 +4,8 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, TimestampMicrosecondArray,
+    Array, ArrayRef, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
 use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
@@ -375,11 +376,22 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 }
 
 #[rstest::rstest]
-#[case::empty(true)]
-#[case::rolling(false)]
+#[case::identity_empty(Transform::Identity, PartitionType::Identity, true, 0)]
+#[case::identity_rolling(Transform::Identity, PartitionType::Identity, false, 6)]
+#[case::void_empty(Transform::Void, PartitionType::Void, true, 0)]
+#[case::void_rolling(Transform::Void, PartitionType::Void, false, 2)]
 #[tokio::test]
-async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
-    let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
+async fn partitioned_empty_sessions_and_file_rolling(
+    #[case] transform: Transform,
+    #[case] partition_type: PartitionType,
+    #[case] empty: bool,
+    #[case] file_count: usize,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(1, "id_partition", transform)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
     let data = batch(schema.clone());
     let mut writer = IcebergTableSink::new(catalog.clone())
         .open(
@@ -387,7 +399,8 @@ async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
             schema,
             WriteOptions {
                 target_file_size: Some(1),
-                ..partition_options()
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
             },
         )
         .await
@@ -415,7 +428,7 @@ async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
             .try_collect()
             .await
             .unwrap();
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), file_count);
         let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(2);
         expected.sort_unstable();
         assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
@@ -561,4 +574,244 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     expected.push((1, Some(0)));
     expected.sort_unstable();
     assert_eq!(actual, expected);
+}
+
+#[rstest::rstest]
+#[case::bucket16(Transform::Bucket(16), PartitionType::Bucket, vec![Some(34), Some(34), None], vec![Some(Literal::int(3)), None])]
+#[case::bucket10(Transform::Bucket(10), PartitionType::Bucket, vec![Some(34), Some(34), None], vec![Some(Literal::int(9)), None])]
+#[case::truncate10(Transform::Truncate(10), PartitionType::Truncate, vec![Some(-1), Some(21), Some(29), None], vec![Some(Literal::long(-10)), Some(Literal::long(20)), None])]
+#[case::truncate100(Transform::Truncate(100), PartitionType::Truncate, vec![Some(-1), Some(21), Some(29), None], vec![Some(Literal::long(-100)), Some(Literal::long(0)), None])]
+#[case::void(Transform::Void, PartitionType::Void, vec![Some(-1), Some(21), Some(29), None], vec![None])]
+#[tokio::test]
+async fn remaining_partitions_round_trip_and_record_metadata(
+    #[case] transform: Transform,
+    #[case] partition_type: PartitionType,
+    #[case] values: Vec<Option<i64>>,
+    #[case] keys: Vec<Option<Literal>>,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(2, "value_partition", transform)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
+    let ids: Vec<i32> = (0..values.len() as i32).collect();
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(ids.clone())),
+            Arc::new(Int64Array::from(values.clone())),
+        ],
+    )
+    .unwrap();
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(data.slice(0, 0)).await.unwrap();
+    writer.write(data.slice(0, 1)).await.unwrap();
+    writer
+        .write(data.slice(1, data.num_rows() - 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        values.len() as u64
+    );
+    let expected_rows = ids.into_iter().map(Some).zip(values).collect::<Vec<_>>();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected_rows);
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let expected: HashSet<_> = keys
+        .into_iter()
+        .map(|key| Struct::from_iter([key]))
+        .collect();
+    assert_eq!(files.len(), expected.len());
+    assert_eq!(
+        files
+            .iter()
+            .map(|task| task.partition().unwrap().clone())
+            .collect::<HashSet<_>>(),
+        expected
+    );
+    for task in files {
+        assert_eq!(
+            task.partition_spec().unwrap().as_ref(),
+            table.metadata().default_partition_spec().as_ref()
+        );
+    }
+}
+
+#[rstest::rstest]
+#[case::bucket(Transform::Bucket(16), PartitionType::Bucket, vec!["iceberg", "iceberg", "iceberg"], vec![Some(Literal::int(9)), None])]
+#[case::truncate(Transform::Truncate(2), PartitionType::Truncate, vec!["你好世界", "你好朋友", "iceberg"], vec![Some(Literal::string("你好")), Some(Literal::string("ic")), None])]
+#[tokio::test]
+async fn string_partition_transforms_preserve_unicode_and_nulls(
+    #[case] transform: Transform,
+    #[case] partition_type: PartitionType,
+    #[case] values: Vec<&str>,
+    #[case] keys: Vec<Option<Literal>>,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(2, "value_partition", transform)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) =
+        table_with_value_type(Some(spec), PrimitiveType::String).await;
+    let values: Vec<Option<&str>> = values.into_iter().map(Some).chain([None]).collect();
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 3])),
+            Arc::new(StringArray::from(values.clone())),
+        ],
+    )
+    .unwrap();
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(data.slice(0, 1)).await.unwrap();
+    writer.write(data.slice(1, 3)).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 4);
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let expected: HashSet<_> = keys
+        .into_iter()
+        .map(|key| Struct::from_iter([key]))
+        .collect();
+    assert_eq!(files.len(), expected.len());
+    assert_eq!(
+        files
+            .iter()
+            .map(|task| task.partition().unwrap().clone())
+            .collect::<HashSet<_>>(),
+        expected
+    );
+    let batches: Vec<RecordBatch> = table
+        .scan()
+        .build()
+        .unwrap()
+        .to_arrow()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let mut actual = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        actual.extend(
+            (0..batch.num_rows())
+                .map(|i| (ids.value(i), values.is_valid(i).then(|| values.value(i)))),
+        );
+    }
+    actual.sort_unstable();
+    assert_eq!(
+        actual,
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| (i as i32, v))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[rstest::rstest]
+#[case::bucket(Transform::Bucket(10), Transform::Bucket(16), PartitionType::Bucket, vec![Some(Literal::int(9)), Some(Literal::int(3))])]
+#[case::truncate(Transform::Truncate(10), Transform::Truncate(100), PartitionType::Truncate, vec![Some(Literal::int(30)), Some(Literal::long(0))])]
+#[case::void(Transform::Void, Transform::Void, PartitionType::Void, vec![None, None])]
+#[tokio::test]
+async fn composite_partition_fields_use_independent_parameters(
+    #[case] first: Transform,
+    #[case] second: Transform,
+    #[case] partition_type: PartitionType,
+    #[case] key: Vec<Option<Literal>>,
+) {
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(1, "id_partition", first)
+        .unwrap()
+        .add_partition_field(2, "value_partition", second)
+        .unwrap()
+        .build();
+    let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![34, 34])),
+            Arc::new(Int64Array::from(vec![34, 34])),
+        ],
+    )
+    .unwrap();
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                partition: Some(PartitionOptions { partition_type }),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(data.slice(0, 1)).await.unwrap();
+    writer.write(data.slice(1, 1)).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 2);
+    assert_eq!(
+        rows(catalog.as_ref(), &identifier).await,
+        vec![(Some(34), Some(34)); 2]
+    );
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].partition().unwrap(), &Struct::from_iter(key));
 }
