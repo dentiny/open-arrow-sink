@@ -1,8 +1,8 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
-    validation,
+    IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
+    async_trait, validation,
 };
 
 use crate::{error::backend, validation::validate_indexes, writer::LanceWriter};
@@ -19,7 +19,12 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
-            indexes: true,
+            supported_indexes: &[
+                IndexType::Scalar,
+                IndexType::Vector,
+                IndexType::Text,
+                IndexType::BloomFilter,
+            ],
         }
     }
 

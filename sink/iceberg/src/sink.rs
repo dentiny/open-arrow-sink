@@ -35,7 +35,7 @@ impl Sink for IcebergTableSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
-            indexes: false,
+            supported_indexes: &[],
         }
     }
 

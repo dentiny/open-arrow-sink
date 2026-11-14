@@ -51,7 +51,7 @@ The native Lance dependency needs `protoc` available when building from source.
 Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
 
 ```rust,ignore
-use open_arrow_sink::{IndexKind, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
+use open_arrow_sink::{IndexType, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
 let mut writer = LanceDatasetSink.open(
     "./indexed.lance".into(),
@@ -59,8 +59,8 @@ let mut writer = LanceDatasetSink.open(
     WriteOptions {
         ordering: Ordering::Unordered,
         indexes: vec![
-            IndexSpec::new("id", IndexKind::Scalar),
-            IndexSpec::new("embedding", IndexKind::Vector),
+            IndexSpec::new("id", IndexType::Scalar),
+            IndexSpec::new("embedding", IndexType::Vector),
         ],
         ..WriteOptions::default()
     },
@@ -69,17 +69,19 @@ writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
 
-`IndexKind`, `IndexSpec`, construction results, and `IndexCommitError` are defined
+`IndexType`, `IndexSpec`, construction results, and `IndexCommitError` are defined
 in `open-arrow-sink-core` and re-exported by the facade. They have no Lance SDK
-dependency. Lance advertises `SinkCapability.indexes = true`; Parquet and Iceberg
-currently advertise `false` and reject index requests before destination I/O.
+dependency. Lance lists Scalar, Vector, Text, and BloomFilter in
+`SinkCapability.supported_indexes`. Parquet and Iceberg expose empty lists and
+reject index requests before destination I/O. Shared validation checks every
+requested type against the supported list.
 
 The shared `validation.rs` checks index column existence and uniqueness. Lance's
 `validation.rs` checks each requested kind against its supported Arrow types before
 creating a directory or writer. Each column can have one requested index. Lance's
 concrete mappings are:
 
-| Shared kind | Lance implementation |
+| Shared type | Lance implementation |
 | --- | --- |
 | Scalar | BTree |
 | Vector | IVF_FLAT with L2 |

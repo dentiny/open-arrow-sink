@@ -1,4 +1,4 @@
-use crate::Ordering;
+use crate::{IndexType, Ordering};
 
 /// Guarantees provided by the configured sink.
 /// Each sink must explicitly declare its ordering guarantee and index support.
@@ -8,7 +8,7 @@ pub struct SinkCapability {
     /// read order; `Unordered` provides no input-order guarantee.
     /// Sequential I/O completion alone does not guarantee logical row order.
     pub ordering: Ordering,
-    /// Whether the sink can construct requested indexes. Backends still validate
-    /// the index kinds and column types they support before writing.
-    pub indexes: bool,
+    /// Logical index types this sink can construct. Empty means none.
+    /// Backends additionally validate column-type compatibility before writing.
+    pub supported_indexes: &'static [IndexType],
 }

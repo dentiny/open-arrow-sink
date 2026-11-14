@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use lance::{Dataset, index::DatasetIndexExt};
-use open_arrow_sink_core::{IndexKind, IndexSpec, Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, WriteOptions};
 use open_arrow_sink_lance::LanceDatasetSink;
 
 #[tokio::main]
@@ -29,8 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WriteOptions {
                 ordering: Ordering::Unordered,
                 indexes: vec![
-                    IndexSpec::new("id", IndexKind::Scalar),
-                    IndexSpec::new("text", IndexKind::Text),
+                    IndexSpec::new("id", IndexType::Scalar),
+                    IndexSpec::new("text", IndexType::Text),
                 ],
                 ..Default::default()
             },

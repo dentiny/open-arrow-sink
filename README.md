@@ -22,7 +22,7 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, indexes: false }`
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_indexes: &[] }`
 or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
@@ -83,26 +83,28 @@ limits may also cause rolling before the target is reached.
 
 ## Index construction
 
-Index requests are backend-independent `IndexSpec` and `IndexKind` values in
-`WriteOptions.indexes`. The list is empty by default. `SinkCapability.indexes`
-declares support: Lance supports index construction, while Parquet and Iceberg
-reject nonempty requests before opening a writer or accessing the destination.
+Index requests are backend-independent `IndexSpec` and `IndexType` values in
+`WriteOptions.indexes`. The request list is empty by default.
+`SinkCapability.supported_indexes` lists the supported `IndexType` values. Each
+requested type must appear in that list. Lance supports Scalar, Vector, Text,
+and BloomFilter; Parquet and Iceberg expose empty lists and reject index requests
+before opening a writer or accessing the destination.
 General layers forward this capability and the options to their inner sink.
 
 ```rust
-use open_arrow_sink::{IndexKind, IndexSpec, Ordering, WriteOptions};
+use open_arrow_sink::{IndexType, IndexSpec, Ordering, WriteOptions};
 
 let options = WriteOptions {
     ordering: Ordering::Unordered,
     indexes: vec![
-        IndexSpec::new("id", IndexKind::Scalar),
-        IndexSpec::new("embedding", IndexKind::Vector),
+        IndexSpec::new("id", IndexType::Scalar),
+        IndexSpec::new("embedding", IndexType::Vector),
     ],
     ..WriteOptions::default()
 };
 ```
 
-Backends choose the concrete implementation of each logical index kind and validate
+Backends choose the concrete implementation of each logical index type and validate
 column types before writing. Lance maps the four kinds to BTree, IVF_FLAT with L2,
 Inverted, and BloomFilter, then constructs them after committing the dataset's data.
 See the [Lance documentation](sink/lance/README.md) for construction failure semantics.

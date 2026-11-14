@@ -4,12 +4,12 @@ use lance::{
     index::{DatasetIndexExt, vector::VectorIndexParams},
 };
 use lance_index::{
-    IndexParams, IndexType,
+    IndexParams, IndexType as LanceIndexType,
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
-    IndexBuildReport, IndexBuildResult, IndexBuildState, IndexCommitError, IndexKind, IndexSpec,
+    IndexBuildReport, IndexBuildResult, IndexBuildState, IndexCommitError, IndexSpec, IndexType,
 };
 
 pub(crate) async fn build_indexes(
@@ -63,27 +63,27 @@ async fn build(
 }
 
 async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<String> {
-    let (kind, params): (_, Box<dyn IndexParams>) = match spec.kind {
-        IndexKind::Scalar => (
-            IndexType::BTree,
+    let (lance_type, params): (_, Box<dyn IndexParams>) = match spec.index_type {
+        IndexType::Scalar => (
+            LanceIndexType::BTree,
             Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
         ),
-        IndexKind::Vector => {
+        IndexType::Vector => {
             let rows = dataset.count_rows(None).await?;
             (
-                IndexType::IvfFlat,
+                LanceIndexType::IvfFlat,
                 Box::new(VectorIndexParams::ivf_flat(
                     rows.div_ceil(8192).clamp(1, 4096),
                     MetricType::L2,
                 )),
             )
         }
-        IndexKind::Text => (
-            IndexType::Inverted,
+        IndexType::Text => (
+            LanceIndexType::Inverted,
             Box::new(InvertedIndexParams::default()),
         ),
-        IndexKind::BloomFilter => (
-            IndexType::BloomFilter,
+        IndexType::BloomFilter => (
+            LanceIndexType::BloomFilter,
             Box::new(ScalarIndexParams::for_builtin(
                 BuiltinIndexType::BloomFilter,
             )),
@@ -93,7 +93,7 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
     let index = dataset
         .create_index(
             &[&spec.column],
-            kind,
+            lance_type,
             Some(index_name(spec)),
             params.as_ref(),
             false,
@@ -113,11 +113,11 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Native names reflect Lance's implementation of each logical index category.
 fn index_name(spec: &IndexSpec) -> String {
-    let kind = match spec.kind {
-        IndexKind::Scalar => "btree",
-        IndexKind::Vector => "ivf_flat",
-        IndexKind::Text => "text",
-        IndexKind::BloomFilter => "bloom",
+    let kind = match spec.index_type {
+        IndexType::Scalar => "btree",
+        IndexType::Vector => "ivf_flat",
+        IndexType::Text => "text",
+        IndexType::BloomFilter => "bloom",
     };
     format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
 }

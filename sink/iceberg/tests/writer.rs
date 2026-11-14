@@ -232,16 +232,16 @@ async fn target_file_size_rolls_files_without_losing_rows(
 
 #[tokio::test]
 async fn rejects_index_requests_before_loading_table() {
-    use open_arrow_sink_core::{Error, IndexKind, IndexSpec};
+    use open_arrow_sink_core::{Error, IndexSpec, IndexType};
     let (catalog, identifier, schema) = table().await;
     let sink = IcebergTableSink::new(catalog.clone());
-    assert!(!sink.capability().indexes);
+    assert!(sink.capability().supported_indexes.is_empty());
     let before = catalog.load_table(&identifier).await.unwrap();
     for kind in [
-        IndexKind::Scalar,
-        IndexKind::Vector,
-        IndexKind::Text,
-        IndexKind::BloomFilter,
+        IndexType::Scalar,
+        IndexType::Vector,
+        IndexType::Text,
+        IndexType::BloomFilter,
     ] {
         // An absent table proves capability validation precedes catalog loading:
         // the result must be Unsupported rather than a catalog NotFound error.
@@ -257,7 +257,7 @@ async fn rejects_index_requests_before_loading_table() {
             )
             .await;
         assert!(
-            matches!(result, Err(Error::Unsupported(message)) if message == "index construction")
+            matches!(result, Err(Error::Unsupported(message)) if message == format!("{kind:?} index construction on column id"))
         );
     }
     let after = catalog.load_table(&identifier).await.unwrap();

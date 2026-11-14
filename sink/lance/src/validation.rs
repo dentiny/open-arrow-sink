@@ -1,6 +1,6 @@
 //! Index configuration validation before destination creation.
 use arrow_schema::{DataType, Schema};
-use open_arrow_sink_core::{IndexKind, IndexSpec, Result, validation};
+use open_arrow_sink_core::{IndexSpec, IndexType, Result, validation};
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
@@ -12,8 +12,8 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
                 index.column
             ))
         })?;
-        let supported = match index.kind {
-            IndexKind::Scalar => matches!(
+        let supported = match index.index_type {
+            IndexType::Scalar => matches!(
                 field.data_type(),
                 Boolean
                     | Int8
@@ -39,11 +39,11 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
             ),
             // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
             // Int8 is rejected even though the older reference allowed it.
-            IndexKind::Vector => {
+            IndexType::Vector => {
                 matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
             }
-            IndexKind::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
-            IndexKind::BloomFilter => matches!(
+            IndexType::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
+            IndexType::BloomFilter => matches!(
                 field.data_type(),
                 Int8 | Int16
                     | Int32
@@ -66,7 +66,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
         if !supported {
             return Err(open_arrow_sink_core::Error::Unsupported(format!(
                 "cannot create {:?} index on column {} with type {}",
-                index.kind,
+                index.index_type,
                 index.column,
                 field.data_type()
             )));

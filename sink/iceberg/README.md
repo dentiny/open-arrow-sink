@@ -39,6 +39,6 @@ rows, and reads them through the Iceberg scanner.
 
 ## Index requests
 
-This sink declares `SinkCapability.indexes = false`. A nonempty
+This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
 `WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
 or accessing the destination. The default empty list keeps existing behavior.

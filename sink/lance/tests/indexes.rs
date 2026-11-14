@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_index::scalar::FullTextSearchQuery;
 use open_arrow_sink_core::{
-    Error, IndexBuildState, IndexCommitError, IndexKind as Kind, IndexSpec as Spec, Ordering, Sink,
+    Error, IndexBuildState, IndexCommitError, IndexSpec as Spec, IndexType as Kind, Ordering, Sink,
     WriteOptions,
 };
 use open_arrow_sink_lance::LanceDatasetSink;

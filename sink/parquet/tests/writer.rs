@@ -163,15 +163,20 @@ async fn target_file_size_rolls_files_without_losing_rows(
 
 #[tokio::test]
 async fn rejects_index_requests_before_creating_destination() {
-    use open_arrow_sink_core::{Error, IndexKind, IndexSpec};
+    use open_arrow_sink_core::{Error, IndexSpec, IndexType};
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("indexed");
-    assert!(!ParquetDirectorySink.capability().indexes);
+    assert!(
+        ParquetDirectorySink
+            .capability()
+            .supported_indexes
+            .is_empty()
+    );
     for kind in [
-        IndexKind::Scalar,
-        IndexKind::Vector,
-        IndexKind::Text,
-        IndexKind::BloomFilter,
+        IndexType::Scalar,
+        IndexType::Vector,
+        IndexType::Text,
+        IndexType::BloomFilter,
     ] {
         let result = ParquetDirectorySink
             .open(
@@ -184,7 +189,7 @@ async fn rejects_index_requests_before_creating_destination() {
             )
             .await;
         assert!(
-            matches!(result, Err(Error::Unsupported(message)) if message == "index construction")
+            matches!(result, Err(Error::Unsupported(message)) if message == format!("{kind:?} index construction on column id"))
         );
         assert!(!path.exists());
     }

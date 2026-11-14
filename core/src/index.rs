@@ -1,9 +1,9 @@
 //! Backend-independent index requests and construction results.
 
-/// Logical index category. Each backend chooses its concrete implementation
+/// Logical index type. Each backend chooses its concrete implementation
 /// and validates supported Arrow types before writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexKind {
+pub enum IndexType {
     Scalar,
     Vector,
     Text,
@@ -14,14 +14,14 @@ pub enum IndexKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSpec {
     pub column: String,
-    pub kind: IndexKind,
+    pub index_type: IndexType,
 }
 
 impl IndexSpec {
-    pub fn new(column: impl Into<String>, kind: IndexKind) -> Self {
+    pub fn new(column: impl Into<String>, index_type: IndexType) -> Self {
         Self {
             column: column.into(),
-            kind,
+            index_type,
         }
     }
 }
