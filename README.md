@@ -71,10 +71,8 @@ supported transforms through `SinkCapability.supported_partitions`: Iceberg list
 The requested `PartitionOptions.partition_type` (default `Identity`) must be
 in that list. No partition layer is required.
 
-`PartitionOptions.max_open_writers` is a positive limit on distinct partitions
-per session (default 128). Exceeding it fails the write; abort or drop the session.
-It bounds active writer count, not bytes. See the [Iceberg sink](sink/iceberg/README.md)
-for configuration and commit semantics.
+The Iceberg adapter uses the SDK's fanout writer behavior. See the
+[Iceberg sink](sink/iceberg/README.md) for configuration and commit semantics.
 
 ## File size
 

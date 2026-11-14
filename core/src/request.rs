@@ -1,5 +1,3 @@
-use std::num::NonZeroUsize;
-
 use crate::PartitionType;
 
 /// Input-order policy or guarantee; this does not sort rows by column values.
@@ -19,16 +17,12 @@ pub struct PartitionOptions {
     /// Requested partition transform. The sink must advertise this type, and
     /// the destination spec must use it; this does not alter the table spec.
     pub partition_type: PartitionType,
-    /// Maximum distinct partitions held open in a session. Exceeding this limit
-    /// fails the write; writers are not evicted. This is not a byte-memory limit.
-    pub max_open_writers: NonZeroUsize,
 }
 
 impl Default for PartitionOptions {
     fn default() -> Self {
         Self {
             partition_type: PartitionType::Identity,
-            max_open_writers: NonZeroUsize::new(128).unwrap(),
         }
     }
 }

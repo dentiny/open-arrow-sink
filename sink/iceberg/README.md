@@ -21,14 +21,12 @@ An empty session leaves the table unchanged.
 Enable identity partition routing with the shared write option:
 
 ```rust
-use std::num::NonZeroUsize;
 use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteOptions};
 
 let options = WriteOptions {
     ordering: Ordering::Unordered,
     partition: Some(PartitionOptions {
         partition_type: PartitionType::Identity,
-        max_open_writers: NonZeroUsize::new(128).unwrap(),
     }),
     ..WriteOptions::default()
 };
@@ -44,11 +42,10 @@ enabling it on an unpartitioned table keeps the unpartitioned writer path.
 
 An internal adapter delegates partition calculation/batch splitting to the SDK's
 `RecordBatchPartitionSplitter` and routing to its `FanoutWriter`. Input can mix
-partitions in any order. Writers stay open until commit/abort, bounded by
-`max_open_writers` (default 128); exceeding this limit fails the session, with no
-eviction or automatic retry. This count is not a byte-memory limit. Splitting
-uses temporary memory proportional to the input batch; each active writer has
-its own Parquet buffers. File metadata also accumulates until commit.
+partitions in any order. The SDK keeps a writer for each distinct partition
+until close; the adapter adds no writer-count limit or eviction. Splitting uses
+temporary memory proportional to the input batch; each active writer has its
+own Parquet buffers. File metadata also accumulates until commit.
 
 All partition writers close before a single fast-append transaction publishes
 the files. No partition is committed independently. Empty batches create no

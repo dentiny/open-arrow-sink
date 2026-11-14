@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    num::NonZeroUsize,
     sync::Arc,
 };
 
@@ -257,12 +256,9 @@ fn identity_spec(composite: bool) -> UnboundPartitionSpec {
     }
 }
 
-fn partition_options(max_open_writers: usize) -> WriteOptions {
+fn partition_options() -> WriteOptions {
     WriteOptions {
-        partition: Some(PartitionOptions {
-            max_open_writers: NonZeroUsize::new(max_open_writers).unwrap(),
-            ..PartitionOptions::default()
-        }),
+        partition: Some(PartitionOptions::default()),
         ..options()
     }
 }
@@ -296,7 +292,7 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
     )
     .unwrap();
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options(5))
+        .open(identifier.clone(), schema, partition_options())
         .await
         .unwrap();
     writer.write(batch.slice(0, 0)).await.unwrap();
@@ -368,27 +364,27 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 }
 
 #[tokio::test]
-async fn partition_limit_failure_cannot_be_committed() {
+async fn partitioned_writes_follow_sdk_without_a_writer_count_limit() {
     let (catalog, identifier, schema) = table_with_spec(Some(identity_spec(false))).await;
-    let batch = batch(schema.clone());
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from_iter_values(0..129)),
+            Arc::new(Int64Array::from_iter_values(0..129)),
+        ],
+    )
+    .unwrap();
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options(1))
+        .open(identifier.clone(), schema, partition_options())
         .await
         .unwrap();
-    writer.write(batch.slice(0, 1)).await.unwrap();
-    writer.write(batch.slice(0, 1)).await.unwrap(); // Existing keys do not use extra capacity.
-    let error = writer.write(batch.slice(1, 1)).await.unwrap_err();
-    assert!(error.to_string().contains("max_open_writers"));
-    assert!(writer.commit().await.is_err());
-    assert!(
-        catalog
-            .load_table(&identifier)
-            .await
-            .unwrap()
-            .metadata()
-            .current_snapshot_id()
-            .is_none()
-    );
+    writer.write(data.slice(0, 64)).await.unwrap();
+    writer.write(data.slice(64, 65)).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 129);
+    let expected = (0..129)
+        .map(|i| (Some(i), Some(i64::from(i))))
+        .collect::<Vec<_>>();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
 }
 
 #[tokio::test]
@@ -397,7 +393,7 @@ async fn partitioned_abort_keeps_committed_snapshot() {
     let sink = IcebergTableSink::new(catalog.clone());
     let data = batch(schema.clone());
     let mut writer = sink
-        .open(identifier.clone(), schema.clone(), partition_options(3))
+        .open(identifier.clone(), schema.clone(), partition_options())
         .await
         .unwrap();
     writer.write(data.clone()).await.unwrap();
@@ -405,7 +401,7 @@ async fn partitioned_abort_keeps_committed_snapshot() {
     let before = catalog.load_table(&identifier).await.unwrap();
     let expected = rows(catalog.as_ref(), &identifier).await;
     let mut writer = sink
-        .open(identifier.clone(), schema, partition_options(3))
+        .open(identifier.clone(), schema, partition_options())
         .await
         .unwrap();
     writer.write(data).await.unwrap();
@@ -469,7 +465,7 @@ async fn partition_options_accept_unpartitioned_tables_and_empty_sessions(#[case
     let (catalog, identifier, schema) = table().await;
     let data = batch(schema.clone());
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options(1))
+        .open(identifier.clone(), schema, partition_options())
         .await
         .unwrap();
     if !empty {
@@ -498,7 +494,7 @@ async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
             schema,
             WriteOptions {
                 target_file_size: Some(1),
-                ..partition_options(3)
+                ..partition_options()
             },
         )
         .await

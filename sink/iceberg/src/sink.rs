@@ -79,7 +79,7 @@ impl Sink for IcebergTableSink {
             DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
         );
         let builder = DataFileWriterBuilder::new(rolling);
-        let inner: Box<dyn IcebergWriter> = if let Some(partition_options) = options.partition
+        let inner: Box<dyn IcebergWriter> = if options.partition.is_some()
             && !metadata.default_partition_spec().fields().is_empty()
         {
             Box::new(
@@ -87,7 +87,6 @@ impl Sink for IcebergTableSink {
                     builder,
                     metadata.current_schema().clone(),
                     metadata.default_partition_spec().clone(),
-                    partition_options,
                 )
                 .map_err(backend)?,
             )
