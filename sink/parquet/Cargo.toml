@@ -8,10 +8,10 @@ description = "Minimal local Parquet directory sink"
 
 [dependencies]
 open-arrow-sink-core.workspace = true
-parquet = { version = "58.4", default-features = false, features = ["arrow", "async"] }
-tokio = { version = "1", features = ["fs", "io-util"] }
+parquet = { workspace = true, features = ["arrow", "async"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
-futures = { version = "0.3", default-features = false, features = ["std"] }
+futures.workspace = true
 arrow-array.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
