@@ -31,6 +31,7 @@ impl Sink for LanceDatasetSink {
         validation::validate_options(&options, self.capability())?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.
+        // TODO: Use OpenDAL to support remote storage beyond local paths.
         let path = std::path::absolute(path).map_err(backend)?;
         let uri = path
             .to_str()
