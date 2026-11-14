@@ -100,8 +100,14 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
+#[rstest::rstest]
+#[case::default_size(None, 1)]
+#[case::small_target(Some(1), 3)]
 #[tokio::test]
-async fn target_file_size_rolls_files_without_losing_rows() {
+async fn target_file_size_rolls_files_without_losing_rows(
+    #[case] target_file_size: Option<usize>,
+    #[case] file_count: usize,
+) {
     let expected = RecordBatch::try_from_iter([
         (
             "id",
@@ -113,46 +119,44 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         ),
     ])
     .unwrap();
-    for (target_file_size, file_count) in [(None, 1), (Some(1), 3)] {
-        let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("output");
-        let mut writer = ParquetDirectorySink
-            .open(
-                directory.clone(),
-                expected.schema(),
-                WriteOptions {
-                    target_file_size,
-                    ..options()
-                },
-            )
-            .await
-            .unwrap();
-        writer.write(expected.slice(0, 0)).await.unwrap();
-        for offset in [0, 3, 6] {
-            writer.write(expected.slice(offset, 3)).await.unwrap();
-        }
-        writer.write(expected.slice(0, 0)).await.unwrap();
-        assert_eq!(writer.commit().await.unwrap().rows_written, 9);
-        let mut entries = tokio::fs::read_dir(&directory).await.unwrap();
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            paths.push(entry.path());
-        }
-        paths.sort();
-        assert_eq!(paths.len(), file_count);
-        let mut offset = 0;
-        for path in paths {
-            let file = tokio::fs::File::open(path).await.unwrap();
-            let mut reader = ParquetRecordBatchStreamBuilder::new(file)
-                .await
-                .unwrap()
-                .build()
-                .unwrap();
-            while let Some(actual) = reader.try_next().await.unwrap() {
-                assert_eq!(actual, expected.slice(offset, actual.num_rows()));
-                offset += actual.num_rows();
-            }
-        }
-        assert_eq!(offset, 9);
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("output");
+    let mut writer = ParquetDirectorySink
+        .open(
+            directory.clone(),
+            expected.schema(),
+            WriteOptions {
+                target_file_size,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(expected.slice(0, 0)).await.unwrap();
+    for offset in [0, 3, 6] {
+        writer.write(expected.slice(offset, 3)).await.unwrap();
     }
+    writer.write(expected.slice(0, 0)).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    let mut entries = tokio::fs::read_dir(&directory).await.unwrap();
+    let mut paths = Vec::new();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        paths.push(entry.path());
+    }
+    paths.sort();
+    assert_eq!(paths.len(), file_count);
+    let mut offset = 0;
+    for path in paths {
+        let file = tokio::fs::File::open(path).await.unwrap();
+        let mut reader = ParquetRecordBatchStreamBuilder::new(file)
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        while let Some(actual) = reader.try_next().await.unwrap() {
+            assert_eq!(actual, expected.slice(offset, actual.num_rows()));
+            offset += actual.num_rows();
+        }
+    }
+    assert_eq!(offset, 9);
 }
