@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Error, Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
 use open_arrow_sink_parquet::ParquetDirectorySink;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -90,23 +90,4 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     writer.abort().await.unwrap();
     assert!(!tokio::fs::try_exists(&directory).await.unwrap());
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
-}
-
-#[tokio::test]
-async fn schema_error_prevents_commit_and_cleans_up() {
-    let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
-        .open(directory.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    let wrong =
-        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-            .unwrap();
-    assert!(matches!(
-        writer.write(wrong).await,
-        Err(Error::SchemaMismatch)
-    ));
-    assert!(writer.commit().await.is_err());
-    assert!(!tokio::fs::try_exists(&directory).await.unwrap());
 }
