@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "layer"]
+members = ["core", "layer", "sink/parquet"]
 resolver = "2"
 
 [workspace.package]
@@ -9,12 +9,16 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
-arrow-array = "59"
-arrow-schema = "59"
+arrow-array = "58.4"
+arrow-schema = "58.4"
 async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+parquet = { version = "58.4", default-features = false }
+tokio = "1"
 thiserror = "2"
 open-arrow-sink-core = { path = "core", version = "0.1.0" }
 open-arrow-sink-layer = { path = "layer", version = "0.1.0" }
+open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
 
 [package]
 name = "open-arrow-sink"
@@ -24,6 +28,11 @@ license.workspace = true
 repository.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"
 
+[features]
+default = []
+sink-parquet = ["dep:open-arrow-sink-parquet"]
+
 [dependencies]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
+open-arrow-sink-parquet = { workspace = true, optional = true }
