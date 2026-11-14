@@ -3848,6 +3848,7 @@ dependencies = [
  "futures",
  "iceberg",
  "open-arrow-sink-core",
+ "rstest",
  "tokio",
  "uuid",
 ]

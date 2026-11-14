@@ -187,3 +187,45 @@ async fn empty_commit_keeps_table_empty() {
     );
     assert!(rows(catalog.as_ref(), &identifier).await.is_empty());
 }
+
+#[rstest::rstest]
+#[case::default_size(None, 1)]
+#[case::small_target(Some(1), 3)]
+#[tokio::test]
+async fn target_file_size_rolls_files_without_losing_rows(
+    #[case] target_file_size: Option<usize>,
+    #[case] file_count: usize,
+) {
+    let (catalog, identifier, schema) = table().await;
+    let batch = batch(schema.clone());
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                target_file_size,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        writer.write(batch.clone()).await.unwrap();
+    }
+    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(files.len(), file_count);
+    let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(3);
+    expected.sort_unstable();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+}
