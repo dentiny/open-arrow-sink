@@ -1,10 +1,13 @@
 use crate::{IndexType, Ordering};
 
-/// Partition transforms a sink can write. Additional transforms can be added
-/// as backend support is implemented.
+/// Partition transforms a sink can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionType {
     Identity,
+    Year,
+    Month,
+    Day,
+    Hour,
 }
 
 /// Guarantees provided by the configured sink.

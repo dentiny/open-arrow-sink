@@ -64,12 +64,14 @@ retain their input buffers, so this is a row bound, not a byte-memory limit.
 
 `WriteOptions.partition: Some(PartitionOptions::default())` enables routing using
 an existing destination's partition spec. `None` disables routing (the default).
-Only the Iceberg sink currently supports this option, for identity partition
-transforms; Parquet and Lance reject it before creating output. Backends declare
-supported transforms through `SinkCapability.supported_partitions`: Iceberg lists
-`PartitionType::Identity`, and an empty list means partitioning is unsupported.
+Only the Iceberg sink currently supports this option, for `Identity`, `Year`,
+`Month`, `Day`, and `Hour` transforms; Parquet and Lance reject it before creating
+output. Backends declare supported transform categories
+through `SinkCapability.supported_partitions`; an empty list means partitioning
+is unsupported.
 The requested `PartitionOptions.partition_type` (default `Identity`) must be
-in that list. No partition layer is required.
+in that list and match every partition field in the destination spec. No
+partition layer is required.
 
 The Iceberg adapter uses the SDK's fanout writer behavior. See the
 [Iceberg sink](sink/iceberg/README.md) for configuration and commit semantics.

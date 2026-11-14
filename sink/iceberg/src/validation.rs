@@ -1,6 +1,6 @@
 use iceberg::spec::Transform;
 use iceberg::table::Table;
-use open_arrow_sink_core::{Error, PartitionOptions, Result};
+use open_arrow_sink_core::{Error, PartitionOptions, PartitionType, Result};
 
 pub(crate) fn validate_table(table: &Table, partition: Option<PartitionOptions>) -> Result<()> {
     if table.readonly() {
@@ -12,14 +12,28 @@ pub(crate) fn validate_table(table: &Table, partition: Option<PartitionOptions>)
             "partitioned tables require WriteOptions.partition".into(),
         ));
     }
-    if spec
-        .fields()
-        .iter()
-        .any(|field| field.transform != Transform::Identity)
-    {
-        return Err(Error::Unsupported(
-            "only identity partition transforms are supported".into(),
-        ));
+    if let Some(partition) = partition {
+        for field in spec.fields() {
+            let category = match field.transform {
+                Transform::Identity => PartitionType::Identity,
+                Transform::Year => PartitionType::Year,
+                Transform::Month => PartitionType::Month,
+                Transform::Day => PartitionType::Day,
+                Transform::Hour => PartitionType::Hour,
+                transform => {
+                    return Err(Error::Unsupported(format!(
+                        "Iceberg partition transform {transform:?} on field {}",
+                        field.name
+                    )));
+                }
+            };
+            if category != partition.partition_type {
+                return Err(Error::Unsupported(format!(
+                    "requested {:?} partitioning, but field {} uses {:?}",
+                    partition.partition_type, field.name, field.transform
+                )));
+            }
+        }
     }
     Ok(())
 }

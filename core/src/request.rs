@@ -11,11 +11,12 @@ pub enum Ordering {
 }
 
 /// Enable partition routing using the destination's partition specification.
-/// Currently supported only by the Iceberg sink, for identity transforms.
+/// Currently supported only by the Iceberg sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PartitionOptions {
     /// Requested partition transform. The sink must advertise this type, and
-    /// the destination spec must use it; this does not alter the table spec.
+    /// every field in the destination spec must use it; this does not alter
+    /// the table spec.
     pub partition_type: PartitionType,
 }
 

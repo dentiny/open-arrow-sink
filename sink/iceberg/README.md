@@ -8,8 +8,9 @@ own catalog and use its `TableIdent` as the request.
 `open` loads the table, checks that the session schema exactly matches
 `iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())`, and
 rejects read-only tables. Partitioned tables require `WriteOptions.partition` and
-currently support only identity transforms. This includes Iceberg field-ID metadata
-on Arrow fields; derive the input schema with the SDK helper above rather than
+support `Identity`, `Year`, `Month`, `Day`, and `Hour` transforms. Exact schema
+matching includes Iceberg field-ID metadata on Arrow fields; derive the input
+schema with the SDK helper above rather than
 constructing metadata-free fields. Use `Ordering::Unordered`: Iceberg table
 scans do not provide an input-row-order guarantee.
 
@@ -35,9 +36,24 @@ let options = WriteOptions {
 The table's default partition spec and current schema are fixed when the session
 opens. `partition_type` requests a transform type (default `Identity`); it must
 be advertised by the sink and match the table spec. It does not change the table
-spec. Do not repeat column names in the option. One or multiple
-identity fields and null partition values are supported. Other transforms are
-rejected at open. With partitioning disabled, partitioned tables remain rejected;
+spec. Do not repeat column names in the option. One or multiple partition fields
+and null partition values are supported. Every field must use the requested
+transform category; mixed categories are rejected at open.
+
+| Category | Example table transform | Example grouping |
+| --- | --- | --- |
+| `Identity` | `identity(country)` | `CN` stays `CN` |
+| `Year` | `year(created_at)` | timestamps in 2026 share a partition |
+| `Month` | `month(created_at)` | timestamps in November 2026 share a partition |
+| `Day` | `day(created_at)` | timestamps on 2026-11-14 share a partition |
+| `Hour` | `hour(created_at)` | timestamps during the same hour share a partition |
+
+`Year`, `Month`, and `Day` accept date or timestamp fields; `Hour` requires a
+timestamp. Transform calculation and partition metadata are delegated to the SDK.
+
+For example, use `partition_type: PartitionType::Day` for a table partitioned by
+`day(created_at)`. `Bucket`, `Truncate`, `Void`, and unknown transforms are rejected
+at open. With partitioning disabled, partitioned tables remain rejected;
 enabling it on an unpartitioned table keeps the unpartitioned writer path.
 
 An internal adapter delegates partition calculation/batch splitting to the SDK's
@@ -61,7 +77,7 @@ errors may have an unknown publication outcome: reload/reconcile the table befor
 retrying; files are deliberately retained on failure to avoid deleting committed
 data. SDK catalog commit behavior (including its retry policy) applies.
 
-This first version has no table creation, non-identity partition transforms, schema evolution,
+This sink has no table creation, mixed partition transform categories, schema evolution,
 overwrite, upsert, sorting or concurrency settings.
 
 ```sh
