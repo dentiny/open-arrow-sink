@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "layer", "sink/parquet", "sink/iceberg"]
+members = ["core", "layer", "sink/parquet", "sink/iceberg", "sink/lance"]
 resolver = "2"
 
 [workspace.package]
@@ -30,6 +30,7 @@ description = "Composable, independent Arrow RecordBatch sinks"
 
 [features]
 default = []
+sink-lance = ["dep:open-arrow-sink-lance"]
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
 layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
@@ -39,3 +40,8 @@ open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
 open-arrow-sink-iceberg = { path = "sink/iceberg", version = "0.1.0", optional = true }
 open-arrow-sink-parquet = { workspace = true, optional = true }
+
+[dependencies.open-arrow-sink-lance]
+path = "sink/lance"
+version = "0.1.0"
+optional = true
