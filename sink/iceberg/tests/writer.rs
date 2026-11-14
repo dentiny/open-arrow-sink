@@ -261,6 +261,7 @@ fn partition_options(max_open_writers: usize) -> WriteOptions {
     WriteOptions {
         partition: Some(PartitionOptions {
             max_open_writers: NonZeroUsize::new(max_open_writers).unwrap(),
+            ..PartitionOptions::default()
         }),
         ..options()
     }

@@ -22,11 +22,12 @@ Enable identity partition routing with the shared write option:
 
 ```rust
 use std::num::NonZeroUsize;
-use open_arrow_sink_core::{Ordering, PartitionOptions, WriteOptions};
+use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteOptions};
 
 let options = WriteOptions {
     ordering: Ordering::Unordered,
     partition: Some(PartitionOptions {
+        partition_type: PartitionType::Identity,
         max_open_writers: NonZeroUsize::new(128).unwrap(),
     }),
     ..WriteOptions::default()
@@ -34,7 +35,9 @@ let options = WriteOptions {
 ```
 
 The table's default partition spec and current schema are fixed when the session
-opens. Do not repeat column names or transforms in the option. One or multiple
+opens. `partition_type` requests a transform type (default `Identity`); it must
+be advertised by the sink and match the table spec. It does not change the table
+spec. Do not repeat column names in the option. One or multiple
 identity fields and null partition values are supported. Other transforms are
 rejected at open. With partitioning disabled, partitioned tables remain rejected;
 enabling it on an unpartitioned table keeps the unpartitioned writer path.

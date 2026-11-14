@@ -67,7 +67,9 @@ an existing destination's partition spec. `None` disables routing (the default).
 Only the Iceberg sink currently supports this option, for identity partition
 transforms; Parquet and Lance reject it before creating output. Backends declare
 supported transforms through `SinkCapability.supported_partitions`: Iceberg lists
-`PartitionType::Identity`, and an empty list means partitioning is unsupported. No partition layer is required.
+`PartitionType::Identity`, and an empty list means partitioning is unsupported.
+The requested `PartitionOptions.partition_type` (default `Identity`) must be
+in that list. No partition layer is required.
 
 `PartitionOptions.max_open_writers` is a positive limit on distinct partitions
 per session (default 128). Exceeding it fails the write; abort or drop the session.
