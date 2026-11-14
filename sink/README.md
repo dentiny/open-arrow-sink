@@ -1,4 +1,5 @@
 # Sinks
 
-Future backend crates: Parquet directory, Iceberg table and Lance dataset.
-This foundation PR intentionally includes no backend implementations.
+- [Iceberg table](iceberg/README.md): append to existing unpartitioned tables.
+
+Parquet directory and Lance dataset implementations will follow separately.

@@ -2,3 +2,6 @@
 //! No dependency on open-arrow-access is required.
 pub use open_arrow_sink_core::*;
 pub use open_arrow_sink_layer as layer;
+
+#[cfg(feature = "sink-iceberg")]
+pub use open_arrow_sink_iceberg as iceberg;

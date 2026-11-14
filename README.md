@@ -3,8 +3,8 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-This initial foundation contains only shared contracts and an ordering layer.
-Parquet directory, Iceberg table and Lance dataset implementations will follow
+The `sink-iceberg` feature adds a minimal append-only Iceberg table sink; see
+[`sink/iceberg`](sink/iceberg/README.md). Other backend implementations will follow
 under `sink/` in separate changes.
 
 ```text
