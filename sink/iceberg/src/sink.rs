@@ -65,12 +65,14 @@ impl Sink for IcebergTableSink {
             metadata.current_schema().clone(),
         )
         .map_err(backend)?;
+        // TODO: Make the target file size configurable.
         let rolling = RollingFileWriterBuilder::new_with_default_file_size(
             parquet,
             table.file_io().clone(),
             DefaultLocationGenerator::with_data_location(prefix.trim_end_matches('/').to_owned()),
             DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
         );
+        // TODO: Implement partitioned table writes.
         let partition = PartitionKey::new(
             metadata.default_partition_spec().as_ref().clone(),
             metadata.current_schema().clone(),
