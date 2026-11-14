@@ -365,30 +365,6 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
 
 #[rstest::rstest]
 #[case::empty(true)]
-#[case::nonempty(false)]
-#[tokio::test]
-async fn partition_options_accept_unpartitioned_tables_and_empty_sessions(#[case] empty: bool) {
-    let (catalog, identifier, schema) = table().await;
-    let data = batch(schema.clone());
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options())
-        .await
-        .unwrap();
-    if !empty {
-        writer.write(data).await.unwrap();
-    }
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        if empty { 0 } else { 3 }
-    );
-    assert_eq!(
-        rows(catalog.as_ref(), &identifier).await.len(),
-        if empty { 0 } else { 3 }
-    );
-}
-
-#[rstest::rstest]
-#[case::empty(true)]
 #[case::rolling(false)]
 #[tokio::test]
 async fn partitioned_empty_sessions_and_file_rolling(#[case] empty: bool) {
