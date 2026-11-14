@@ -14,6 +14,7 @@ pub trait Writer: Send {
     /// Consumes the writer even on failure; no automatic retry is provided.
     async fn commit(self: Box<Self>) -> Result<WriteSummary>;
 
-    /// Best-effort cleanup. This cannot guarantee rollback of already visible data.
+    /// End the session, applying the cleanup policy from `WriteOptions`.
+    /// Cleanup is best effort and cannot guarantee rollback of already visible data.
     async fn abort(self: Box<Self>) -> Result<()>;
 }

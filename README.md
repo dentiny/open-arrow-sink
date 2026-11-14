@@ -3,9 +3,9 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The `sink-iceberg` feature adds a minimal append-only Iceberg table sink; see
-[`sink/iceberg`](sink/iceberg/README.md). Other backend implementations will follow
-under `sink/` in separate changes.
+The library includes shared contracts, an ordering layer, and optional
+[Parquet](sink/parquet/README.md) and [Iceberg](sink/iceberg/README.md) sinks.
+Lance dataset support will follow separately.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
@@ -51,7 +51,8 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
   Equality includes column order, types, nullability and metadata; casts are explicit.
 - `commit` completes buffered writes using the backend's documented visibility
   semantics. The common interface does not promise atomic publication.
-- `abort` performs best-effort cleanup and cannot promise rollback of visible data.
+- `abort` follows `WriteOptions.cleanup_on_error` (enabled by default). Cleanup is best
+  effort and cannot promise rollback of visible data.
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,
 write modes, schema evolution or transaction framework is included in this change.

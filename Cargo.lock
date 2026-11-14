@@ -1701,6 +1701,7 @@ dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-iceberg",
  "open-arrow-sink-layer",
+ "open-arrow-sink-parquet",
 ]
 
 [[package]]
@@ -1732,6 +1733,17 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "open-arrow-sink-core",
+]
+
+[[package]]
+name = "open-arrow-sink-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "futures",
+ "open-arrow-sink-core",
+ "parquet",
+ "tokio",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 # Sinks
 
+- [Parquet directory](parquet/README.md): create-only local directory, one file per session.
 - [Iceberg table](iceberg/README.md): append to existing unpartitioned tables.
-
-Parquet directory and Lance dataset implementations will follow separately.
+- Lance dataset: planned separately.
