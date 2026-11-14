@@ -3866,6 +3866,8 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "lance",
+ "lance-index",
+ "lance-linalg",
  "more-asserts",
  "open-arrow-sink-core",
  "rstest",

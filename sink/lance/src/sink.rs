@@ -1,11 +1,11 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
-    validation,
+    IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
+    async_trait, validation,
 };
 
-use crate::{error::backend, writer::LanceWriter};
+use crate::{error::backend, validation::validate_indexes, writer::LanceWriter};
 
 /// Creates a new local dataset directory. Existing paths are always rejected.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -19,6 +19,12 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            supported_indexes: &[
+                IndexType::Scalar,
+                IndexType::Vector,
+                IndexType::Text,
+                IndexType::BloomFilter,
+            ],
         }
     }
 
@@ -29,6 +35,7 @@ impl Sink for LanceDatasetSink {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         validation::validate_options(&options, self.capability())?;
+        validate_indexes(&schema, &options.indexes)?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.
         // TODO: Use OpenDAL to support remote storage beyond local paths.
@@ -48,6 +55,7 @@ impl Sink for LanceDatasetSink {
             path,
             uri,
             options.target_file_size,
+            options.indexes,
         )))
     }
 }
