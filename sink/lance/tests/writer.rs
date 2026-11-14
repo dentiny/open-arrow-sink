@@ -82,3 +82,81 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
     assert!(!tokio::fs::try_exists(&path).await.unwrap());
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
+
+#[tokio::test]
+async fn target_file_size_rolls_files_without_losing_rows() {
+    // Exceed the SDK's default page buffer while staying below its row-count limit.
+    let count = 10 * 1024;
+    let payloads = arrow_array::FixedSizeBinaryArray::try_from_iter((0..count).map(|i| {
+        let mut state = i as u64 + 1;
+        let mut bytes = [0; 1024];
+        for byte in &mut bytes {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        bytes
+    }))
+    .unwrap();
+    let expected = RecordBatch::try_from_iter([
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..count as i64)) as ArrayRef,
+        ),
+        ("payload", Arc::new(payloads) as ArrayRef),
+    ])
+    .unwrap();
+    for (target_file_size, should_roll) in [(None, false), (Some(1), true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("dataset");
+        let mut writer = LanceDatasetSink
+            .open(
+                path.clone(),
+                expected.schema(),
+                WriteOptions {
+                    target_file_size,
+                    ..options()
+                },
+            )
+            .await
+            .unwrap();
+        writer.write(expected.clone()).await.unwrap();
+        writer.write(expected.clone()).await.unwrap();
+        assert_eq!(
+            writer.commit().await.unwrap().rows_written,
+            2 * count as u64
+        );
+        let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+        let fragments = dataset.get_fragments();
+        if should_roll {
+            assert!(fragments.len() > 1);
+        } else {
+            assert_eq!(fragments.len(), 1);
+        }
+        let actual = dataset.scan().try_into_batch().await.unwrap();
+        assert_eq!(actual.schema(), expected.schema());
+        let ids = actual
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let payloads = actual
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+            .unwrap();
+        let expected_payloads = expected
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+            .unwrap();
+        let mut occurrences = vec![0; count];
+        for i in 0..actual.num_rows() {
+            let id = usize::try_from(ids.value(i)).unwrap();
+            assert_eq!(payloads.value(i), expected_payloads.value(id));
+            occurrences[id] += 1;
+        }
+        assert_eq!(occurrences, vec![2; count]);
+    }
+}

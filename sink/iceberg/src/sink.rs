@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use iceberg::arrow::schema_to_arrow_schema;
-use iceberg::spec::{PartitionKey, Struct};
+use iceberg::spec::{PartitionKey, Struct, TableProperties};
 use iceberg::writer::IcebergWriterBuilder;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
@@ -65,9 +65,11 @@ impl Sink for IcebergTableSink {
             metadata.current_schema().clone(),
         )
         .map_err(backend)?;
-        // TODO: Make the target file size configurable.
-        let rolling = RollingFileWriterBuilder::new_with_default_file_size(
+        let rolling = RollingFileWriterBuilder::new(
             parquet,
+            options
+                .target_file_size
+                .unwrap_or(TableProperties::PROPERTY_WRITE_TARGET_FILE_SIZE_BYTES_DEFAULT),
             table.file_io().clone(),
             DefaultLocationGenerator::with_data_location(prefix.trim_end_matches('/').to_owned()),
             DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),

@@ -4,6 +4,11 @@ use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
+    if options.target_file_size == Some(0) {
+        return Err(Error::Unsupported(
+            "target_file_size must be greater than zero".into(),
+        ));
+    }
     if options.ordering == Ordering::PreserveInput && capability.ordering != Ordering::PreserveInput
     {
         return Err(Error::Unsupported("preserving input row order".into()));

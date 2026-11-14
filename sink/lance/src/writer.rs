@@ -108,16 +108,24 @@ impl Writer for LanceWriter {
 }
 
 impl LanceWriter {
-    pub(crate) fn new(schema: SchemaRef, path: PathBuf, uri: String) -> Self {
+    pub(crate) fn new(
+        schema: SchemaRef,
+        path: PathBuf,
+        uri: String,
+        target_file_size: Option<usize>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
             schema: schema.clone(),
             receiver,
             finished: false,
         };
-        let task = tokio::spawn(async move {
-            Dataset::write(reader, uri.as_str(), Some(WriteParams::default())).await
-        });
+        let mut params = WriteParams::default();
+        if let Some(size) = target_file_size {
+            params.max_bytes_per_file = size;
+        }
+        let task =
+            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
             schema,
             path,

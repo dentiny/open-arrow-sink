@@ -60,6 +60,27 @@ pending rows and aborts the inner writer. No background tasks or concurrency are
 Pending slices contain at most the configured number of rows. Arrow slices may
 retain their input buffers, so this is a row bound, not a byte-memory limit.
 
+## File size
+
+Set `WriteOptions.target_file_size` to a positive byte count for any sink:
+
+```rust
+use open_arrow_sink::{Ordering, WriteOptions};
+
+let options = WriteOptions {
+    ordering: Ordering::Unordered,
+    target_file_size: Some(256 * 1024 * 1024),
+    ..WriteOptions::default()
+};
+```
+
+This is a soft data-file target, not a strict maximum or a total-output limit.
+Files can exceed it because batches, pages, row groups, and footers are not split
+at exact byte boundaries. `None` preserves the backend default: one file per
+Parquet session, the Iceberg SDK's default target, or Lance's default file limits.
+Zero is rejected before opening a destination. Other backend limits may also
+cause rolling before the target is reached.
+
 ## Implementing a sink
 
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:

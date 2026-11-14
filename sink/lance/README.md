@@ -11,7 +11,7 @@ use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 let mut writer = LanceDatasetSink.open(
     "./new.lance".into(),
     schema,
-    WriteOptions { ordering: Ordering::Unordered },
+    WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
 ).await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
@@ -19,6 +19,10 @@ let summary = writer.commit().await?;
 
 Enable the facade's `sink-lance` feature, or depend on `open-arrow-sink-lance`
 directly. Cloud backends in Lance are disabled.
+
+`WriteOptions.target_file_size` sets Lance's native `max_bytes_per_file` parameter.
+`None` keeps the SDK default. It is a soft data-file target: buffered pages, groups,
+and file footers can make files larger; Lance's row-count limits also still apply.
 
 Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input

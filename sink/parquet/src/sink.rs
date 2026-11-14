@@ -9,7 +9,7 @@ use tokio::fs::{self, OpenOptions};
 
 use crate::{error::backend, writer::ParquetDirectoryWriter};
 
-/// Creates a new local directory containing `part-00000.parquet`.
+/// Creates a new local directory containing `part-00000.parquet`, etc.
 /// The parent directory must already exist. Existing destinations are never replaced.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
@@ -61,10 +61,7 @@ impl Sink for ParquetDirectorySink {
             }
         };
         Ok(Box::new(ParquetDirectoryWriter::new(
-            directory,
-            schema,
-            writer,
-            options.cleanup_on_error,
+            directory, schema, writer, options,
         )))
     }
 }
