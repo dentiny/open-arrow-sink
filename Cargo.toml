@@ -24,6 +24,10 @@ license.workspace = true
 repository.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"
 
+[features]
+default = []
+layer-rebatch = ["open-arrow-sink-layer/rebatch"]
+
 [dependencies]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
