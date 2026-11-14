@@ -11,8 +11,8 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Error, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
-    validation,
+    Error, Ordering, PartitionType, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
+    async_trait, validation,
 };
 
 use crate::{
@@ -38,7 +38,7 @@ impl Sink for IcebergTableSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
-            partition: true,
+            supported_partitions: vec![PartitionType::Identity],
         }
     }
 

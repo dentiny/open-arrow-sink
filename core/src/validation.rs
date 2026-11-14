@@ -4,7 +4,7 @@ use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
-    if options.partition.is_some() && !capability.partition {
+    if options.partition.is_some() && capability.supported_partitions.is_empty() {
         return Err(Error::Unsupported("partitioned writes".into()));
     }
     if options.target_file_size == Some(0) {

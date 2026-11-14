@@ -22,7 +22,7 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, partition: false }`
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![] }`
 or an `Ordering::Unordered` ordering capability (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
@@ -66,7 +66,8 @@ retain their input buffers, so this is a row bound, not a byte-memory limit.
 an existing destination's partition spec. `None` disables routing (the default).
 Only the Iceberg sink currently supports this option, for identity partition
 transforms; Parquet and Lance reject it before creating output. Backends declare
-support through `SinkCapability.partition`. No partition layer is required.
+supported transforms through `SinkCapability.supported_partitions`: Iceberg lists
+`PartitionType::Identity`, and an empty list means partitioning is unsupported. No partition layer is required.
 
 `PartitionOptions.max_open_writers` is a positive limit on distinct partitions
 per session (default 128). Exceeding it fails the write; abort or drop the session.

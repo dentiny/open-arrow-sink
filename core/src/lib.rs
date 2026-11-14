@@ -11,7 +11,7 @@ mod writer;
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;
 pub use async_trait::async_trait;
-pub use capability::SinkCapability;
+pub use capability::{PartitionType, SinkCapability};
 pub use error::{Error, Result};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, WriteOptions};
