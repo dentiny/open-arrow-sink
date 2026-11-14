@@ -15,7 +15,7 @@ pub(crate) struct ParquetDirectoryWriter {
     options: WriteOptions,
     rows_written: u64,
     files_created: usize,
-    file_rows: usize,
+    cur_file_rows: usize,
 }
 
 #[async_trait]
@@ -38,13 +38,13 @@ impl Writer for ParquetDirectoryWriter {
                 .map_err(backend)?;
             self.files_created += 1;
             writer = AsyncArrowWriter::try_new(file, self.schema.clone(), None).map_err(backend)?;
-            self.file_rows = 0;
+            self.cur_file_rows = 0;
         }
         writer.write(&batch).await.map_err(backend)?;
         // Flush each batch rather than retaining the complete input in memory.
         writer.flush().await.map_err(backend)?;
         self.rows_written += batch.num_rows() as u64;
-        self.file_rows += batch.num_rows();
+        self.cur_file_rows += batch.num_rows();
         self.writer = Some(writer);
         Ok(())
     }
@@ -83,12 +83,12 @@ impl ParquetDirectoryWriter {
             options,
             rows_written: 0,
             files_created: 1,
-            file_rows: 0,
+            cur_file_rows: 0,
         }
     }
 
     fn should_roll_file(&self, bytes_written: usize, incoming_rows: usize) -> bool {
-        self.file_rows > 0
+        self.cur_file_rows > 0
             && incoming_rows > 0
             && self
                 .options
