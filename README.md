@@ -99,8 +99,17 @@ write modes, schema evolution or transaction framework is included in this chang
 
 ## Development
 
+Run the checks below locally to lint Rust code and Cargo manifests. Install Taplo with
+`cargo install taplo-cli --version 0.10.0 --locked`. Clippy also requires `protoc`
+for the Lance dependencies (`protobuf-compiler` on Ubuntu).
+
 ```sh
 cargo fmt --all --check
+taplo fmt --check
+taplo lint --no-schema
+cargo metadata --no-deps --locked --format-version 1 > /dev/null
 cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
+
+Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
