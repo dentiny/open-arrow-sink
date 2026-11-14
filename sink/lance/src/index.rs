@@ -11,6 +11,9 @@ use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
 use tokio::task::JoinSet;
 
+const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
+const MAX_VECTOR_PARTITIONS: usize = 4096;
+
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
     indexes: &[IndexSpec],
@@ -71,7 +74,8 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             (
                 LanceIndexType::IvfFlat,
                 Box::new(VectorIndexParams::ivf_flat(
-                    rows.div_ceil(8192).clamp(1, 4096),
+                    rows.div_ceil(TARGET_VECTOR_PARTITION_ROWS)
+                        .clamp(1, MAX_VECTOR_PARTITIONS),
                     MetricType::L2,
                 )),
             )
