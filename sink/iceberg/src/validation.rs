@@ -1,5 +1,7 @@
 use iceberg::table::Table;
-use open_arrow_sink_core::{Error, Result};
+use open_arrow_sink_core::Result;
+
+use crate::error::unsupported_table;
 
 pub(crate) fn validate_table(table: &Table) -> Result<()> {
     if table.readonly()
@@ -9,9 +11,7 @@ pub(crate) fn validate_table(table: &Table) -> Result<()> {
             .fields()
             .is_empty()
     {
-        return Err(Error::Unsupported(
-            "only writable, unpartitioned tables are supported".into(),
-        ));
+        return Err(unsupported_table());
     }
     Ok(())
 }

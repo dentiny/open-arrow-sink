@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::path::PathBuf;
 
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
@@ -8,7 +8,7 @@ use open_arrow_sink_core::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::error::backend;
+use crate::error::{aborted, backend, failed, worker_stopped};
 
 enum Message {
     Batch(RecordBatch),
@@ -37,10 +37,7 @@ impl Iterator for ChannelReader {
             }
             None => {
                 self.finished = true;
-                Some(Err(ArrowError::ExternalError(Box::new(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Lance writer aborted or dropped",
-                )))))
+                Some(Err(aborted()))
             }
         }
     }
@@ -69,7 +66,7 @@ impl Writer for LanceWriter {
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         if self.failed {
-            return Err(backend(io::Error::other("writer failed; abort or drop it")));
+            return Err(failed());
         }
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
@@ -79,7 +76,7 @@ impl Writer for LanceWriter {
             .unwrap()
             .send(Message::Batch(batch))
             .await
-            .map_err(|_| backend(io::Error::other("Lance write worker stopped")))?;
+            .map_err(|_| worker_stopped())?;
         self.rows += rows;
         self.failed = false;
         Ok(())
@@ -87,7 +84,7 @@ impl Writer for LanceWriter {
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
         if self.failed {
-            return Err(backend(io::Error::other("writer failed; abort or drop it")));
+            return Err(failed());
         }
         let sender = self.sender.take().unwrap();
         // Channel closure is an error; only this marker permits native publication.

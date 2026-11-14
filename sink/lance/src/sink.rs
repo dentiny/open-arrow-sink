@@ -1,11 +1,14 @@
-use std::{io, path::PathBuf};
+use std::path::PathBuf;
 
 use open_arrow_sink_core::{
     Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
     validation,
 };
 
-use crate::{error::backend, writer::LanceWriter};
+use crate::{
+    error::{backend, invalid_path},
+    writer::LanceWriter,
+};
 
 /// Creates a new local dataset directory. Existing paths are always rejected.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -33,15 +36,7 @@ impl Sink for LanceDatasetSink {
         // this directory until commit/abort; no existing dataset is overwritten.
         // TODO: Use OpenDAL to support remote storage beyond local paths.
         let path = std::path::absolute(path).map_err(backend)?;
-        let uri = path
-            .to_str()
-            .ok_or_else(|| {
-                backend(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Lance requires a UTF-8 path",
-                ))
-            })?
-            .to_owned();
+        let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
         tokio::fs::create_dir(&path).await.map_err(backend)?;
         Ok(Box::new(LanceWriter::new(
             schema,

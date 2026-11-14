@@ -9,3 +9,11 @@ pub enum Error {
     #[error("backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
+
+pub(crate) fn invalid_target_file_size() -> Error {
+    Error::Unsupported("target_file_size must be greater than zero".into())
+}
+
+pub(crate) fn preserve_input_unsupported() -> Error {
+    Error::Unsupported("preserving input row order".into())
+}

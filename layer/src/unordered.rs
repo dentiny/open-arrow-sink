@@ -2,9 +2,11 @@ use std::num::NonZeroUsize;
 
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    Error, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
+    Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
     WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
+
+use crate::error::failed;
 
 /// Pre-open independent writers and dispatch batches to available writers.
 /// At most one batch per writer is in flight. Work progresses while write or
@@ -104,10 +106,6 @@ impl UnorderedWriter {
         }
         first_error.map_or(Ok(()), Err)
     }
-}
-
-fn failed() -> Error {
-    Error::Unsupported("writer failed or was cancelled; abort or drop it".into())
 }
 
 #[async_trait]
