@@ -13,8 +13,7 @@ pub(crate) struct ParquetDirectoryWriter {
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     rows_written: u64,
-    cleanup_on_error: bool,
-    target_file_size: Option<usize>,
+    options: WriteOptions,
     files_created: usize,
     file_rows: usize,
 }
@@ -82,8 +81,7 @@ impl ParquetDirectoryWriter {
             schema,
             writer: Some(writer),
             rows_written: 0,
-            cleanup_on_error: options.cleanup_on_error,
-            target_file_size: options.target_file_size,
+            options,
             files_created: 1,
             file_rows: 0,
         }
@@ -93,6 +91,7 @@ impl ParquetDirectoryWriter {
         self.file_rows > 0
             && incoming_rows > 0
             && self
+                .options
                 .target_file_size
                 .is_some_and(|size| bytes_written >= size)
     }
@@ -102,7 +101,7 @@ impl ParquetDirectoryWriter {
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
-        if !self.cleanup_on_error {
+        if !self.options.cleanup_on_error {
             return Ok(());
         }
         for index in 0..self.files_created {
