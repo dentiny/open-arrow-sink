@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, ordering and unordered write layers, an optional rebatch layer, and optional
+The library includes shared contracts, ordering, unordered write, and rebatch layers, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, UnorderedWriteLayer and optional RebatchLayer
+layer/      OrderingLayer, UnorderedWriteLayer and RebatchLayer
 src/        Public facade
 ```
 
@@ -91,7 +91,7 @@ honors `cleanup_on_error` and never removes another writer's or unrelated files.
 
 ## Rebatching
 
-Enable the facade feature `layer-rebatch` to use `RebatchLayer`:
+`RebatchLayer` is available by default:
 
 ```rust,ignore
 use std::num::NonZeroUsize;

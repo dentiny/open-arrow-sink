@@ -12,7 +12,7 @@ parquet = { workspace = true, features = ["arrow", "async"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
-open-arrow-sink-layer = { workspace = true, features = ["rebatch"] }
+open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
 futures.workspace = true
