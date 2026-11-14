@@ -12,6 +12,7 @@ parquet = { workspace = true, features = ["arrow", "async"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 futures.workspace = true
 arrow-array.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
