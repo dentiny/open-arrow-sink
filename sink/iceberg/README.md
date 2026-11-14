@@ -70,3 +70,9 @@ cargo run -p open-arrow-sink-iceberg --example append
 
 The example creates an ephemeral in-memory table outside the sink, appends three
 rows, and reads them through the Iceberg scanner.
+
+## Index requests
+
+This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
+`WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
+or accessing the destination. The default empty list keeps existing behavior.

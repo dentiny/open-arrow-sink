@@ -1,4 +1,4 @@
-use crate::Ordering;
+use crate::{IndexType, Ordering};
 
 /// Partition transforms a sink can write. Additional transforms can be added
 /// as backend support is implemented.
@@ -8,7 +8,7 @@ pub enum PartitionType {
 }
 
 /// Guarantees provided by the configured sink.
-/// Each sink must explicitly declare its ordering guarantee.
+/// Each sink must explicitly declare its ordering guarantee, partition support, and index support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkCapability {
     /// `PreserveInput` guarantees input row order in the target's documented
@@ -18,4 +18,7 @@ pub struct SinkCapability {
     /// Partition transforms accepted by this sink. An empty list means
     /// `WriteOptions.partition` is unsupported.
     pub supported_partitions: Vec<PartitionType>,
+    /// Logical index types this sink can construct. Empty means none.
+    /// Backends additionally validate column-type compatibility before writing.
+    pub supported_indexes: &'static [IndexType],
 }

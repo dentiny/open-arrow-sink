@@ -39,6 +39,7 @@ impl Sink for IcebergTableSink {
         SinkCapability {
             ordering: Ordering::Unordered,
             supported_partitions: vec![PartitionType::Identity],
+            supported_indexes: &[],
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::PartitionType;
+use crate::{IndexSpec, PartitionType};
 
 /// Input-order policy or guarantee; this does not sort rows by column values.
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
@@ -27,11 +27,14 @@ impl Default for PartitionOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
     pub ordering: Ordering,
     /// None disables partition routing; Some uses the destination partition spec.
     pub partition: Option<PartitionOptions>,
+    /// Indexes to construct after writing. Empty by default; unsupported sinks
+    /// reject nonempty requests before opening a writer.
+    pub indexes: Vec<IndexSpec>,
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
@@ -45,6 +48,7 @@ impl Default for WriteOptions {
         Self {
             ordering: Ordering::default(),
             partition: None,
+            indexes: Vec::new(),
             target_file_size: None,
             cleanup_on_error: true,
         }
