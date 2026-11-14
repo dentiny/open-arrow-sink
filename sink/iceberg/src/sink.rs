@@ -15,7 +15,7 @@ use open_arrow_sink_core::{
     validation,
 };
 
-use crate::{error::backend, writer::IcebergTableWriter};
+use crate::{error::backend, validation::validate_table, writer::IcebergTableWriter};
 
 /// Uses a caller-configured catalog; the table must already exist.
 pub struct IcebergTableSink {
@@ -47,11 +47,7 @@ impl Sink for IcebergTableSink {
         validation::validate_options(&options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
         let metadata = table.metadata();
-        if table.readonly() || !metadata.default_partition_spec().fields().is_empty() {
-            return Err(Error::Unsupported(
-                "only writable, unpartitioned tables are supported".into(),
-            ));
-        }
+        validate_table(&table)?;
         let table_schema = schema_to_arrow_schema(metadata.current_schema()).map_err(backend)?;
         if schema.as_ref() != &table_schema {
             return Err(Error::SchemaMismatch);
