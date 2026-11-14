@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The shared foundation contains write contracts and an ordering layer.
-Enable `sink-lance` for the minimal [local Lance dataset sink](sink/lance/README.md).
-Other backends will follow under `sink/` in separate changes.
+The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
+[Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
+[Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer
+layer/      OrderingLayer, optional RebatchLayer
 src/        Public facade
 ```
 
@@ -41,6 +41,25 @@ The ordering layer overrides the session option and checks the inner capability
 before opening it. Install one ordering layer per sink. Layers wrap without I/O;
 the last installed layer is outermost.
 
+## Rebatching
+
+Enable the facade feature `layer-rebatch` to use `RebatchLayer`:
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use open_arrow_sink::{SinkExt, layer::RebatchLayer};
+
+let sink = backend.layer(RebatchLayer::new(NonZeroUsize::new(64_000).unwrap()));
+```
+
+The layer merges small batches and splits large batches while preserving row order.
+Each forwarded batch has the configured row count, except the final partial batch
+sent by `commit`. Empty batches are ignored after schema validation. `abort` drops
+pending rows and aborts the inner writer. No background tasks or concurrency are added.
+
+Pending slices contain at most the configured number of rows. Arrow slices may
+retain their input buffers, so this is a row bound, not a byte-memory limit.
+
 ## Implementing a sink
 
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
@@ -51,7 +70,8 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
   Equality includes column order, types, nullability and metadata; casts are explicit.
 - `commit` completes buffered writes using the backend's documented visibility
   semantics. The common interface does not promise atomic publication.
-- `abort` performs best-effort cleanup and cannot promise rollback of visible data.
+- `abort` follows `WriteOptions.cleanup_on_error` (enabled by default). Cleanup is best
+  effort and cannot promise rollback of visible data.
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,
 write modes, schema evolution or transaction framework is included in this change.
