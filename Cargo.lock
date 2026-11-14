@@ -3861,6 +3861,7 @@ dependencies = [
  "arrow-schema",
  "lance",
  "open-arrow-sink-core",
+ "rstest",
  "tempfile",
  "tokio",
 ]
