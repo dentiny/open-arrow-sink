@@ -7,8 +7,8 @@ use open_arrow_sink_core::{
 
 use crate::{
     compression::writer_schema,
-    error::{backend, invalid_path},
-    validation::validate_options,
+    error::backend,
+    validation::{validate_existing_dataset, validate_options, validate_path},
     writer::LanceWriter,
 };
 
@@ -96,24 +96,21 @@ async fn prepare_destination(
 ) -> Result<(Option<PathBuf>, String)> {
     // TODO: Use OpenDAL to support remote storage beyond local paths.
     let path = std::path::absolute(path).map_err(backend)?;
-    let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
+    let uri = validate_path(&path)?.to_owned();
     let reserved = match mode {
         WriteMode::Create => {
             tokio::fs::create_dir(&path).await.map_err(backend)?;
             true
         }
         WriteMode::Append => {
-            let dataset = lance::Dataset::open(&uri).await.map_err(backend)?;
-            if arrow_schema::Schema::from(dataset.schema()) != **encoding_schema {
-                return Err(open_arrow_sink_core::Error::SchemaMismatch);
-            }
+            validate_existing_dataset(&uri, Some(encoding_schema)).await?;
             false
         }
         WriteMode::Overwrite => match tokio::fs::create_dir(&path).await {
             Ok(()) => true,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 // Never turn an unrelated existing directory into a dataset.
-                lance::Dataset::open(&uri).await.map_err(backend)?;
+                validate_existing_dataset(&uri, None).await?;
                 false
             }
             Err(error) => return Err(backend(error)),

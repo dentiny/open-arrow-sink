@@ -14,8 +14,9 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, failed, worker_stopped},
+    error::{aborted, backend, worker_stopped},
     index::build_indexes,
+    validation::{validate_writer_resource, validate_writer_state},
 };
 
 pub(crate) enum Message {
@@ -76,16 +77,12 @@ impl Writer for LanceWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(failed());
-        }
+        validate_writer_state(self.failed, self.sender.is_some())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
+        validate_writer_resource(self.sender.as_ref())?
             .send(Message::Batch(batch))
             .await
             .map_err(|_| worker_stopped())?;
@@ -95,10 +92,8 @@ impl Writer for LanceWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
-            return Err(failed());
-        }
-        let sender = self.sender.take().unwrap();
+        validate_writer_state(self.failed, self.sender.is_some())?;
+        let sender = validate_writer_resource(self.sender.take())?;
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);

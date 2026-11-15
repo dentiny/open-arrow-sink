@@ -4,11 +4,9 @@ use lance::dataset::{
     CommitBuilder,
     transaction::{Operation, Transaction},
 };
-use open_arrow_sink_core::{
-    Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
-};
+use open_arrow_sink_core::{Result, SessionCommitter, WriteOptions, WriteSummary, async_trait};
 
-use crate::{error::backend, index::build_indexes};
+use crate::{error::backend, index::build_indexes, validation};
 
 type Output = (u64, Transaction);
 
@@ -26,11 +24,7 @@ impl SessionCommitter<Output> for LanceCommitter {
         for (rows, transaction) in outputs {
             rows_written += rows;
             if let Some(target) = &mut combined {
-                if target.read_version != transaction.read_version {
-                    return Err(Error::Unsupported(
-                        "Lance writers observed different dataset versions".into(),
-                    ));
-                }
+                validation::validate_transaction_compatibility(target, &transaction)?;
                 match (&mut target.operation, transaction.operation) {
                     (
                         Operation::Overwrite { fragments, .. },
@@ -45,18 +39,13 @@ impl SessionCommitter<Output> for LanceCommitter {
                             fragments: incoming,
                         },
                     ) => fragments.extend(incoming),
-                    _ => {
-                        return Err(Error::Unsupported(
-                            "expected compatible uncommitted Lance write fragments".into(),
-                        ));
-                    }
+                    _ => unreachable!("transaction compatibility was validated"),
                 }
             } else {
                 combined = Some(transaction);
             }
         }
-        let transaction =
-            combined.ok_or_else(|| Error::Unsupported("empty Lance writer session".into()))?;
+        let transaction = validation::validate_session_transaction(combined)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut dataset = CommitBuilder::new(self.uri.as_str())

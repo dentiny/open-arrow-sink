@@ -6,7 +6,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, failed, worker_stopped},
+    error::{backend, worker_stopped},
+    validation::{validate_writer_resource, validate_writer_state},
     writer::{ChannelReader, Message, native_mode},
 };
 
@@ -66,16 +67,12 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed || self.sender.is_none() {
-            return Err(failed());
-        }
+        validate_writer_state(self.failed, self.sender.is_some())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
+        validate_writer_resource(self.sender.as_ref())?
             .send(Message::Batch(batch))
             .await
             .map_err(|_| worker_stopped())?;
@@ -84,17 +81,12 @@ impl DataWriter for FragmentWriter {
         Ok(())
     }
     async fn finish(&mut self) -> Result<Output> {
-        if self.failed {
-            return Err(failed());
-        }
+        validate_writer_state(self.failed, self.sender.is_some() && self.task.is_some())?;
         self.failed = true;
-        let sender = self.sender.take().ok_or_else(failed)?;
+        let sender = validate_writer_resource(self.sender.take())?;
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let transaction = self
-            .task
-            .take()
-            .ok_or_else(failed)?
+        let transaction = validate_writer_resource(self.task.take())?
             .await
             .map_err(backend)?
             .map_err(backend)?;
