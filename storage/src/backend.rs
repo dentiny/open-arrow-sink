@@ -58,6 +58,27 @@ impl Storage {
         Self::new(operator, base)
     }
 
+    /// Validate a non-root destination and give it directory URL semantics.
+    pub fn directory_url(&self, url: &Url) -> Result<Url> {
+        self.nonroot_path(url)?;
+        let mut directory = url.clone();
+        if !directory.path().ends_with('/') {
+            directory.path_segments_mut().unwrap().push("");
+        }
+        Ok(directory)
+    }
+
+    /// Check for an exact object, an empty directory, or any objects under a prefix.
+    /// This is a preflight check; callers must use conditional creation to claim it.
+    pub async fn prefix_exists(&self, url: &Url) -> Result<bool> {
+        let directory = self.directory_url(url)?;
+        let mut exact = directory.clone();
+        exact.path_segments_mut().unwrap().pop_if_empty();
+        Ok(self.exists(&exact).await?
+            || self.exists(&directory).await?
+            || !self.list(&directory).await?.is_empty())
+    }
+
     /// Apply optional retry/timeout policies to the supplied OpenDAL operator.
     pub fn try_new(operator: Operator, base_url: Url, config: StorageConfig) -> Result<Self> {
         Self::new(config.apply(operator)?, base_url)
