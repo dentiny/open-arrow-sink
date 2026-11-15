@@ -3,7 +3,7 @@ use std::ops::Range;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use open_arrow_sink_core::Result;
-use opendal::Operator;
+use opendal::{HttpTransporter, Operator};
 use url::Url;
 
 use crate::{
@@ -17,9 +17,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
-    // Preserve the caller's context so replacing the budget does not nest
-    // transport limiters (or acquire the same semaphore twice).
-    base_operator: Operator,
+    // Budget changes wrap this original transport, never an existing limiter.
+    base_http_transport: HttpTransporter,
     base_url: Url,
 }
 
@@ -33,9 +32,13 @@ impl Storage {
             base_url.set_path(&path);
         }
         validation::decoded_path(&base_url)?;
+        let base_http_transport = operator.base_context().http_transport().clone();
+        let context = operator.base_context().with_http_transport(
+            HttpConcurrencyLimitLayer::default().wrap(base_http_transport.clone()),
+        );
         Ok(Self {
-            operator: operator.clone().layer(HttpConcurrencyLimitLayer::default()),
-            base_operator: operator,
+            operator: operator.with_context(context),
+            base_http_transport,
             base_url,
         })
     }
@@ -86,9 +89,14 @@ impl Storage {
         Self::new(config.apply(operator)?, base_url)
     }
 
-    /// Replace the request budget shared by this storage and its clones.
+    /// Configure the request budget shared by subsequent clones and operators.
+    /// Existing clones and operators retain their previous budget.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
-        self.operator = self.base_operator.clone().layer(limit);
+        let context = self
+            .operator
+            .base_context()
+            .with_http_transport(limit.wrap(self.base_http_transport.clone()));
+        self.operator = self.operator.with_context(context);
         self
     }
 

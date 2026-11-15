@@ -32,13 +32,33 @@ fn request(path: &str) -> Request<Buffer> {
     Request::builder().uri(path).body(Buffer::new()).unwrap()
 }
 
-fn storage() -> Storage {
+fn operator() -> opendal::Operator {
     let operator = opendal::Operator::new(opendal::services::Fs::default().root("/")).unwrap();
     let context = operator
         .base_context()
         .clone()
         .with_http_transport(HttpTransporter::new(Transport));
-    Storage::new(operator.with_context(context), "file:///".parse().unwrap()).unwrap()
+    operator.with_context(context)
+}
+
+fn storage() -> Storage {
+    Storage::new(operator(), "file:///".parse().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn replacing_storage_budget_preserves_caller_layers() {
+    let operator = operator().layer(HttpConcurrencyLimitLayer::new(1).unwrap());
+    let storage = Storage::new(operator, "file:///".parse().unwrap())
+        .unwrap()
+        .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(2).unwrap())
+        .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(3).unwrap());
+    let transport = storage.operator().context().http_transport().clone();
+    let response = transport.fetch(request("/")).await.unwrap();
+    // The caller's independent one-request budget still applies.
+    let mut waiting = Box::pin(transport.fetch(request("/")));
+    assert!(poll!(waiting.as_mut()).is_pending());
+    drop(response);
+    assert!(poll!(waiting.as_mut()).is_ready());
 }
 
 #[tokio::test]
