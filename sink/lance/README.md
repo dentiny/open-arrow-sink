@@ -1,15 +1,15 @@
 # Lance dataset sink
 
-`LanceDatasetSink` creates a new local Lance dataset from Arrow batches. It requires
-a Tokio runtime and a new UTF-8 directory path whose parent already exists.
+`LanceDatasetSink` creates a new Lance dataset from Arrow batches at a local or
+remote URL. It requires a Tokio runtime. Missing parents are created.
 Existing paths are rejected. Keep exclusive ownership of the destination until the
 session ends, including index construction.
 
 ```rust,ignore
 use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let mut writer = LanceDatasetSink.open(
-    "./new.lance".into(),
+let mut writer = LanceDatasetSink::default().open(
+    "file:///tmp/new.lance".parse()?,
     schema,
     WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
 ).await?;
@@ -18,7 +18,7 @@ let summary = writer.commit().await?;
 ```
 
 Enable the facade's `sink-lance` feature, or depend on `open-arrow-sink-lance`
-directly. Cloud backends in Lance are disabled.
+directly. Cloud backends are opt-in through the shared storage features below.
 
 `WriteOptions.target_file_size` sets Lance's native `max_bytes_per_file` parameter.
 `None` keeps the SDK default. It is a soft data-file target: buffered pages, groups,
@@ -29,12 +29,12 @@ buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
 Lance to publish its first manifest. `abort` stops the worker and removes the
-reserved directory. Dropping closes the stream with an error and never commits,
+reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
-This first version supports create-only local datasets and unordered input.
-No append, overwrite, schema evolution, cloud options or ordering guarantee.
+This sink supports create-only local or remote datasets and unordered input.
+No append, overwrite, schema evolution, or ordering guarantee.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
 
@@ -53,8 +53,8 @@ Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
 ```rust,ignore
 use open_arrow_sink::{IndexType, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let mut writer = LanceDatasetSink.open(
-    "./indexed.lance".into(),
+let mut writer = LanceDatasetSink::default().open(
+    "file:///tmp/indexed.lance".parse()?,
     schema,
     WriteOptions {
         ordering: Ordering::Unordered,
@@ -164,3 +164,43 @@ index construction can publish additional versions, with the failure semantics
 above. Before publication, abort first stops every worker, then removes the reserved
 directory only when `cleanup_on_error` is enabled. Publication failures retain files
 because the dataset may already have been committed. Drop never publishes.
+
+## Shared OpenDAL storage
+
+Both single and parallel sessions now accept `Url`. Convert existing paths with
+`Url::from_directory_path(std::path::absolute(path)?)` and construct a sink with
+`LanceDatasetSink::default()`. Missing parent directories are created.
+For a shared operator, including custom credentials, endpoints, and layers, use
+`LanceDatasetSink::new(storage)`:
+
+```rust,ignore
+use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_storage::opendal;
+
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
+let sink = LanceDatasetSink::new(storage.clone());
+let url = storage.url("new-dataset/")?;
+let writer = sink.open(url.clone(), schema, options).await?;
+// After commit, native reads can reuse the same operator:
+let dataset = sink.dataset_builder(url)?.load().await?;
+```
+
+Enable sink features `aws`, `gcp`, or `azure` (facade: `lance-aws`, `lance-gcp`,
+`lance-azure`) for URL-resolved cloud backends. A default memory URL creates an
+ephemeral store on each resolution; use a configured `Storage` to share data.
+
+The Lance-specific provider bridges the common OpenDAL operator through
+`object_store_opendal`. A session-local registry keeps it isolated from other
+Lance users. Single writers, parallel fragment workers, the final committer,
+index construction, and `dataset_builder` all use this provider. Native Lance
+retains ownership of encoding and manifest publication. Conditional manifest
+creation protects publication; no unsafe commit handler is installed.
+
+A hidden `.open-arrow-sink` marker reserves each fresh destination and remains
+inside it. Existing directories or objects beneath the prefix are rejected;
+backends without conditional-create support fail. External writers must not
+modify the reserved namespace. Abort waits for workers to stop and removes only
+that namespace when `cleanup_on_error` is true, for single and parallel sessions.
+With cleanup disabled, output is retained. Drop performs no async cleanup;
+incomplete backend uploads or atomic staging files may need external cleanup.

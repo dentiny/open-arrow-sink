@@ -30,13 +30,6 @@ pub(crate) fn worker_stopped() -> Error {
     backend(io::Error::other("Lance write worker stopped"))
 }
 
-pub(crate) fn invalid_path() -> Error {
-    backend(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "Lance requires a UTF-8 path",
-    ))
-}
-
 pub(crate) fn missing_index_column(column: &str) -> Error {
     Error::Unsupported(format!("index column not found: {column}"))
 }

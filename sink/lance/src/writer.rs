@@ -1,10 +1,8 @@
-use std::path::PathBuf;
-
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
-use lance::{Dataset, dataset::WriteParams};
+use lance::Dataset;
 use open_arrow_sink_core::{
-    IndexSpec, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -12,6 +10,7 @@ use crate::{
     compression::writer_batch,
     error::{aborted, backend, failed, worker_stopped},
     index::build_indexes,
+    storage::NativeStorage,
 };
 
 pub(crate) enum Message {
@@ -56,12 +55,12 @@ impl RecordBatchReader for ChannelReader {
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    path: PathBuf,
+    destination: NativeStorage,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
     failed: bool,
-    indexes: Vec<IndexSpec>,
+    options: WriteOptions,
 }
 
 #[async_trait]
@@ -98,7 +97,7 @@ impl Writer for LanceWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        build_indexes(&mut dataset, &self.indexes)
+        build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
         Ok(WriteSummary {
@@ -110,7 +109,10 @@ impl Writer for LanceWriter {
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
-        tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
+        if self.options.cleanup_on_error {
+            self.destination.cleanup().await?;
+        }
+        Ok(())
     }
 }
 
@@ -118,10 +120,8 @@ impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        path: PathBuf,
-        uri: String,
-        target_file_size: Option<usize>,
-        indexes: Vec<IndexSpec>,
+        destination: NativeStorage,
+        options: WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -129,21 +129,19 @@ impl LanceWriter {
             receiver,
             finished: false,
         };
-        let mut params = WriteParams::default();
-        if let Some(size) = target_file_size {
-            params.max_bytes_per_file = size;
-        }
+        let params = destination.write_params(options.target_file_size);
+        let uri = destination.url.to_string();
         let task =
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
             schema,
             encoding_schema,
-            path,
+            destination,
             sender: Some(sender),
             task,
             rows: 0,
             failed: false,
-            indexes,
+            options,
         }
     }
 }

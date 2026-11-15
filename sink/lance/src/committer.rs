@@ -1,20 +1,14 @@
-use std::path::PathBuf;
-
-use lance::dataset::{
-    CommitBuilder,
-    transaction::{Operation, Transaction},
-};
+use lance::dataset::transaction::{Operation, Transaction};
 use open_arrow_sink_core::{
     Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
 };
 
-use crate::{error::backend, index::build_indexes};
+use crate::{error::backend, index::build_indexes, storage::NativeStorage};
 
 type Output = (u64, Transaction);
 
 pub(crate) struct LanceCommitter {
-    pub path: PathBuf,
-    pub uri: String,
+    pub destination: NativeStorage,
     pub options: WriteOptions,
 }
 
@@ -48,7 +42,9 @@ impl SessionCommitter<Output> for LanceCommitter {
             combined.ok_or_else(|| Error::Unsupported("empty Lance writer session".into()))?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
-        let mut dataset = CommitBuilder::new(self.uri.as_str())
+        let mut dataset = self
+            .destination
+            .commit_builder()
             .execute(transaction)
             .await
             .map_err(backend)?;
@@ -59,9 +55,7 @@ impl SessionCommitter<Output> for LanceCommitter {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         if self.options.cleanup_on_error {
-            tokio::fs::remove_dir_all(&self.path)
-                .await
-                .map_err(backend)?;
+            self.destination.cleanup().await?;
         }
         Ok(())
     }

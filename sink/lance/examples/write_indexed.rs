@@ -1,16 +1,22 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use lance::{Dataset, index::DatasetIndexExt};
+use lance::index::DatasetIndexExt;
 use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, WriteOptions};
-use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let destination = std::env::args_os()
+    let argument = std::env::args()
         .nth(1)
-        .map(PathBuf::from)
-        .ok_or("usage: write_indexed <new-dataset-directory>")?;
+        .ok_or("pass a new dataset URL or path")?;
+    let destination = match Url::parse(&argument) {
+        Ok(url) => url,
+        Err(_) => {
+            Url::from_directory_path(std::path::absolute(argument)?).map_err(|_| "invalid path")?
+        }
+    };
+    let sink = LanceDatasetSink::default();
     let batch = RecordBatch::try_from_iter([
         ("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef),
         (
@@ -22,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ])) as ArrayRef,
         ),
     ])?;
-    let mut writer = LanceDatasetSink
+    let mut writer = sink
         .open(
             destination.clone(),
             batch.schema(),
@@ -38,12 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     writer.write(batch).await?;
     let summary = writer.commit().await?;
-    let dataset = Dataset::open(destination.to_str().ok_or("destination must be UTF-8")?).await?;
+    let dataset = sink.dataset_builder(destination.clone())?.load().await?;
     println!(
         "Committed {} rows and built {} indexes in {}",
         summary.rows_written,
         dataset.load_indices().await?.len(),
-        destination.display()
+        destination
     );
     Ok(())
 }

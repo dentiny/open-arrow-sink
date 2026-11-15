@@ -4075,6 +4075,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "object_store_opendal"
+version = "0.60.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bd9da6291f93eb19b7987dac17617de0131760a6ba97a4cd8d6b1a07fa89783"
+dependencies = [
+ "async-trait",
+ "asyncband",
+ "bytes",
+ "chrono",
+ "futures",
+ "object_store 0.14.2",
+ "opendal",
+ "pin-project",
+ "tokio",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4131,10 +4148,15 @@ dependencies = [
  "arrow-schema",
  "lance",
  "lance-index",
+ "lance-io",
  "lance-linalg",
+ "lance-table",
  "more-asserts",
+ "object_store 0.14.2",
+ "object_store_opendal",
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
+ "open-arrow-sink-storage",
  "rstest",
  "tempfile",
  "tokio",

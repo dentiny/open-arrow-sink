@@ -1,4 +1,4 @@
-//! Create-only local Lance datasets. Requires a Tokio runtime.
+//! Create-only Lance datasets over shared OpenDAL storage. Requires a Tokio runtime.
 
 mod committer;
 mod compression;
@@ -12,3 +12,6 @@ pub use sink::LanceDatasetSink;
 mod index;
 
 mod parallel;
+
+mod storage;
+pub use open_arrow_sink_storage::{Storage, Url};
