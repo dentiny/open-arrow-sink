@@ -10,8 +10,34 @@ fn invalid(message: &str) -> Error {
     )))
 }
 
-pub(crate) fn backend(error: opendal::Error) -> Error {
-    Error::Backend(Box::new(error))
+/// Preserve the operation, object location, and original OpenDAL error.
+pub(crate) fn map_error(operation: &'static str, path: &str, source: opendal::Error) -> Error {
+    Error::Backend(Box::new(BackendError {
+        operation,
+        path: path.to_owned(),
+        source,
+    }))
+}
+
+#[derive(Debug)]
+struct BackendError {
+    operation: &'static str,
+    path: String,
+    source: opendal::Error,
+}
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} object {:?}: {}",
+            self.operation, self.path, self.source
+        )
+    }
+}
+impl std::error::Error for BackendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 pub(crate) fn invalid_file_url() -> Error {
@@ -41,12 +67,26 @@ pub(crate) fn invalid_utf8_path() -> Error {
 pub(crate) fn invalid_path() -> Error {
     invalid("invalid storage path")
 }
-pub(crate) fn invalid_retry() -> Error {
-    invalid("invalid retry delay or factor")
+pub(crate) fn invalid_retry_factor() -> Error {
+    invalid_config("retry factor must be finite and at least 1")
 }
-pub(crate) fn invalid_timeout() -> Error {
-    invalid("timeouts must be positive")
+
+pub(crate) fn invalid_retry_delays() -> Error {
+    invalid_config("retry min_delay must not exceed max_delay")
 }
+
+pub(crate) fn invalid_timeouts() -> Error {
+    invalid_config("storage timeouts must be positive")
+}
+
+pub(crate) fn invalid_http_concurrency() -> Error {
+    invalid_config("HTTP concurrency must be positive and not exceed Semaphore::MAX_PERMITS")
+}
+
+fn invalid_config(message: &'static str) -> Error {
+    invalid(message)
+}
+
 pub(crate) fn writer_inactive() -> Error {
     invalid("writer is no longer active")
 }
@@ -54,20 +94,24 @@ pub(crate) fn writer_closed() -> Error {
     invalid("writer is closed")
 }
 
-pub(crate) fn delete_result(result: opendal::Result<()>) -> Result<()> {
+pub(crate) fn delete_result(path: &str, result: opendal::Result<()>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(backend(error)),
+        Err(error) => Err(map_error("delete", path, error)),
     }
 }
 
-pub(crate) fn abort_result(result: opendal::Result<()>, filesystem: bool) -> Result<()> {
+pub(crate) fn abort_result(
+    path: &str,
+    result: opendal::Result<()>,
+    filesystem: bool,
+) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         // Non-staged filesystem writes are already visible. Dropping the
         // handle stops this stream; the owning sink deletes its files.
         Err(error) if filesystem && error.kind() == ErrorKind::Unsupported => Ok(()),
-        Err(error) => Err(backend(error)),
+        Err(error) => Err(map_error("abort", path, error)),
     }
 }

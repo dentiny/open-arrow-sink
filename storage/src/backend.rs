@@ -7,7 +7,8 @@ use opendal::Operator;
 use url::Url;
 
 use crate::{
-    error::{self, backend},
+    HttpConcurrencyLimitLayer, StorageConfig,
+    error::{self, map_error},
     validation,
 };
 
@@ -17,6 +18,7 @@ use crate::{
 pub struct Storage {
     operator: Operator,
     base_url: Url,
+    http_concurrency_limit: HttpConcurrencyLimitLayer,
 }
 
 impl Storage {
@@ -29,7 +31,11 @@ impl Storage {
             base_url.set_path(&path);
         }
         validation::decoded_path(&base_url)?;
-        Ok(Self { operator, base_url })
+        Ok(Self {
+            operator,
+            base_url,
+            http_concurrency_limit: HttpConcurrencyLimitLayer::default(),
+        })
     }
 
     /// Resolve a URL using enabled OpenDAL services. For custom credentials,
@@ -43,18 +49,35 @@ impl Storage {
             validation::validate_file_url(url)?;
             // Keep create_new atomic. OpenDAL Fs atomic_write_dir checks for
             // existence before rename, which is insufficient for competing claims.
-            Operator::new(opendal::services::Fs::default().root("/")).map_err(backend)?
+            Operator::new(opendal::services::Fs::default().root("/"))
+                .map_err(|error| map_error("configure_storage", base.as_str(), error))?
         } else {
-            Operator::from_uri(base.as_str()).map_err(backend)?
+            Operator::from_uri(base.as_str())
+                .map_err(|error| map_error("configure_storage", base.as_str(), error))?
         };
         Self::new(operator, base)
+    }
+
+    /// Apply optional retry/timeout policies to the supplied OpenDAL operator.
+    pub fn try_new(operator: Operator, base_url: Url, config: StorageConfig) -> Result<Self> {
+        Self::new(config.apply(operator)?, base_url)
+    }
+
+    /// Replace the request budget shared by this storage and its clones.
+    pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
+        self.http_concurrency_limit = limit;
+        self
     }
 
     pub fn base_url(&self) -> &Url {
         &self.base_url
     }
-    pub fn operator(&self) -> &Operator {
-        &self.operator
+
+    /// Return an operator sharing this storage's transport-level HTTP budget.
+    pub fn operator(&self) -> Operator {
+        self.operator
+            .clone()
+            .layer(self.http_concurrency_limit.clone())
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
@@ -85,20 +108,26 @@ impl Storage {
     }
 
     pub async fn exists(&self, url: &Url) -> Result<bool> {
-        self.operator
-            .exists(&self.path(url)?)
+        let path = self.path(url)?;
+        self.operator()
+            .exists(&path)
             .await
-            .map_err(backend)
+            .map_err(|error| map_error("exists", &path, error))
     }
     pub async fn stat(&self, url: &Url) -> Result<opendal::Metadata> {
-        self.operator.stat(&self.path(url)?).await.map_err(backend)
+        let path = self.path(url)?;
+        self.operator()
+            .stat(&path)
+            .await
+            .map_err(|error| map_error("stat", &path, error))
     }
     pub async fn read(&self, url: &Url) -> Result<Bytes> {
-        self.operator
-            .read(&self.path(url)?)
+        let path = self.path(url)?;
+        self.operator()
+            .read(&path)
             .await
             .map(|buffer| buffer.to_bytes())
-            .map_err(backend)
+            .map_err(|error| map_error("read", &path, error))
     }
     pub async fn read_range(&self, url: &Url, range: Range<u64>) -> Result<Bytes> {
         let path = self.path(url)?;
@@ -106,54 +135,62 @@ impl Storage {
         if range.is_empty() {
             return Ok(Bytes::new());
         }
-        self.operator
+        self.operator()
             .read_with(&path)
             .range(range)
             .await
             .map(|buffer| buffer.to_bytes())
-            .map_err(backend)
+            .map_err(|error| map_error("read", &path, error))
     }
     pub async fn write(&self, url: &Url, bytes: Bytes) -> Result<()> {
-        self.operator
-            .write(&self.nonroot_path(url)?, bytes)
+        let path = self.nonroot_path(url)?;
+        self.operator()
+            .write(&path, bytes)
             .await
             .map(|_| ())
-            .map_err(backend)
+            .map_err(|error| map_error("write", &path, error))
     }
     /// Atomic conditional creation. Unsupported backends fail instead of overwriting.
     pub async fn create(&self, url: &Url, bytes: Bytes) -> Result<()> {
-        self.operator
-            .write_with(&self.nonroot_path(url)?, bytes)
+        let path = self.nonroot_path(url)?;
+        self.operator()
+            .write_with(&path, bytes)
             .if_not_exists(true)
             .await
             .map(|_| ())
-            .map_err(backend)
+            .map_err(|error| map_error("create", &path, error))
     }
     pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
-        let writer = self
-            .operator
-            .writer_with(&self.nonroot_path(url)?)
+        let path = self.nonroot_path(url)?;
+        let operator = self.operator();
+        let writer = operator
+            .writer_with(&path)
             .chunk(5 * 1024 * 1024)
             .concurrent(1)
             .await
-            .map_err(backend)?;
+            .map_err(|error| map_error("open", &path, error))?;
         Ok(StorageWriter {
             inner: Some(writer),
             bytes_written: 0,
             active: true,
-            filesystem: self.operator.info().scheme() == "fs",
+            filesystem: operator.info().scheme() == "fs",
+            path,
         })
     }
     pub async fn list(&self, url: &Url) -> Result<Vec<Url>> {
         let path = directory_path(&self.path(url)?);
         let mut entries = self
-            .operator
+            .operator()
             .lister_with(&path)
             .recursive(true)
             .await
-            .map_err(backend)?;
+            .map_err(|error| map_error("list", &path, error))?;
         let mut urls = Vec::new();
-        while let Some(entry) = entries.try_next().await.map_err(backend)? {
+        while let Some(entry) = entries
+            .try_next()
+            .await
+            .map_err(|error| map_error("list", &path, error))?
+        {
             if entry.metadata().is_file() {
                 urls.push(self.url(entry.path())?);
             }
@@ -161,26 +198,29 @@ impl Storage {
         Ok(urls)
     }
     pub async fn delete(&self, url: &Url) -> Result<()> {
-        error::delete_result(self.operator.delete(&self.nonroot_path(url)?).await)
+        let path = self.nonroot_path(url)?;
+        error::delete_result(&path, self.operator().delete(&path).await)
     }
     /// Remove a session-owned namespace. The caller must own every object beneath it.
     /// Refuse to remove an entire operator root.
     pub async fn remove_all(&self, url: &Url) -> Result<()> {
-        self.operator
-            .delete_with(&directory_path(&self.nonroot_path(url)?))
+        let path = directory_path(&self.nonroot_path(url)?);
+        self.operator()
+            .delete_with(&path)
             .recursive(true)
             .await
-            .map_err(backend)
+            .map_err(|error| map_error("delete_prefix", &path, error))
     }
     /// Delete a directory only when it is empty. Never recursively remove its contents.
     pub async fn remove_empty_directory(&self, url: &Url) -> Result<()> {
         if !self.list(url).await?.is_empty() {
             return Ok(());
         }
-        self.operator
-            .delete(&directory_path(&self.nonroot_path(url)?))
+        let path = directory_path(&self.nonroot_path(url)?);
+        self.operator()
+            .delete(&path)
             .await
-            .map_err(backend)
+            .map_err(|error| map_error("delete", &path, error))
     }
     fn nonroot_path(&self, url: &Url) -> Result<String> {
         let path = self.path(url)?;
@@ -203,6 +243,7 @@ pub struct StorageWriter {
     bytes_written: u64,
     active: bool,
     filesystem: bool,
+    path: String,
 }
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
@@ -213,7 +254,7 @@ impl StorageWriter {
             .ok_or_else(error::writer_closed)?
             .write(bytes.clone())
             .await
-            .map_err(backend)?;
+            .map_err(|error| map_error("write", &self.path, error))?;
         self.bytes_written += bytes.len() as u64;
         self.active = true;
         Ok(())
@@ -226,14 +267,14 @@ impl StorageWriter {
             .ok_or_else(error::writer_closed)?
             .close()
             .await
-            .map_err(backend)?;
+            .map_err(|error| map_error("close", &self.path, error))?;
         self.inner = None;
         Ok(self.bytes_written)
     }
     pub async fn abort(&mut self) -> Result<()> {
         self.active = false;
         if let Some(mut writer) = self.inner.take() {
-            error::abort_result(writer.abort().await, self.filesystem)?;
+            error::abort_result(&self.path, writer.abort().await, self.filesystem)?;
         }
         Ok(())
     }

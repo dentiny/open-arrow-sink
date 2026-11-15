@@ -4,7 +4,7 @@ use open_arrow_sink_core::Result;
 use percent_encoding::percent_decode_str;
 use url::{Position, Url};
 
-use crate::{StorageConfig, error};
+use crate::error;
 
 pub(crate) fn validate_url(url: &Url) -> Result<()> {
     if url.cannot_be_a_base()
@@ -81,16 +81,29 @@ pub(crate) fn validate_writer_active(active: bool) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_config(config: &StorageConfig) -> Result<()> {
-    if let Some(retry) = &config.retry
-        && (retry.min_delay > retry.max_delay || !retry.factor.is_finite() || retry.factor < 1.0)
-    {
-        return Err(error::invalid_retry());
+impl crate::StorageConfig {
+    /// Validate policies without constructing a backend or performing I/O.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(retry) = &self.retry {
+            if !retry.factor.is_finite() || retry.factor < 1.0 {
+                return Err(error::invalid_retry_factor());
+            }
+            if retry.min_delay > retry.max_delay {
+                return Err(error::invalid_retry_delays());
+            }
+        }
+        if let Some(timeout) = &self.timeout
+            && (timeout.operation_timeout.is_zero() || timeout.io_timeout.is_zero())
+        {
+            return Err(error::invalid_timeouts());
+        }
+        Ok(())
     }
-    if let Some(timeout) = &config.timeout
-        && (timeout.operation_timeout.is_zero() || timeout.io_timeout.is_zero())
-    {
-        return Err(error::invalid_timeout());
+}
+
+pub(crate) fn validate_http_concurrency(limit: usize) -> Result<()> {
+    if limit == 0 || limit > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(error::invalid_http_concurrency());
     }
     Ok(())
 }
