@@ -1,21 +1,15 @@
-use std::{io, ops::Range};
+use std::ops::Range;
 
 use bytes::Bytes;
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Error, Result};
-use opendal::{ErrorKind, Operator};
-use percent_encoding::percent_decode_str;
-use url::{Position, Url};
+use open_arrow_sink_core::Result;
+use opendal::Operator;
+use url::Url;
 
-pub(crate) fn invalid(message: &str) -> Error {
-    Error::Backend(Box::new(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        message.to_owned(),
-    )))
-}
-fn backend(error: opendal::Error) -> Error {
-    Error::Backend(Box::new(error))
-}
+use crate::{
+    error::{self, backend},
+    validation,
+};
 
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
@@ -29,12 +23,12 @@ impl Storage {
     /// Filesystem operators must leave `atomic_write_dir` unset: in OpenDAL
     /// 0.59 staged writes do not atomically enforce `if_not_exists` at publication.
     pub fn new(operator: Operator, mut base_url: Url) -> Result<Self> {
-        validate_url(&base_url)?;
+        validation::validate_url(&base_url)?;
         if !base_url.path().ends_with('/') {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
-        decoded_path(&base_url)?;
+        validation::decoded_path(&base_url)?;
         Ok(Self { operator, base_url })
     }
 
@@ -42,13 +36,11 @@ impl Storage {
     /// endpoints, or shared memory stores, pass a configured operator to `new`.
     /// Backend features are additive; no cloud services are enabled by default.
     pub fn from_url(url: &Url) -> Result<Self> {
-        validate_url(url)?;
+        validation::validate_url(url)?;
         let mut base = url.clone();
         base.set_path("/");
         let operator = if url.scheme() == "file" {
-            if url.to_file_path().is_err() {
-                return Err(invalid("invalid file URL"));
-            }
+            validation::validate_file_url(url)?;
             // Keep create_new atomic. OpenDAL Fs atomic_write_dir checks for
             // existence before rename, which is insufficient for competing claims.
             Operator::new(opendal::services::Fs::default().root("/")).map_err(backend)?
@@ -67,27 +59,16 @@ impl Storage {
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
     pub fn path(&self, url: &Url) -> Result<String> {
-        validate_url(url)?;
-        if url[..Position::BeforePath] != self.base_url[..Position::BeforePath] {
-            return Err(invalid("URL does not belong to this storage endpoint"));
-        }
-        let path = decoded_path(url)?;
-        let base = decoded_path(&self.base_url)?;
-        if path.trim_end_matches('/') == base.trim_end_matches('/') {
-            return Ok(String::new());
-        }
-        path.strip_prefix(&base)
-            .map(str::to_owned)
-            .ok_or_else(|| invalid("URL is outside the storage root"))
+        validation::relative_path(&self.base_url, url)
     }
 
     pub fn url(&self, path: &str) -> Result<Url> {
-        validate_path(path)?;
+        validation::validate_path(path)?;
         let mut url = self.base_url.clone();
         {
             let mut segments = url
                 .path_segments_mut()
-                .map_err(|_| invalid("URL cannot contain paths"))?;
+                .map_err(|_| error::url_without_paths())?;
             segments.pop_if_empty();
             for segment in path
                 .trim_end_matches('/')
@@ -121,9 +102,7 @@ impl Storage {
     }
     pub async fn read_range(&self, url: &Url, range: Range<u64>) -> Result<Bytes> {
         let path = self.path(url)?;
-        if range.start > range.end {
-            return Err(invalid("invalid read range"));
-        }
+        validation::validate_range(&range)?;
         if range.is_empty() {
             return Ok(Bytes::new());
         }
@@ -182,11 +161,7 @@ impl Storage {
         Ok(urls)
     }
     pub async fn delete(&self, url: &Url) -> Result<()> {
-        match self.operator.delete(&self.nonroot_path(url)?).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(backend(error)),
-        }
+        error::delete_result(self.operator.delete(&self.nonroot_path(url)?).await)
     }
     /// Remove a session-owned namespace. The caller must own every object beneath it.
     /// Refuse to remove an entire operator root.
@@ -209,9 +184,7 @@ impl Storage {
     }
     fn nonroot_path(&self, url: &Url) -> Result<String> {
         let path = self.path(url)?;
-        if path.is_empty() {
-            return Err(invalid("operation requires a nonempty path"));
-        }
+        validation::validate_nonroot_path(&path)?;
         Ok(path)
     }
 }
@@ -223,39 +196,6 @@ fn directory_path(path: &str) -> String {
         format!("{}/", path.trim_end_matches('/'))
     }
 }
-fn validate_url(url: &Url) -> Result<()> {
-    if url.cannot_be_a_base()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(invalid(
-            "storage URLs must be hierarchical and contain no query, fragment, or credentials",
-        ));
-    }
-    Ok(())
-}
-fn decoded_path(url: &Url) -> Result<String> {
-    let decoded = percent_decode_str(url.path())
-        .decode_utf8()
-        .map_err(|_| invalid("URL path must be UTF-8"))?
-        .into_owned();
-    validate_path(decoded.trim_start_matches('/'))?;
-    Ok(decoded)
-}
-fn validate_path(path: &str) -> Result<()> {
-    if path.contains(['\\', '\0'])
-        || path
-            .trim_end_matches('/')
-            .split('/')
-            .any(|part| part == "." || part == "..")
-    {
-        return Err(invalid("invalid storage path"));
-    }
-    Ok(())
-}
-
 /// A streaming byte writer with explicit close/abort and terminal failure semantics.
 /// Drop never commits or performs async cleanup.
 pub struct StorageWriter {
@@ -266,13 +206,11 @@ pub struct StorageWriter {
 }
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
-        if !self.active {
-            return Err(invalid("writer is no longer active"));
-        }
+        validation::validate_writer_active(self.active)?;
         self.active = false;
         self.inner
             .as_mut()
-            .ok_or_else(|| invalid("writer is closed"))?
+            .ok_or_else(error::writer_closed)?
             .write(bytes.clone())
             .await
             .map_err(backend)?;
@@ -281,13 +219,11 @@ impl StorageWriter {
         Ok(())
     }
     pub async fn close(&mut self) -> Result<u64> {
-        if !self.active {
-            return Err(invalid("writer is no longer active"));
-        }
+        validation::validate_writer_active(self.active)?;
         self.active = false;
         self.inner
             .as_mut()
-            .ok_or_else(|| invalid("writer is closed"))?
+            .ok_or_else(error::writer_closed)?
             .close()
             .await
             .map_err(backend)?;
@@ -297,13 +233,7 @@ impl StorageWriter {
     pub async fn abort(&mut self) -> Result<()> {
         self.active = false;
         if let Some(mut writer) = self.inner.take() {
-            match writer.abort().await {
-                Ok(()) => {}
-                // Non-staged filesystem writes are already visible. Dropping the
-                // handle stops this stream; the owning sink deletes its files.
-                Err(error) if self.filesystem && error.kind() == ErrorKind::Unsupported => {}
-                Err(error) => return Err(backend(error)),
-            }
+            error::abort_result(writer.abort().await, self.filesystem)?;
         }
         Ok(())
     }
