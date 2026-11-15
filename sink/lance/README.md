@@ -28,7 +28,7 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish its first manifest. `abort` stops the worker and removes the
+Lance to publish a new manifest version. `abort` stops the worker and removes the
 reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
@@ -204,3 +204,11 @@ modify the reserved namespace. Abort waits for workers to stop and removes only
 that namespace when it was newly reserved and `cleanup_on_error` is true, for single and parallel sessions. Existing datasets are retained on abort for Append and Overwrite.
 With cleanup disabled, output is retained. Drop performs no async cleanup;
 incomplete backend uploads or atomic staging files may need external cleanup.
+
+## Write modes
+
+Both single and parallel writes use native Lance Create, Append, or Overwrite.
+Append requires an existing dataset with the same schema. Overwrite can create a
+fresh destination or publish a replacement version of an existing dataset, keeping
+historical versions. Abort removes the namespace only when this session reserved
+a fresh destination; existing datasets retain their committed data.

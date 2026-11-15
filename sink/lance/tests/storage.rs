@@ -208,3 +208,47 @@ async fn remote_write_modes_preserve_native_commits(
     );
     assert_eq!(snapshot.count_rows(None).await.unwrap(), 3);
 }
+
+#[rstest::rstest]
+#[case::append(open_arrow_sink_core::WriteMode::Append)]
+#[case::overwrite(open_arrow_sink_core::WriteMode::Overwrite)]
+#[tokio::test]
+async fn abort_existing_remote_dataset_retains_committed_rows(
+    #[case] mode: open_arrow_sink_core::WriteMode,
+) {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("abort-existing/").unwrap();
+    let mut seed = sink
+        .open(url.clone(), batch().schema(), write_options())
+        .await
+        .unwrap();
+    seed.write(batch()).await.unwrap();
+    seed.commit().await.unwrap();
+    let mut writer = sink
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode,
+                ..write_options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.abort().await.unwrap();
+    assert_eq!(
+        LanceDatasetSink::new(storage)
+            .dataset_builder(url)
+            .unwrap()
+            .load()
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        3
+    );
+}
