@@ -19,9 +19,9 @@ use crate::{error::backend, validation};
 // These are tuning defaults, not benchmark-established optimal values.
 // Default maximum number of active download streams across the shared pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
-// Default shared transfer-buffer budget: 64 MiB, including consumer-held chunks.
+// Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
-const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 * 1024).unwrap();
 // Maximum buffer allocated for each read: 64 KiB, capped by the pool budget.
 // Smaller chunks trade more read/allocation overhead for finer buffering granularity.
 const CHUNK_BYTES: usize = 64 * 1024;

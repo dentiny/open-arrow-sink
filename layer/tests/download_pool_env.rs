@@ -19,7 +19,7 @@ fn global_pool_reads_concurrency_from_environment() {
         } else {
             let pool = pool.unwrap();
             assert_eq!(pool.concurrency(), expected.parse::<usize>().unwrap());
-            assert_eq!(pool.max_buffered_bytes(), 64 * 1024 * 1024);
+            assert_eq!(pool.max_buffered_bytes(), 8 * 1024 * 1024 * 1024);
             assert!(std::sync::Arc::ptr_eq(
                 &pool,
                 &DownloadPool::global().unwrap()
