@@ -112,6 +112,15 @@ A runnable index construction example (destination must not exist):
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
 
+## Quantized vector indexes
+
+`LanceDatasetSink::with_vector_index_kind(VectorIndexKind::IvfPq)` selects IVF_PQ
+with L2 distance for shared vector-index requests, matching the conversion service.
+`IvfFlat` remains the default. PQ uses the largest divisor of the vector dimension
+up to 16 as its subvector count. The IVF partition policy is shared with IVF_FLAT;
+Lance validates training-data requirements and reports failures through
+`IndexCommitError` after data publication. Deterministic names include the algorithm.
+
 ## Streaming native blobs
 
 Blob-marked schemas require a single writer; blob bytes use the configured shared storage.

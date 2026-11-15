@@ -26,6 +26,7 @@ pub(crate) struct BlobDatasetWriter {
     failed: bool,
     destination: NativeStorage,
     options: WriteOptions,
+    vector_index_kind: crate::VectorIndexKind,
 }
 
 #[async_trait]
@@ -89,7 +90,7 @@ impl Writer for BlobDatasetWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        build_indexes(&mut dataset, &self.options.indexes)
+        build_indexes(&mut dataset, &self.options.indexes, self.vector_index_kind)
             .await
             .map_err(backend)?;
         Ok(WriteSummary {
@@ -118,6 +119,7 @@ impl BlobDatasetWriter {
         encoding_schema: SchemaRef,
         destination: NativeStorage,
         options: WriteOptions,
+        vector_index_kind: crate::VectorIndexKind,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -140,6 +142,7 @@ impl BlobDatasetWriter {
             failed: false,
             destination,
             options,
+            vector_index_kind,
         })
     }
 }

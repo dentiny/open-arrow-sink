@@ -8,6 +8,7 @@ type Output = (u64, Transaction);
 pub(crate) struct LanceCommitter {
     pub destination: NativeStorage,
     pub options: WriteOptions,
+    pub vector_index_kind: crate::VectorIndexKind,
 }
 
 #[async_trait]
@@ -38,7 +39,7 @@ impl SessionCommitter<Output> for LanceCommitter {
             builder = builder.with_storage_format(version);
         }
         let mut dataset = builder.execute(transaction).await.map_err(backend)?;
-        build_indexes(&mut dataset, &self.options.indexes)
+        build_indexes(&mut dataset, &self.options.indexes, self.vector_index_kind)
             .await
             .map_err(backend)?;
         Ok(WriteSummary { rows_written })

@@ -59,6 +59,30 @@ fn vectors(count: usize) -> RecordBatch {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn builds_product_quantized_vector_index() {
+    use open_arrow_sink_lance::VectorIndexKind;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("quantized");
+    let batch = vectors(256);
+    let mut writer = LanceDatasetSink::default()
+        .with_vector_index_kind(VectorIndexKind::IvfPq)
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            indexed_options(vec![Spec::new("vector", Kind::Vector)]),
+        )
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        dataset.describe_indices(None).await.unwrap()[0].index_type(),
+        "IVF_PQ"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn builds_all_index_kinds_and_queries_them() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("indexed");

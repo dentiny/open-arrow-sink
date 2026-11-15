@@ -11,6 +11,7 @@ mod validation;
 
 pub use sink::LanceDatasetSink;
 
+pub use index::VectorIndexKind;
 mod index;
 
 mod parallel;
