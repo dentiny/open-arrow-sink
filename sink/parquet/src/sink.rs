@@ -24,6 +24,7 @@ impl Sink for ParquetDirectorySink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            compression: Default::default(),
             supported_partitions: vec![],
             supported_indexes: &[],
         }

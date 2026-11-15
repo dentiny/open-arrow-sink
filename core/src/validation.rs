@@ -6,6 +6,18 @@ use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
+    if let Some(codec) = options.compression.global
+        && !capability.compression.global.contains(&codec)
+    {
+        return Err(Error::Unsupported(format!("global compression: {codec:?}")));
+    }
+    for (column, codec) in &options.compression.columns {
+        if !capability.compression.per_column.contains(codec) {
+            return Err(Error::Unsupported(format!(
+                "compression {codec:?} on column {column}"
+            )));
+        }
+    }
     if let Some(partition) = options.partition
         && !capability
             .supported_partitions
@@ -61,4 +73,74 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
             .map_err(|_| Error::Unsupported(format!("index column not found: {}", index.column)))?;
     }
     Ok(())
+}
+
+/// Validate exact top-level field names before destination I/O.
+pub fn validate_compression(
+    schema: &Schema,
+    compression: &crate::CompressionOptions,
+) -> Result<()> {
+    for column in compression.columns.keys() {
+        if schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() == column)
+            .count()
+            != 1
+        {
+            return Err(Error::Unsupported(format!(
+                "compression column must identify one top-level field: {column}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CompressionCapability, CompressionCodec as Codec, CompressionOptions};
+
+    #[test]
+    fn compression_scopes_and_codecs_are_checked_independently() {
+        let mut capability = SinkCapability {
+            ordering: Ordering::PreserveInput,
+            compression: CompressionCapability {
+                global: &[Codec::Snappy],
+                per_column: &[],
+            },
+            supported_partitions: vec![],
+            supported_indexes: &[],
+        };
+        let mut options = WriteOptions::default();
+        assert!(validate_options(&options, capability.clone()).is_ok());
+        options.compression.global = Some(Codec::Snappy);
+        assert!(validate_options(&options, capability.clone()).is_ok());
+        options.compression.global = Some(Codec::Zstd);
+        assert!(validate_options(&options, capability.clone()).is_err());
+        options.compression.global = None;
+        options
+            .compression
+            .columns
+            .insert("id".into(), Codec::Snappy);
+        assert!(validate_options(&options, capability.clone()).is_err());
+        capability.compression = CompressionCapability {
+            global: &[],
+            per_column: &[Codec::Snappy],
+        };
+        assert!(validate_options(&options, capability.clone()).is_ok());
+        options.compression.global = Some(Codec::Snappy);
+        assert!(validate_options(&options, capability).is_err());
+    }
+
+    #[test]
+    fn ambiguous_column_names_are_rejected() {
+        let field = arrow_schema::Field::new("id", arrow_schema::DataType::Int64, true);
+        let schema = Schema::new(vec![field.clone(), field]);
+        let compression = CompressionOptions {
+            global: None,
+            columns: [("id".into(), Codec::Snappy)].into(),
+        };
+        assert!(validate_compression(&schema, &compression).is_err());
+    }
 }

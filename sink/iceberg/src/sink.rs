@@ -38,6 +38,7 @@ impl Sink for IcebergTableSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            compression: Default::default(),
             supported_partitions: vec![
                 PartitionType::Identity,
                 PartitionType::Year,

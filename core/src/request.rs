@@ -1,4 +1,4 @@
-use crate::{IndexSpec, PartitionType};
+use crate::{CompressionOptions, IndexSpec, PartitionType};
 
 /// Input-order policy or guarantee; this does not sort rows by column values.
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
@@ -31,6 +31,8 @@ impl Default for PartitionOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
     pub ordering: Ordering,
+    /// Global default and top-level column overrides; empty preserves backend defaults.
+    pub compression: CompressionOptions,
     /// None disables partition routing; Some uses the destination partition spec.
     pub partition: Option<PartitionOptions>,
     /// Indexes to construct after writing. Empty by default; unsupported sinks
@@ -48,6 +50,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             ordering: Ordering::default(),
+            compression: CompressionOptions::default(),
             partition: None,
             indexes: Vec::new(),
             target_file_size: None,

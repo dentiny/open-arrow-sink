@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
+The library includes shared contracts, ordering and compression layers, an optional rebatch layer, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, optional RebatchLayer
+layer/      OrderingLayer, CompressionLayer, optional RebatchLayer
 src/        Public facade
 ```
 
@@ -22,7 +22,7 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[] }`
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[], compression: Default::default() }`
 or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
@@ -40,6 +40,39 @@ let sink = backend.layer(OrderingLayer::new(Ordering::Unordered));
 The ordering layer overrides the session option and checks the inner capability
 before opening it. Install one ordering layer per sink. Layers wrap without I/O;
 the last installed layer is outermost.
+
+## Compression
+
+`WriteOptions.compression` selects a global default and/or per-column overrides.
+Empty `CompressionOptions::default()` preserves backend defaults; explicit
+`CompressionCodec::Uncompressed` disables compression. Column overrides take
+precedence over the global codec. Codecs use their default compression levels.
+
+`SinkCapability.compression` advertises supported codecs independently through
+`CompressionCapability.global` and `.per_column`; an empty slice means that
+scope is unsupported. The shared validator rejects unsupported scopes and codecs
+before destination I/O, including requests to disable compression.
+
+Backend support is declared by each sink; consult its README before selecting
+a scope or codec. The shared interface does not promise that every sink supports
+every codec.
+
+```rust,ignore
+use open_arrow_sink::{CompressionCodec, CompressionOptions, SinkExt, layer::CompressionLayer};
+
+let sink = backend.layer(CompressionLayer::new(CompressionOptions {
+    global: Some(CompressionCodec::Zstd),
+    columns: [("embedding".into(), CompressionCodec::Uncompressed)].into(),
+}));
+```
+
+The layer replaces the entire session compression policy and forwards the inner
+capability unchanged. Install one compression layer per sink. The same options
+can be supplied directly in `WriteOptions`, without a layer.
+Column keys are exact, unique top-level Arrow field names: dots are literal,
+and a nested field override applies to all its descendant physical columns.
+Unknown or ambiguous names are rejected before opening the destination.
+Backends retain the session policy across any file rolling.
 
 ## Rebatching
 
@@ -133,7 +166,8 @@ reusing them across sessions.
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
 - `open` calls `validation::validate_options` before side effects, including the
-  index capability check. Index-capable backends call `validation::validate_indexes`
+  index and compression capability checks. Call `validation::validate_compression`
+  against the input schema before destination I/O. Index-capable backends call `validation::validate_indexes`
   and check their supported column types before destination I/O, then check
   backend-specific destination constraints.
 - `write` calls `validation::validate_batch` against the fixed session schema.
