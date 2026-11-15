@@ -79,12 +79,10 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validate_options(&schema, &options, self.capability())?;
-        let table = self.catalog.load_table(&request).await.map_err(backend)?;
-        validate_table(&table, &schema, options.partition)?;
-        self.create_writer(table, schema, options)
+        self.open_writers(request, schema, options, NonZeroUsize::MIN)
+            .await?
+            .into_writer()
             .await
-            .map(|w| w as Box<dyn Writer>)
     }
 }
 
@@ -207,12 +205,7 @@ impl IcebergTableSink {
             Box::new(builder.build(Some(partition)).await.map_err(backend)?)
         };
         Ok(Box::new(IcebergTableWriter::new(
-            self.catalog.clone(),
-            table,
-            schema,
-            prefix,
-            inner,
-            options,
+            table, schema, prefix, inner, options,
         )))
     }
 }

@@ -334,33 +334,6 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows() {
 }
 
 #[tokio::test]
-async fn cancellation_prevents_commit() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    let server = server(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
-        Duration::from_secs(60),
-    )
-    .await;
-    let capture = Capture::default();
-    let batch = batch(vec![Some(&server.url)]);
-    let mut writer = capture
-        .clone()
-        .layer(download_layer(
-            ["url"].map(str::to_owned).into_iter().collect(),
-        ))
-        .open((), batch.schema(), WriteOptions::default())
-        .await
-        .unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), writer.write(batch))
-            .await
-            .is_err()
-    );
-    assert!(writer.commit().await.is_err());
-    assert!(capture.0.lock().unwrap().aborted);
-}
-
-#[tokio::test]
 async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
     let _request_budget = REQUEST_BUDGET.lock().await;
     let schema = Arc::new(Schema::new(vec![

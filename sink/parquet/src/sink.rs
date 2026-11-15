@@ -71,10 +71,10 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        let mut writers = self
-            .create_writers(directory, schema, options, NonZeroUsize::new(1).unwrap())
-            .await?;
-        Ok(Box::new(writers.pop().unwrap()))
+        self.open_writers(directory, schema, options, NonZeroUsize::MIN)
+            .await?
+            .into_writer()
+            .await
     }
 }
 
@@ -144,7 +144,7 @@ impl ParquetDirectorySink {
                 )),
                 Err(error) => {
                     for writer in writers {
-                        let _ = Writer::abort(Box::new(writer)).await;
+                        let _ = DataWriter::abort(Box::new(writer)).await;
                     }
                     if options.cleanup_on_error {
                         let _ = destination.remove_reservation().await;

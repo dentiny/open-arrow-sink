@@ -114,25 +114,39 @@ async fn explicit_storage_version() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     assert!(sink.capability().supports_storage_version);
-    let url = storage.url("versioned/").unwrap();
-    let mut writer = sink
-        .open(
-            url.clone(),
+    for version in ["2.2", "2.3"] {
+        let url = storage.url(&format!("version-{version}/")).unwrap();
+        let mut writer = sink
+            .open(
+                url.clone(),
+                batch().schema(),
+                WriteOptions {
+                    storage_version: Some(version.into()),
+                    ..write_options()
+                },
+            )
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.commit().await.unwrap();
+        let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+        assert_eq!(
+            dataset.manifest().data_storage_format.version.to_string(),
+            version
+        );
+    }
+    assert!(matches!(
+        sink.open(
+            storage.url("unsupported/").unwrap(),
             batch().schema(),
             WriteOptions {
                 storage_version: Some("2.1".into()),
                 ..write_options()
-            },
+            }
         )
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.commit().await.unwrap();
-    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
-    assert_eq!(
-        dataset.manifest().data_storage_format.version.to_string(),
-        "2.1"
-    );
+        .await,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
 }
 
 #[rstest::rstest]

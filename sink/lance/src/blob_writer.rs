@@ -99,7 +99,7 @@ impl Writer for BlobDatasetWriter {
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
         if self.options.cleanup_on_error {
-            let blobs = self.blob_session.cleanup().await;
+            let blobs = self.blob_session.abort().await;
             let directory = self.destination.cleanup().await;
             return blobs.and(directory);
         }
@@ -129,7 +129,10 @@ impl BlobDatasetWriter {
             schema,
             storage_schema,
             encoding_schema,
-            blob_session: Arc::new(crate::blob::BlobSession::new(destination.storage.clone())),
+            blob_session: Arc::new(crate::blob::BlobSession::new(
+                destination.storage.clone(),
+                &destination.url,
+            )),
             sender: Some(sender),
             task,
             rows: 0,
