@@ -167,3 +167,16 @@ Native Iceberg owns publication and commit-failure handling. This adapter does
 not change those semantics or introduce a second table transaction. Iceberg's
 `FileWrite` interface has no asynchronous abort method; dropped uploads may need
 backend lifecycle cleanup even when session-owned published files are removed.
+
+### Supported write modes
+
+`IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
+`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+table. A missing table is an error. The shared default is `WriteMode::Create`,
+which this sink rejects; callers must explicitly select Append.
+
+Create and Overwrite return `Error::Unsupported` before catalog access, leaving
+existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes
+fast append but no public full-overwrite transaction, and `TableIdent` does not
+carry table creation settings. This sink never drops/recreates a table to emulate
+overwrite. Callers can inspect capabilities to choose an appropriate sink or mode.

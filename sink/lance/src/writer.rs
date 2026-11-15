@@ -2,16 +2,21 @@ use std::path::PathBuf;
 
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
-use lance::{Dataset, dataset::WriteParams};
+use lance::{
+    Dataset,
+    dataset::{WriteMode as LanceWriteMode, WriteParams},
+};
 use open_arrow_sink_core::{
-    IndexSpec, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    IndexSpec, RecordBatch, Result, SchemaRef, WriteMode, WriteOptions, WriteSummary, Writer,
+    async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, failed, worker_stopped},
+    error::{aborted, backend, worker_stopped},
     index::build_indexes,
+    validation::{validate_writer_resource, validate_writer_state},
 };
 
 pub(crate) enum Message {
@@ -56,7 +61,8 @@ impl RecordBatchReader for ChannelReader {
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    path: PathBuf,
+    path: Option<PathBuf>,
+    cleanup_on_error: bool,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
@@ -71,16 +77,12 @@ impl Writer for LanceWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(failed());
-        }
+        validate_writer_state(self.failed, self.sender.is_some())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
+        validate_writer_resource(self.sender.as_ref())?
             .send(Message::Batch(batch))
             .await
             .map_err(|_| worker_stopped())?;
@@ -90,10 +92,8 @@ impl Writer for LanceWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
-            return Err(failed());
-        }
-        let sender = self.sender.take().unwrap();
+        validate_writer_state(self.failed, self.sender.is_some())?;
+        let sender = validate_writer_resource(self.sender.take())?;
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
@@ -110,7 +110,12 @@ impl Writer for LanceWriter {
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
-        tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
+        if self.cleanup_on_error
+            && let Some(path) = &self.path
+        {
+            tokio::fs::remove_dir_all(path).await.map_err(backend)?;
+        }
+        Ok(())
     }
 }
 
@@ -118,10 +123,9 @@ impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        path: PathBuf,
+        path: Option<PathBuf>,
         uri: String,
-        target_file_size: Option<usize>,
-        indexes: Vec<IndexSpec>,
+        options: WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -130,7 +134,8 @@ impl LanceWriter {
             finished: false,
         };
         let mut params = WriteParams::default();
-        if let Some(size) = target_file_size {
+        params.mode = native_mode(options.mode);
+        if let Some(size) = options.target_file_size {
             params.max_bytes_per_file = size;
         }
         let task =
@@ -139,11 +144,20 @@ impl LanceWriter {
             schema,
             encoding_schema,
             path,
+            cleanup_on_error: options.cleanup_on_error,
             sender: Some(sender),
             task,
             rows: 0,
             failed: false,
-            indexes,
+            indexes: options.indexes,
         }
+    }
+}
+
+pub(crate) fn native_mode(mode: WriteMode) -> LanceWriteMode {
+    match mode {
+        WriteMode::Create => LanceWriteMode::Create,
+        WriteMode::Append => LanceWriteMode::Append,
+        WriteMode::Overwrite => LanceWriteMode::Overwrite,
     }
 }
