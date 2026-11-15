@@ -83,3 +83,13 @@ pub(crate) fn validate_commit_state(failed: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Parse native SDK locations before validating them against the storage scope.
+pub(crate) fn storage_location(path: &str) -> iceberg::Result<open_arrow_sink_storage::Url> {
+    if path.starts_with('/') {
+        open_arrow_sink_storage::Url::from_file_path(path)
+            .map_err(|_| error::invalid_storage_location())
+    } else {
+        open_arrow_sink_storage::Url::parse(path).map_err(error::storage_backend)
+    }
+}

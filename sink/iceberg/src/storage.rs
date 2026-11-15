@@ -1,10 +1,11 @@
 //! Bridge Iceberg's FileIO contracts to the shared OpenDAL operator.
 use std::{ops::Range, sync::Arc};
 
+use crate::{error::storage_backend as backend, validation::storage_location as location};
 use bytes::Bytes;
 use futures::{StreamExt, stream::BoxStream};
 use iceberg::{
-    Error, ErrorKind, Result,
+    Result,
     io::{
         FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage as IcebergStorage,
         StorageConfig, StorageFactory,
@@ -12,18 +13,6 @@ use iceberg::{
 };
 use open_arrow_sink_core::async_trait;
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
-
-fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::new(ErrorKind::Unexpected, "OpenDAL storage operation failed").with_source(error)
-}
-fn location(path: &str) -> Result<Url> {
-    if path.starts_with('/') {
-        Url::from_file_path(path)
-            .map_err(|_| Error::new(ErrorKind::DataInvalid, "invalid filesystem location"))
-    } else {
-        Url::parse(path).map_err(backend)
-    }
-}
 
 /// Inject into `CatalogBuilder::with_storage_factory` so data, metadata, scans,
 /// and cleanup all share the same operator. This factory holds a live operator;
@@ -54,18 +43,14 @@ macro_rules! runtime_only {
                 &self,
                 _: S,
             ) -> std::result::Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom(
-                    "live OpenDAL operators cannot be serialized",
-                ))
+                Err(crate::error::operator_serialization())
             }
         }
         impl<'de> serde::Deserialize<'de> for $type {
             fn deserialize<D: serde::Deserializer<'de>>(
                 _: D,
             ) -> std::result::Result<Self, D::Error> {
-                Err(serde::de::Error::custom(
-                    "construct OpenDAL storage with a configured operator",
-                ))
+                Err(crate::error::operator_deserialization())
             }
         }
     };
