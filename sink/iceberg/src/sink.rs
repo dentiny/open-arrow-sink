@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use iceberg::table::Table;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use iceberg::spec::{PartitionKey, Struct, TableProperties};
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
@@ -10,11 +11,13 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Compression, CompressionCapability, CompressionCodec, Ordering, PartitionType, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
+    Compression, CompressionCapability, CompressionCodec, DataWriter, Ordering, ParallelSink,
+    PartitionType, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
+    async_trait,
 };
 
 use crate::{
+    committer::IcebergCommitter,
     error::backend,
     partition::PartitionWriterAdapter,
     validation::{validate_options, validate_table},
@@ -71,8 +74,59 @@ impl Sink for IcebergTableSink {
     ) -> Result<Box<dyn Writer>> {
         validate_options(&schema, &options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
-        let metadata = table.metadata();
         validate_table(&table, &schema, options.partition)?;
+        self.create_writer(table, schema, options)
+            .await
+            .map(|w| w as Box<dyn Writer>)
+    }
+}
+
+#[async_trait]
+impl ParallelSink for IcebergTableSink {
+    type Output = (u64, Vec<iceberg::spec::DataFile>);
+    async fn open_writers(
+        &self,
+        request: TableIdent,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<WriteSession<Self::Output>> {
+        validate_options(&schema, &options, self.capability())?;
+        let table = self.catalog.load_table(&request).await.map_err(backend)?;
+        validate_table(&table, &schema, options.partition)?;
+        let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
+        for _ in 0..count.get() {
+            match self
+                .create_writer(table.clone(), schema.clone(), options.clone())
+                .await
+            {
+                Ok(writer) => writers.push(writer),
+                Err(error) => {
+                    for writer in writers {
+                        let _ = writer.abort().await;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(WriteSession {
+            writers,
+            committer: Box::new(IcebergCommitter {
+                catalog: self.catalog.clone(),
+                table,
+            }),
+        })
+    }
+}
+
+impl IcebergTableSink {
+    async fn create_writer(
+        &self,
+        table: Table,
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<IcebergTableWriter>> {
+        let metadata = table.metadata();
         // A private session prefix lets abort remove only this writer's files.
         let id = uuid::Uuid::new_v4().to_string();
         let prefix = format!(
@@ -151,6 +205,7 @@ impl Sink for IcebergTableSink {
             schema,
             prefix,
             inner,
+            options,
         )))
     }
 }

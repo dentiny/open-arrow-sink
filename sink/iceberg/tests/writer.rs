@@ -772,3 +772,45 @@ async fn compression_survives_rolling_and_round_trips(
     }
     assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 6);
 }
+
+#[tokio::test]
+async fn unordered_commit_preserves_all_rows() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+
+    let (catalog, identifier, schema) = table().await;
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .open(identifier.clone(), schema.clone(), options())
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for id in 0..8 {
+        let input = [
+            (Some(id * 2), Some(i64::from(id))),
+            (Some(id * 2 + 1), None),
+            (None, Some(-1)),
+        ];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(
+                    input.iter().map(|row| row.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    input.iter().map(|row| row.1).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap();
+        writer.write(batch).await.unwrap();
+        expected.extend(input);
+    }
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        expected.len() as u64
+    );
+    expected.sort_unstable();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+}
