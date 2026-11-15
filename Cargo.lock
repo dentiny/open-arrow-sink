@@ -3871,6 +3871,7 @@ dependencies = [
  "lance-linalg",
  "more-asserts",
  "open-arrow-sink-core",
+ "open-arrow-sink-layer",
  "rstest",
  "tempfile",
  "tokio",

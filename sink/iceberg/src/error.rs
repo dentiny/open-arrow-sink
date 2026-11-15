@@ -1,5 +1,5 @@
 use iceberg::spec::Transform;
-use open_arrow_sink_core::{Error, PartitionType};
+use open_arrow_sink_core::{Error, PartitionType, ZSTD_COMPRESSION_LEVEL_RANGE};
 
 pub(crate) fn backend(error: iceberg::Error) -> Error {
     Error::Backend(Box::new(error))
@@ -7,7 +7,9 @@ pub(crate) fn backend(error: iceberg::Error) -> Error {
 
 pub(crate) fn invalid_zstd_level(level: i32) -> Error {
     Error::Unsupported(format!(
-        "Iceberg Zstd compression level must be between 1 and 22: {level}"
+        "Iceberg Zstd compression level must be between {} and {}: {level}",
+        ZSTD_COMPRESSION_LEVEL_RANGE.start(),
+        ZSTD_COMPRESSION_LEVEL_RANGE.end(),
     ))
 }
 

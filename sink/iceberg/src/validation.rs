@@ -3,7 +3,7 @@ use iceberg::spec::Transform;
 use iceberg::table::Table;
 use open_arrow_sink_core::{
     Compression, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability, WriteOptions,
-    validation,
+    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -14,9 +14,8 @@ pub(crate) fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
-    // The SDK writes Parquet, whose supported Zstandard levels are 1..=22.
     if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
-        && !(1..=22).contains(&level)
+        && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
     {
         return Err(error::invalid_zstd_level(level));
     }

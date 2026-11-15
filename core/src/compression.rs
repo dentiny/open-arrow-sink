@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::RangeInclusive};
+
+/// Explicit positive Zstandard compression levels supported by the sink adapters.
+/// A backend may additionally accept 0 to select its native default level.
+pub const ZSTD_COMPRESSION_LEVEL_RANGE: RangeInclusive<i32> = 1..=22;
 
 /// Portable compression codec identifiers used to advertise backend capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
