@@ -24,7 +24,7 @@ attempts to remove its directory; failed open/commit also attempts cleanup. Set 
 to `false` to retain session-created output on abort or failure. Cleanup never
 recursively deletes other files. Drop leaves incomplete output and never commits.
 
-No append, overwrite, partitioning, compression options, cloud storage or retries.
+No append, overwrite, partitioning, cloud storage or retries.
 
 ```sh
 cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parquet-directory
@@ -35,3 +35,29 @@ cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parqu
 This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
 `WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
 or accessing the destination. The default empty list keeps existing behavior.
+
+## Compression
+
+Supports global compression and per-column overrides through `WriteOptions.compression`
+or `CompressionLayer`. Uncompressed is always available. Other codecs require
+opt-in Cargo features (none are enabled by default):
+
+| Codec | Sink crate feature | Facade feature |
+| --- | --- | --- |
+| Snappy | `snappy` | `parquet-snappy` |
+| Gzip | `gzip` | `parquet-gzip` |
+| Zstd | `zstd` | `parquet-zstd` |
+| Lz4Raw | `lz4` | `parquet-lz4` |
+
+For example, enable `parquet-zstd` on `open-arrow-sink`, or `zstd` on
+`open-arrow-sink-parquet`. Facade codec features also enable `sink-parquet`.
+Capabilities advertise only enabled codecs; disabled codec requests return
+`Error::Unsupported` before creating the destination. Cargo features are additive,
+so other dependencies may still bring in codecs through their own Parquet features.
+
+Column keys are exact top-level Arrow names; nested fields apply to all descendant columns.
+Overrides and global settings persist across file rolling.
+
+Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
+Parquet accepts levels 1 through 22; unsupported levels are rejected before
+creating the destination. `level: None` uses the Parquet default.

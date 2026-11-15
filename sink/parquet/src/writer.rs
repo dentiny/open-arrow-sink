@@ -3,7 +3,7 @@ use std::{io, path::PathBuf};
 use open_arrow_sink_core::{
     RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
-use parquet::arrow::AsyncArrowWriter;
+use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use tokio::fs::{self, File, OpenOptions};
 
 use crate::error::{backend, closed};
@@ -13,6 +13,7 @@ pub(crate) struct ParquetDirectoryWriter {
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     options: WriteOptions,
+    properties: WriterProperties,
     rows_written: u64,
     files_created: usize,
 }
@@ -36,7 +37,9 @@ impl Writer for ParquetDirectoryWriter {
                 .await
                 .map_err(backend)?;
             self.files_created += 1;
-            writer = AsyncArrowWriter::try_new(file, self.schema.clone(), None).map_err(backend)?;
+            writer =
+                AsyncArrowWriter::try_new(file, self.schema.clone(), Some(self.properties.clone()))
+                    .map_err(backend)?;
         }
         writer.write(&batch).await.map_err(backend)?;
         // Flush each batch rather than retaining the complete input in memory.
@@ -72,12 +75,14 @@ impl ParquetDirectoryWriter {
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
         options: WriteOptions,
+        properties: WriterProperties,
     ) -> Self {
         Self {
             directory,
             schema,
             writer: Some(writer),
             options,
+            properties,
             rows_written: 0,
             files_created: 1,
         }
