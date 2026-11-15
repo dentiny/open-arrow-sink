@@ -1,7 +1,7 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
     ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
@@ -14,12 +14,13 @@ pub(crate) fn validate_options(
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
     parse_storage_version(options.storage_version.as_deref())?;
-    for compression in options
-        .compression
-        .global
-        .iter()
-        .chain(options.compression.columns.values())
-    {
+    validate_encoding(schema, &options.compression)?;
+    validate_compression(&options.compression)?;
+    validate_indexes(schema, &options.indexes)
+}
+
+fn validate_compression(options: &CompressionOptions) -> Result<()> {
+    for compression in options.global.iter().chain(options.columns.values()) {
         // Lance accepts 0 as the native Zstd default, in addition to positive levels.
         if let Compression::Zstd { level: Some(level) } = compression
             && *level != 0
@@ -28,7 +29,35 @@ pub(crate) fn validate_options(
             return Err(error::invalid_compression_level(*level));
         }
     }
-    validate_indexes(schema, &options.indexes)
+    Ok(())
+}
+
+fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    for field in schema.fields() {
+        let encoding = options
+            .column_encodings
+            .get(field.name())
+            .copied()
+            .or(options.structural_encoding);
+        if encoding.is_some()
+            && (field
+                .metadata()
+                .get(open_arrow_sink_core::BLOB_METADATA_KEY)
+                .map(String::as_str)
+                == Some("true")
+                || field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2"))
+        {
+            return Err(open_arrow_sink_core::Error::Unsupported(format!(
+                "structural encoding on blob column {}",
+                field.name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 use crate::error::{missing_index_column, unsupported_index};

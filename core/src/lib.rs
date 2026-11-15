@@ -16,7 +16,7 @@ pub use arrow_schema::SchemaRef;
 pub use async_trait::async_trait;
 pub use capability::{PartitionType, SinkCapability};
 pub use compression::{
-    Compression, CompressionCapability, CompressionCodec, CompressionOptions,
+    Compression, CompressionCapability, CompressionCodec, CompressionOptions, StructuralEncoding,
     ZSTD_COMPRESSION_LEVEL_RANGE,
 };
 pub use error::{Error, IndexCommitError, Result};

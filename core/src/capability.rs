@@ -32,7 +32,7 @@ pub struct SinkCapability {
     /// read order; `Unordered` provides no input-order guarantee.
     /// Sequential I/O completion alone does not guarantee logical row order.
     pub ordering: Ordering,
-    /// Compression scopes and codecs accepted by this sink.
+    /// Compression scopes, codecs, and structural encodings accepted by this sink.
     pub compression: CompressionCapability,
     /// Partition transforms accepted by this sink. An empty list means
     /// `WriteOptions.partition` is unsupported.

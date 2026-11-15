@@ -66,10 +66,28 @@ pub fn validate_compression_options(
             )));
         }
     }
-    for column in options.columns.keys() {
+    if let Some(encoding) = options.structural_encoding
+        && !capability.structural_encodings.contains(&encoding)
+    {
+        return Err(Error::Unsupported(format!(
+            "structural encoding: {encoding:?}"
+        )));
+    }
+    for (column, encoding) in &options.column_encodings {
+        if !capability.structural_encodings.contains(encoding) {
+            return Err(Error::Unsupported(format!(
+                "structural encoding {encoding:?} on column {column}"
+            )));
+        }
+    }
+    for column in options
+        .columns
+        .keys()
+        .chain(options.column_encodings.keys())
+    {
         if unique_column_index(schema, column).is_none() {
             return Err(Error::Unsupported(format!(
-                "compression column must identify one top-level field: {column}"
+                "compression/encoding column must identify one top-level field: {column}"
             )));
         }
     }
