@@ -57,18 +57,7 @@ impl StorageConfig {
     /// backend inside retry, so each attempt gets its own timeout. Retryability
     /// and backoff behavior are delegated to OpenDAL.
     pub fn apply(&self, mut operator: Operator) -> Result<Operator> {
-        if let Some(retry) = &self.retry
-            && (retry.min_delay > retry.max_delay
-                || !retry.factor.is_finite()
-                || retry.factor < 1.0)
-        {
-            return Err(crate::storage::invalid("invalid retry delay or factor"));
-        }
-        if let Some(timeout) = &self.timeout
-            && (timeout.operation_timeout.is_zero() || timeout.io_timeout.is_zero())
-        {
-            return Err(crate::storage::invalid("timeouts must be positive"));
-        }
+        self.validate()?;
         if let Some(timeout) = &self.timeout {
             operator = operator.layer(
                 TimeoutLayer::new()

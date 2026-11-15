@@ -124,3 +124,48 @@ async fn filesystem_conditional_creation_has_one_winner() {
         if first.is_ok() { "first" } else { "second" }
     );
 }
+
+#[tokio::test]
+async fn errors_retain_operation_path_and_opendal_source() {
+    use std::error::Error as _;
+    let storage = memory();
+    let error = storage
+        .read(&storage.url("missing").unwrap())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read object \"missing\""));
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(error) = cause.downcast_ref::<opendal::Error>() {
+            assert_eq!(error.kind(), opendal::ErrorKind::NotFound);
+            return;
+        }
+        source = cause.source();
+    }
+    panic!("the original OpenDAL error must remain in the source chain");
+}
+
+#[test]
+fn config_validation_and_configured_construction_match_access() {
+    let config = StorageConfig {
+        retry: Some(RetryConfig {
+            min_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(1),
+            ..Default::default()
+        }),
+        timeout: None,
+    };
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("retry min_delay must not exceed max_delay")
+    );
+    Storage::try_new(
+        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+        "memory:///".parse().unwrap(),
+        StorageConfig::default(),
+    )
+    .unwrap();
+}
