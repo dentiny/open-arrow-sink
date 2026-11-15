@@ -37,12 +37,24 @@ impl Sink for ParquetDirectorySink {
     type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[
+        let supported_modes: &'static [open_arrow_sink_core::WriteMode] = if self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| storage.operator().info().scheme() != "fs")
+        {
+            &[
+                open_arrow_sink_core::WriteMode::Create,
+                open_arrow_sink_core::WriteMode::Append,
+            ]
+        } else {
+            &[
                 open_arrow_sink_core::WriteMode::Create,
                 open_arrow_sink_core::WriteMode::Append,
                 open_arrow_sink_core::WriteMode::Overwrite,
-            ],
+            ]
+        };
+        SinkCapability {
+            supported_modes,
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: crate::compression::SUPPORTED_CODECS,
