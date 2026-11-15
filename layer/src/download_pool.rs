@@ -22,9 +22,9 @@ const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
 const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 * 1024).unwrap();
-// Maximum buffer allocated for each read: 64 KiB, capped by the pool budget.
+// Maximum buffer allocated for each read: 2 MiB, capped by the pool budget.
 // Smaller chunks trade more read/allocation overhead for finer buffering granularity.
-const CHUNK_BYTES: usize = 64 * 1024;
+const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Shared streaming downloads with concurrency and payload-buffer budgets.
 ///
