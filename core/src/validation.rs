@@ -127,7 +127,10 @@ pub fn validate_ordering_options(ordering: Ordering, supported_ordering: Orderin
 /// Exact schema equality, including field order, nullability and metadata.
 /// Casting, schema reconciliation and evolution require an explicit adapter.
 pub fn validate_batch(schema: &Schema, batch: &RecordBatch) -> Result<()> {
-    if schema != batch.schema().as_ref() {
+    // Batches commonly retain the writer's Arc<Schema>. Avoid both cloning
+    // that Arc and comparing metadata when the immutable schema is identical.
+    let batch_schema = batch.schema_ref().as_ref();
+    if !std::ptr::eq(schema, batch_schema) && schema != batch_schema {
         return Err(Error::SchemaMismatch);
     }
     Ok(())
