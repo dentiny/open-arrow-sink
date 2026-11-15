@@ -97,38 +97,6 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
     Ok(())
 }
 
-pub(crate) fn validate_destination_path(
-    storage: &open_arrow_sink_storage::Storage,
-    url: &open_arrow_sink_storage::Url,
-) -> Result<()> {
-    if storage.path(url)?.trim_matches('/').is_empty() {
-        return Err(error::empty_destination());
-    }
-    Ok(())
-}
-
-/// Preflight only; conditional marker creation still arbitrates concurrent opens.
-pub(crate) async fn destination_exists(
-    storage: &open_arrow_sink_storage::Storage,
-    url: &open_arrow_sink_storage::Url,
-) -> Result<bool> {
-    let mut exact = url.clone();
-    exact.path_segments_mut().unwrap().pop_if_empty();
-    Ok(storage.exists(&exact).await?
-        || storage.exists(url).await?
-        || !storage.list(url).await?.is_empty())
-}
-
-pub(crate) async fn validate_fresh_destination(
-    storage: &open_arrow_sink_storage::Storage,
-    url: &open_arrow_sink_storage::Url,
-) -> Result<()> {
-    if destination_exists(storage, url).await? {
-        return Err(error::destination_exists());
-    }
-    Ok(())
-}
-
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,

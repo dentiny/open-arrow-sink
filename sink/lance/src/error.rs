@@ -70,10 +70,6 @@ pub(crate) fn index_refresh(
     }
 }
 
-pub(crate) fn empty_destination() -> Error {
-    Error::Unsupported("dataset must have a nonempty path".into())
-}
-
 pub(crate) fn destination_exists() -> Error {
     backend(io::Error::new(
         io::ErrorKind::AlreadyExists,

@@ -19,11 +19,8 @@ pub(crate) struct NativeStorage {
     reserved: bool,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, mut url: Url) -> Result<Self> {
-        crate::validation::validate_destination_path(&storage, &url)?;
-        if !url.path().ends_with('/') {
-            url.path_segments_mut().unwrap().push("");
-        }
+    pub fn new(storage: Storage, url: Url) -> Result<Self> {
+        let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
         session
             .store_registry()
@@ -43,7 +40,7 @@ impl NativeStorage {
                     .await?
             }
             WriteMode::Overwrite => {
-                if crate::validation::destination_exists(&self.storage, &self.url).await? {
+                if self.storage.prefix_exists(&self.url).await? {
                     crate::validation::validate_existing_dataset(self.dataset_builder(), None)
                         .await?;
                 } else {
@@ -54,7 +51,9 @@ impl NativeStorage {
         Ok(())
     }
     async fn reserve(&mut self) -> Result<()> {
-        crate::validation::validate_fresh_destination(&self.storage, &self.url).await?;
+        if self.storage.prefix_exists(&self.url).await? {
+            return Err(crate::error::destination_exists());
+        }
         self.storage
             .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
             .await?;
@@ -105,7 +104,7 @@ impl ObjectStoreProvider for Provider {
     ) -> lance::Result<ObjectStore> {
         self.0.path(&base_path).map_err(native)?;
         Ok(ObjectStore::new(
-            Arc::new(OpendalStore::new(self.0.operator().clone())),
+            Arc::new(OpendalStore::new(self.0.operator())),
             base_path,
             params.block_size,
             params.object_store_wrapper.clone(),

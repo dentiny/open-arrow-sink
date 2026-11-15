@@ -1,4 +1,4 @@
-//! Create-only Lance datasets over shared OpenDAL storage. Requires a Tokio runtime.
+//! Versioned Lance datasets over shared OpenDAL storage. Requires a Tokio runtime.
 
 mod committer;
 mod compression;
