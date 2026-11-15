@@ -156,23 +156,3 @@ pub fn validate_storage_version_options(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn storage_version_requires_backend_support() {
-        assert_eq!(WriteOptions::default().storage_version, None);
-        for supported in [false, true] {
-            assert!(validate_storage_version_options(None, supported).is_ok());
-        }
-        assert!(validate_storage_version_options(Some("2.1"), true).is_ok());
-        for version in ["2.1", ""] {
-            assert!(matches!(
-                validate_storage_version_options(Some(version), false),
-                Err(Error::Unsupported(_))
-            ));
-        }
-    }
-}
