@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Composable layers for Arrow RecordBatch sinks"
 
 [dependencies]
+open-arrow-sink-storage = { workspace = true, features = ["http"] }
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true

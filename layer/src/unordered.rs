@@ -6,8 +6,6 @@ use open_arrow_sink_core::{
     Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::error::unsupported;
-
 /// Pre-open independent writers and dispatch batches to available writers.
 /// At most one batch per writer is in flight. Work progresses while write or
 /// commit is polled; this layer does not spawn background tasks.
@@ -61,19 +59,14 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
             .inner
             .open_writers(request, schema.clone(), options, self.writers)
             .await?;
-        if session.writers.len() != self.writers.get()
-            || session
-                .writers
-                .iter()
-                .any(|writer| writer.schema() != &schema)
+        if let Err(error) =
+            crate::validation::validate_session(&session, self.writers.get(), &schema)
         {
             for writer in session.writers {
                 let _ = writer.abort().await;
             }
             let _ = session.committer.abort().await;
-            return Err(open_arrow_sink_core::Error::Unsupported(
-                "backend returned an invalid parallel writer session".into(),
-            ));
+            return Err(error);
         }
         Ok(Box::new(UnorderedWriter {
             schema,
@@ -140,9 +133,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(unsupported());
-        }
+        crate::validation::validate_writer_state(self.failed)?;
         // Cancellation and every error make the session terminal.
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
@@ -172,9 +163,9 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
+        if let Err(error) = crate::validation::validate_writer_state(self.failed) {
             let _ = self.cleanup().await;
-            return Err(unsupported());
+            return Err(error);
         }
         if let Err(error) = self.drain().await {
             let _ = self.cleanup().await;

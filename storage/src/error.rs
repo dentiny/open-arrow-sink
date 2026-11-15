@@ -115,3 +115,35 @@ pub(crate) fn abort_result(
         Err(error) => Err(map_error("abort", path, error)),
     }
 }
+
+#[cfg(feature = "http")]
+pub(crate) fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::Backend(Box::new(error))
+}
+#[cfg(feature = "http")]
+pub(crate) fn download_limit() -> Error {
+    invalid("download pool limits exceed semaphore capacity")
+}
+#[cfg(feature = "http")]
+pub(crate) fn invalid_download_url() -> Error {
+    invalid("invalid blob URL")
+}
+#[cfg(feature = "http")]
+pub(crate) fn download_scheme() -> Error {
+    invalid("blob URL must use HTTP or HTTPS")
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn download_response(
+    response: http::Response<opendal::HttpBody>,
+) -> http::Response<opendal::HttpBody> {
+    if response.status().is_success() {
+        return response;
+    }
+    // OpenDAL collects error bodies for diagnostics. Discard an unbounded body.
+    let (parts, _) = response.into_parts();
+    http::Response::from_parts(
+        parts,
+        opendal::HttpBody::new(futures::stream::empty(), Some(0)),
+    )
+}

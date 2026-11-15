@@ -64,6 +64,22 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
+        let storage_schema = crate::blob::storage_schema(&schema)?;
+        if storage_schema != schema {
+            validate_options(&schema, &options, self.capability())?;
+            // Apply compression before constructing the native descriptor fields.
+            let encoding_schema =
+                crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
+            let mut destination = self.resolve(url)?;
+            destination.prepare(&encoding_schema, options.mode).await?;
+            return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
+                schema,
+                storage_schema,
+                encoding_schema,
+                destination,
+                options,
+            )));
+        }
         // Use the same fragment writing and publication path for every session.
         self.clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::MIN))
@@ -83,6 +99,7 @@ impl ParallelSink for LanceDatasetSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
+        crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = writer_schema(&schema, &options.compression);
         let mut destination = self.resolve(url)?;
         destination.prepare(&encoding_schema, options.mode).await?;

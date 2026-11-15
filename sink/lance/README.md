@@ -112,6 +112,24 @@ A runnable index construction example (destination must not exist):
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
 
+## Streaming native blobs
+
+Blob-marked schemas require a single writer; blob bytes use the configured shared storage.
+Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
+value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
+finish it to obtain a session-owned `BlobHandle`. Attach handles with
+`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
+non-null binary placeholders. Null cells remain null. Ordinary materialized
+binary values can still be written through `Writer::write`.
+
+Streams append through the common `StorageWriter`, and batches carry native
+Lance managed-blob descriptors. Streaming values use dedicated storage without
+buffering the full payload to select inline or packed storage. Materialized binary
+inputs remain supported through Lance's prepared-blob path. Handles from another
+session and duplicate/null placements are rejected. Dropping an unfinished blob
+poisons the session. Abort or a rejected commit removes a freshly reserved dataset
+when `cleanup_on_error` is enabled; existing datasets are preserved.
+
 ## Compression
 
 Supports global and per-column `Compression::Zstd { level }` and
@@ -150,8 +168,9 @@ let compression = CompressionOptions {
 
 ## Writing and shared storage
 
-Single-writer sessions use the same fragment writers and session committer as
-`UnorderedWriteLayer::new(concurrency)`. Workers produce uncommitted fragments;
+Ordinary single-writer sessions use the same fragment writers and session
+committer as `UnorderedWriteLayer::new(concurrency)`. Streaming blobs use a
+specialized single writer with the same shared storage and HTTP request budget. Workers produce uncommitted fragments;
 the committer publishes one data manifest and then builds the requested indexes.
 
 Requests are `Url` values. Convert local paths with

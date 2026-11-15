@@ -44,3 +44,7 @@ pub(crate) fn duplicate_index(column: &str) -> Error {
 pub(crate) fn missing_index_column(column: &str) -> Error {
     Error::Unsupported(format!("index column not found: {column}"))
 }
+
+pub(crate) fn unsupported_blob_streams() -> Error {
+    Error::Unsupported("sink does not support streaming blobs".into())
+}

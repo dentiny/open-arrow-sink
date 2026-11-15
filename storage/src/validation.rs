@@ -61,7 +61,7 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
 }
 
 pub(crate) fn validate_nonroot_path(path: &str) -> Result<()> {
-    if path.is_empty() {
+    if path.trim_matches('/').is_empty() {
         return Err(error::empty_path());
     }
     Ok(())
@@ -106,4 +106,36 @@ pub(crate) fn validate_http_concurrency(limit: usize) -> Result<()> {
         return Err(error::invalid_http_concurrency());
     }
     Ok(())
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<()> {
+    if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(error::download_limit());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn validate_download_url(source: &str) -> Result<http::Uri> {
+    let mut url = url::Url::parse(source).map_err(|_| error::invalid_download_url())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(error::download_scheme());
+    }
+    url.set_fragment(None);
+    url.as_str()
+        .parse()
+        .map_err(|_| error::invalid_download_url())
+}
+
+#[cfg(feature = "http")]
+pub(crate) fn download_concurrency(
+    default: std::num::NonZeroUsize,
+) -> Result<std::num::NonZeroUsize> {
+    let limit = std::env::var("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default);
+    validate_http_concurrency(limit.get())?;
+    Ok(limit)
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct NativeStorage {
-    storage: Storage,
+    pub storage: Storage,
     pub url: Url,
     session: Arc<Session>,
     reserved: bool,

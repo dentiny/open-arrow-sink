@@ -16,7 +16,7 @@ impl ObjectStoreProvider for Provider {
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
         self.0.path(&base_path).map_err(native)?;
-        Ok(ObjectStore::new(
+        let mut store = ObjectStore::new(
             Arc::new(OpendalStore::new(self.0.operator())),
             base_path,
             params.block_size,
@@ -26,7 +26,10 @@ impl ObjectStoreProvider for Provider {
             lance_io::object_store::DEFAULT_CLOUD_IO_PARALLELISM,
             lance_io::object_store::DEFAULT_DOWNLOAD_RETRY_COUNT,
             None,
-        ))
+        );
+        // Prevent Lance's direct-file shortcut from bypassing the configured operator.
+        store.store_prefix = self.0.base_url().to_string();
+        Ok(store)
     }
     fn extract_path(&self, url: &Url) -> lance::Result<Path> {
         // OpendalStore decodes object-store keys. Encode literal percent signs

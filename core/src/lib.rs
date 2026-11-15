@@ -27,4 +27,10 @@ pub use result::WriteSummary;
 pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;
 
+mod blob;
+pub use blob::{BlobChunk, BlobHandle, BlobPlacement, BlobWriter};
+
+/// Field metadata marking binary values that backends may map to native blobs.
+pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";
+
 pub use session::{DataWriter, SessionCommitter, WriteSession};

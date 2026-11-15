@@ -105,7 +105,7 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(open_arrow_sink_core::Error::SchemaMismatch);
+        return Err(error::schema_mismatch());
     }
     Ok(())
 }
@@ -149,4 +149,90 @@ pub(crate) fn validate_session_transaction(
     transaction: Option<lance::dataset::transaction::Transaction>,
 ) -> Result<lance::dataset::transaction::Transaction> {
     transaction.ok_or_else(error::empty_writer_session)
+}
+
+pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
+    for field in schema.fields() {
+        if field
+            .metadata()
+            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
+            .map(String::as_str)
+            == Some("true")
+            && field.data_type() != &DataType::LargeBinary
+        {
+            return Err(error::invalid_blob_column(field.name()));
+        }
+    }
+    Ok(())
+}
+pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
+    validate_blob_schema(schema)?;
+    if schema.fields().iter().any(|field| {
+        field
+            .metadata()
+            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
+            .map(String::as_str)
+            == Some("true")
+    }) {
+        return Err(error::parallel_blobs());
+    }
+    Ok(())
+}
+pub(crate) fn validate_blob_state(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
+    if failed || session.failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(error::blob_failed());
+    }
+    Ok(())
+}
+pub(crate) fn validate_blob_commit(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
+    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0
+        || validate_blob_state(failed, session).is_err()
+    {
+        return Err(error::unfinished_blobs());
+    }
+    Ok(())
+}
+pub(crate) fn validate_blob_placements(
+    batch: &open_arrow_sink_core::RecordBatch,
+    blobs: Vec<open_arrow_sink_core::BlobPlacement>,
+    session: &std::sync::Arc<crate::blob::BlobSession>,
+) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
+    use crate::blob::NativeBlob;
+    use arrow_array::{Array, LargeBinaryArray};
+    use open_arrow_sink_core::BLOB_METADATA_KEY;
+    let mut placements = std::collections::HashMap::new();
+    for blob in blobs {
+        let field = batch
+            .schema_ref()
+            .fields()
+            .get(blob.column)
+            .ok_or_else(error::blob_column_out_of_bounds)?;
+        if blob.row >= batch.num_rows()
+            || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
+        {
+            return Err(error::blob_cell());
+        }
+        let array = batch
+            .column(blob.column)
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .ok_or_else(|| error::invalid_blob_column(field.name()))?;
+        if array.is_null(blob.row) || !array.value(blob.row).is_empty() {
+            return Err(error::blob_placeholder());
+        }
+        let native = blob
+            .blob
+            .downcast_ref::<NativeBlob>()
+            .ok_or_else(error::foreign_blob)?;
+        if !std::sync::Arc::ptr_eq(&native.session, session) {
+            return Err(error::blob_owner());
+        }
+        if placements
+            .insert((blob.column, blob.row), blob.blob)
+            .is_some()
+        {
+            return Err(error::duplicate_blob_placement());
+        }
+    }
+    Ok(placements)
 }
