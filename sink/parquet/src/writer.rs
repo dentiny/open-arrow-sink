@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 
 use open_arrow_sink_core::{
     DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
@@ -7,10 +7,10 @@ use open_arrow_sink_core::{
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use tokio::fs::{self, File, OpenOptions};
 
-use crate::error::{backend, closed};
+use crate::{destination::Destination, error::backend, validation::validate_writer_state};
 
 pub(crate) struct ParquetDirectoryWriter {
-    directory: PathBuf,
+    pub(crate) destination: Arc<Destination>,
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     options: WriteOptions,
@@ -29,7 +29,7 @@ impl Writer for ParquetDirectoryWriter {
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         // Taking ownership also makes a failed or cancelled write terminal.
-        let mut writer = self.writer.take().ok_or_else(closed)?;
+        let mut writer = validate_writer_state(self.writer.take())?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.should_roll_file(&writer, batch.num_rows()) {
             writer.close().await.map_err(backend)?;
@@ -53,14 +53,18 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        let Some(writer) = self.writer.take() else {
-            let _ = self.cleanup().await;
-            return Err(closed());
+        let writer = match validate_writer_state(self.writer.take()) {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = self.cleanup().await;
+                return Err(error);
+            }
         };
         if let Err(error) = writer.close().await {
             let _ = self.cleanup().await;
             return Err(backend(error));
         }
+        self.destination.publish().await?;
         Ok(WriteSummary {
             rows_written: self.rows_written,
         })
@@ -74,7 +78,7 @@ impl Writer for ParquetDirectoryWriter {
 
 impl ParquetDirectoryWriter {
     pub(crate) fn new(
-        directory: PathBuf,
+        destination: Arc<Destination>,
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
         options: WriteOptions,
@@ -83,7 +87,7 @@ impl ParquetDirectoryWriter {
         file_stride: usize,
     ) -> Self {
         Self {
-            directory,
+            destination,
             schema,
             writer: Some(writer),
             options,
@@ -106,7 +110,9 @@ impl ParquetDirectoryWriter {
 
     fn file_path(&self, index: usize) -> PathBuf {
         let index = self.first_file + index * self.file_stride;
-        self.directory.join(format!("part-{index:05}.parquet"))
+        self.destination
+            .directory
+            .join(format!("{}{index:05}.parquet", self.destination.prefix))
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
@@ -120,8 +126,11 @@ impl ParquetDirectoryWriter {
                 Err(error) => return Err(error),
             }
         }
+        if !self.destination.remove_directory {
+            return Ok(());
+        }
         // Never recursively delete a directory: other files may have been added.
-        match fs::remove_dir(&self.directory).await {
+        match fs::remove_dir(&self.destination.directory).await {
             // Other shards or unrelated files can still own this directory.
             Err(error)
                 if self.file_stride > 1
@@ -147,7 +156,7 @@ impl DataWriter for ParquetDirectoryWriter {
         Writer::write(self, batch).await
     }
     async fn finish(&mut self) -> Result<u64> {
-        let writer = self.writer.take().ok_or_else(closed)?;
+        let writer = validate_writer_state(self.writer.take())?;
         writer.close().await.map_err(backend)?;
         Ok(self.rows_written)
     }
