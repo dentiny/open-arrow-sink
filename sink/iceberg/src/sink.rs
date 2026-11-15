@@ -68,6 +68,7 @@ impl Sink for IcebergTableSink {
                 PartitionType::Void,
             ],
             supports_blob_handle: false,
+            supports_blob_streaming: false,
             supports_storage_version: false,
             supported_indexes: &[],
         }

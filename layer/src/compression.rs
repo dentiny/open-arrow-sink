@@ -1,6 +1,6 @@
 use open_arrow_sink_core::{
     CompressionOptions, Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
-    async_trait, validation,
+    async_trait,
 };
 
 /// Overrides the entire session compression policy. The backend performs encoding.
@@ -47,7 +47,7 @@ impl<S: Sink> Sink for CompressionSink<S> {
         mut options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         options.compression = self.compression.clone();
-        validation::validate_options(&schema, &options, self.inner.capability())?;
+        // Validate at the backend after inner option layers have applied their overrides.
         self.inner.open(request, schema, options).await
     }
 }
@@ -66,7 +66,7 @@ impl<S: open_arrow_sink_core::ParallelSink> open_arrow_sink_core::ParallelSink
         writers: std::num::NonZeroUsize,
     ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
         options.compression = self.compression.clone();
-        validation::validate_options(&schema, &options, self.inner.capability())?;
+        // Validate at the backend after inner option layers have applied their overrides.
         self.inner
             .open_writers(request, schema, options, writers)
             .await

@@ -10,7 +10,7 @@ Enable a backend feature to construct that backend.
 | `OrderingLayer` | Overrides `WriteOptions.ordering`; does not sort or start workers | `Sink`; also forwards `ParallelSink` when implemented |
 | `CompressionLayer` | Replaces the entire compression policy, including column overrides | `Sink`; also forwards `ParallelSink` when implemented |
 | `UnorderedWriteLayer` | Dispatches whole batches to a fixed set of independent data writers | `ParallelSink` |
-| `DownloadBlobLayer` | Streams selected URL columns into native managed blobs | `Sink` whose writer supports blobs; currently Lance single-writer sessions |
+| `DownloadBlobLayer` | Streams selected URL columns into native managed blobs | `Sink` advertising `supports_blob_streaming`; currently Lance single-writer sessions |
 
 ## Order of composition
 

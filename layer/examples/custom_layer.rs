@@ -118,35 +118,32 @@ impl Writer for LimitedWriter {
     }
 }
 
-fn main() -> Result<()> {
-    futures::executor::block_on(async {
-        let batch = RecordBatch::try_from_iter([(
-            "id",
-            Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-        )])
-        .map_err(|error| Error::Backend(Box::new(error)))?;
-        let sink = CountingSink.layer(MaxBatchRows(3));
-        let options = WriteOptions {
-            ordering: Ordering::Unordered,
-            ..WriteOptions::default()
-        };
-        let published = Arc::new(AtomicU64::new(0));
-        let mut writer = sink
-            .open(published.clone(), batch.schema(), options.clone())
-            .await?;
-        writer.write(batch.clone()).await?;
-        assert_eq!(writer.commit().await?.rows_written, 3);
-        assert_eq!(published.load(AtomicOrdering::SeqCst), 3);
+#[tokio::main]
+async fn main() -> Result<()> {
+    let batch =
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
+            .map_err(|error| Error::Backend(Box::new(error)))?;
+    let sink = CountingSink.layer(MaxBatchRows(3));
+    let options = WriteOptions {
+        ordering: Ordering::Unordered,
+        ..WriteOptions::default()
+    };
+    let published = Arc::new(AtomicU64::new(0));
+    let mut writer = sink
+        .open(published.clone(), batch.schema(), options.clone())
+        .await?;
+    writer.write(batch.clone()).await?;
+    assert_eq!(writer.commit().await?.rows_written, 3);
+    assert_eq!(published.load(AtomicOrdering::SeqCst), 3);
 
-        // Rejection must poison the wrapper: commit cannot publish earlier rows.
-        let rejected = Arc::new(AtomicU64::new(0));
-        let sink = CountingSink.layer(MaxBatchRows(2));
-        let mut writer = sink.open(rejected.clone(), batch.schema(), options).await?;
-        assert!(writer.write(batch.slice(0, 1)).await.is_ok());
-        assert!(writer.write(batch).await.is_err());
-        assert!(writer.commit().await.is_err());
-        assert_eq!(rejected.load(AtomicOrdering::SeqCst), 0);
-        println!("Accepted a valid batch; aborted the session with an oversized batch");
-        Ok(())
-    })
+    // Rejection must poison the wrapper: commit cannot publish earlier rows.
+    let rejected = Arc::new(AtomicU64::new(0));
+    let sink = CountingSink.layer(MaxBatchRows(2));
+    let mut writer = sink.open(rejected.clone(), batch.schema(), options).await?;
+    assert!(writer.write(batch.slice(0, 1)).await.is_ok());
+    assert!(writer.write(batch).await.is_err());
+    assert!(writer.commit().await.is_err());
+    assert_eq!(rejected.load(AtomicOrdering::SeqCst), 0);
+    println!("Accepted a valid batch; aborted the session with an oversized batch");
+    Ok(())
 }

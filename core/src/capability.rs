@@ -20,9 +20,12 @@ pub enum PartitionType {
 /// Each sink explicitly declares ordering, partition, index, compression, and blob handle support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkCapability {
-    /// Supports native blob handles and explicit per-write blob configuration.
+    /// Supports native logical blob inputs and explicit per-write blob configuration.
     /// Writer/schema and parallel-session restrictions still apply.
     pub supports_blob_handle: bool,
+    /// Supports `Writer::create_blob` and `Writer::write_with_blobs` for compatible
+    /// schemas. Independent of native logical blob input/configuration support.
+    pub supports_blob_streaming: bool,
     /// Explicit destination modes accepted by this sink.
     pub supported_modes: &'static [crate::WriteMode],
     /// `PreserveInput` guarantees input row order in the target's documented

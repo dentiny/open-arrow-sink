@@ -33,15 +33,16 @@ let sink = backend.layer(MaxBatchRows(1024));
 `capability()` should preserve only guarantees your wrapper actually retains. An
 option-override layer forwards capabilities because it changes policy, not what
 the backend can guarantee. A reordering execution layer must advertise Unordered.
-If the wrapper forwards blob support, it must forward/implement the blob writer
-methods too; inheriting their unsupported defaults would contradict capabilities.
+If the wrapper forwards `supports_blob_streaming`, it must forward/implement
+the blob writer methods too; inheriting their unsupported defaults would contradict capabilities.
 
 ## 2. Validate and open the inner session
 
 Reject invalid layer configuration before opening the inner sink. If overriding
 options, modify them before validation/open. Keep the backend's remaining options
 intact, including modes, compression, partitions, indexes, versions, and cleanup.
-The inner sink still performs shared and backend-specific validation.
+Validate only layer-owned constraints; the inner sink performs shared and
+backend-specific validation after all option overrides.
 
 For a schema transform, compute the output schema at open and retain both schemas.
 Expose the caller's schema from the outer writer; give transformed batches only

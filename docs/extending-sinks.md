@@ -19,7 +19,7 @@ cargo run --locked -p open-arrow-sink-layer --example custom_sink
 
 The [driver](../layer/examples/custom_sink.rs) composes two writers, checks that
 nothing is published before commit, and verifies one combined six-row summary.
-It lives in the layer crate to reuse its executor dependency; backend authors can
+It lives in the layer crate to reuse its Tokio test runtime; backend authors can
 depend on `open-arrow-sink-core` alone plus their own I/O dependencies.
 
 ## 1. Define the request and capabilities
@@ -31,7 +31,8 @@ metadata or assume where batches originated.
 
 Return a complete `SinkCapability`: supported modes, actual read-order guarantee,
 global/per-column codecs, partition transform categories, index kinds, blob
-support, and storage-version support. Empty codec/index/partition collections mean
+configuration support (`supports_blob_handle`), streaming blob interfaces
+(`supports_blob_streaming`), and storage-version support. Empty codec/index/partition collections mean
 unsupported. A permission to reorder is not a guarantee of preserved order.
 Directory file numbering alone cannot establish scan order.
 

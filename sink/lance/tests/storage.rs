@@ -152,11 +152,16 @@ async fn explicit_storage_version() {
 }
 
 #[rstest::rstest]
-#[case::inline("x", BlobKind::Inline)]
-#[case::packed("xx", BlobKind::Packed)]
-#[case::dedicated("xxx", BlobKind::Dedicated)]
+#[case::inline("x", BlobKind::Inline, false)]
+#[case::packed("xx", BlobKind::Packed, false)]
+#[case::dedicated("xxx", BlobKind::Dedicated, false)]
+#[case::parallel_dedicated("xxx", BlobKind::Dedicated, true)]
 #[tokio::test]
-async fn ingests_blob_with_configured_layout(#[case] payload: &str, #[case] kind: BlobKind) {
+async fn ingests_blob_with_configured_layout(
+    #[case] payload: &str,
+    #[case] kind: BlobKind,
+    #[case] parallel: bool,
+) {
     let storage = storage();
     let source = storage.url("source.bin").unwrap();
     storage
@@ -180,10 +185,15 @@ async fn ingests_blob_with_configured_layout(#[case] payload: &str, #[case] kind
     };
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("ingested/").unwrap();
-    let mut writer = sink
-        .open(url.clone(), batch.schema(), options)
-        .await
-        .unwrap();
+    let mut writer = if parallel {
+        sink.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .open(url.clone(), batch.schema(), options)
+            .await
+    } else {
+        sink.open(url.clone(), batch.schema(), options).await
+    }
+    .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     storage.delete(&source).await.unwrap();

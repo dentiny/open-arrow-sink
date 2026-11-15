@@ -54,7 +54,12 @@ impl<S: Sink> Layer<S> for DownloadBlobLayer {
 impl<S: Sink> Sink for DownloadBlobSink<S> {
     type Request = S::Request;
     fn capability(&self) -> SinkCapability {
-        self.inner.capability()
+        // This writer consumes native streams internally but does not expose
+        // create_blob/write_with_blobs to its caller.
+        SinkCapability {
+            supports_blob_streaming: false,
+            ..self.inner.capability()
+        }
     }
     async fn open(
         &self,
@@ -65,7 +70,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         let indices = validate_download_config(&schema, &self.config.columns)?;
         crate::validation::validate_download_support(
             !indices.is_empty(),
-            self.inner.capability().supports_blob_handle,
+            self.inner.capability().supports_blob_streaming,
         )?;
         let mut fields = schema.fields().to_vec();
         for &column_index in &indices {

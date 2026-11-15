@@ -84,3 +84,85 @@ async fn compression_survives_rolling_and_round_trips(
         assert_eq!(actual, vec![batch.clone()]);
     }
 }
+
+#[tokio::test]
+async fn option_layers_compose_before_backend_validation() {
+    use open_arrow_sink_layer::{OrderingLayer, UnorderedWriteLayer};
+    use std::num::NonZeroUsize;
+
+    // The compression layer replaces an invalid caller policy. Ordering is
+    // enabled by a layer so callers can retain WriteOptions' default ordering.
+    let compression = CompressionLayer::new(CompressionOptions {
+        global: Some(Codec::Uncompressed),
+        ..Default::default()
+    });
+    let ordering = OrderingLayer::new(Ordering::Unordered);
+    let unordered = UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap());
+    let sinks: Vec<Box<dyn Sink<Request = Url>>> = vec![
+        Box::new(
+            ParquetDirectorySink::default()
+                .layer(ordering)
+                .layer(compression.clone()),
+        ),
+        Box::new(
+            ParquetDirectorySink::default()
+                .layer(compression.clone())
+                .layer(ordering),
+        ),
+        Box::new(
+            ParquetDirectorySink::default()
+                .layer(compression.clone())
+                .layer(unordered)
+                .layer(ordering),
+        ),
+        Box::new(
+            ParquetDirectorySink::default()
+                .layer(unordered)
+                .layer(ordering)
+                .layer(compression.clone()),
+        ),
+        Box::new(
+            ParquetDirectorySink::default()
+                .layer(unordered)
+                .layer(compression)
+                .layer(ordering),
+        ),
+    ];
+    for sink in sinks {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("output");
+        let batch = batch();
+        let options = WriteOptions {
+            compression: CompressionOptions {
+                columns: [("missing".into(), Codec::Snappy)].into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Deferring validation must still reject invalid effective options
+        // before the backend creates a destination.
+        assert!(
+            sink.open(
+                Url::from_directory_path(&directory).unwrap(),
+                batch.schema(),
+                WriteOptions {
+                    target_file_size: Some(0),
+                    ..options.clone()
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert!(!directory.exists());
+        let mut writer = sink
+            .open(
+                Url::from_directory_path(&directory).unwrap(),
+                batch.schema(),
+                options,
+            )
+            .await
+            .unwrap();
+        writer.write(batch).await.unwrap();
+        assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    }
+}
