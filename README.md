@@ -162,3 +162,29 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
+
+## Streaming download pool
+
+Enable `layer-download-blob` to use `layer::DownloadPool`. Construct a pool with
+`DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
+writers. `DownloadPool::global()` shares a process-wide pool with 16 request slots
+and a 64 MiB payload-buffer budget.
+
+`pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
+Consume each chunk (for example with `BlobWriter::write`) before requesting more.
+The pool reserves buffer capacity before allocation and reading; the reservation
+travels with the chunk until the consumer drops it. Retaining a chunk keeps its
+budget charged even if the source stream is cancelled. Exhausting the shared
+budget pauses readers, including readers from other writers. Whole blobs are
+never collected by the pool and may exceed its budget.
+
+The budget covers application-owned transfer buffers. HTTP/TLS transport buffers,
+Lance encoding/output buffers, input batches, and descriptor metadata are separate;
+it is not a process RSS limit. Error response bodies are discarded before OpenDAL
+classifies the status to avoid collecting unbounded diagnostic payloads.
+
+HTTP(S), escaped paths, signed queries, and redirects are supported. No timeout or
+retry policy is enabled by default. Apply OpenDAL policies with
+`DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
+attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+releases its request slot; dropping its yielded chunks releases their byte budget.
