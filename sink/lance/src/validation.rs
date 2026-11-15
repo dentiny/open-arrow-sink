@@ -1,7 +1,7 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
     ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
@@ -14,13 +14,31 @@ pub(crate) fn validate_options(
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
     parse_storage_version(options.storage_version.as_deref())?;
+    validate_encoding(schema, &options.compression)?;
+    validate_compression(&options.compression)?;
+    validate_indexes(schema, &options.indexes)
+}
+
+fn validate_compression(options: &CompressionOptions) -> Result<()> {
+    for compression in options.global.iter().chain(options.columns.values()) {
+        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
+        if let Compression::Zstd { level: Some(level) } = compression
+            && *level != 0
+            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
+        {
+            return Err(error::invalid_compression_level(*level));
+        }
+    }
+    Ok(())
+}
+
+fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
     for field in schema.fields() {
         let encoding = options
-            .compression
             .column_encodings
             .get(field.name())
             .copied()
-            .or(options.compression.structural_encoding);
+            .or(options.structural_encoding);
         if encoding.is_some()
             && (field
                 .metadata()
@@ -39,21 +57,7 @@ pub(crate) fn validate_options(
             )));
         }
     }
-    for compression in options
-        .compression
-        .global
-        .iter()
-        .chain(options.compression.columns.values())
-    {
-        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
-        if let Compression::Zstd { level: Some(level) } = compression
-            && *level != 0
-            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
-        {
-            return Err(error::invalid_compression_level(*level));
-        }
-    }
-    validate_indexes(schema, &options.indexes)
+    Ok(())
 }
 
 use crate::error::{missing_index_column, unsupported_index};
