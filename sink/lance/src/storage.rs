@@ -4,7 +4,7 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Result, SchemaRef, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{Storage, Url};
 use std::sync::Arc;
 
@@ -57,32 +57,13 @@ impl NativeStorage {
         }
         Ok(())
     }
-    pub fn write_params(&self, options: &WriteOptions) -> Result<WriteParams> {
-        let blob = options.blob_handle.clone().unwrap_or_default();
-        Ok(WriteParams {
-            external_blob_mode: match blob.external_blob_mode {
-                open_arrow_sink_core::ExternalBlobMode::Reference => {
-                    lance::dataset::ExternalBlobMode::Reference
-                }
-                open_arrow_sink_core::ExternalBlobMode::Ingest => {
-                    lance::dataset::ExternalBlobMode::Ingest
-                }
-            },
-            data_storage_version: crate::validation::parse_storage_version(
-                options.storage_version.as_deref(),
-            )?,
+    /// Bind native parameters to this destination's storage and commit policy.
+    pub fn bind_write_params(&self, params: WriteParams) -> WriteParams {
+        WriteParams {
             session: Some(self.session.clone()),
             commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),
-            mode: match options.mode {
-                WriteMode::Create => lance::dataset::WriteMode::Create,
-                WriteMode::Append => lance::dataset::WriteMode::Append,
-                WriteMode::Overwrite => lance::dataset::WriteMode::Overwrite,
-            },
-            max_bytes_per_file: options
-                .target_file_size
-                .unwrap_or(WriteParams::default().max_bytes_per_file),
-            ..Default::default()
-        })
+            ..params
+        }
     }
     pub fn commit_builder(&self) -> CommitBuilder<'_> {
         CommitBuilder::new(self.url.as_str())

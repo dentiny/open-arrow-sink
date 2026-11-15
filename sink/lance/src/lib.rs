@@ -8,6 +8,7 @@ mod error;
 mod provider;
 mod sink;
 mod validation;
+mod write_options;
 
 pub use sink::LanceDatasetSink;
 

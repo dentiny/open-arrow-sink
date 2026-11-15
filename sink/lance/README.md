@@ -259,3 +259,9 @@ existing manifest's format for an existing dataset. An explicit version is passe
 to Lance for create, append, and overwrite, including parallel and blob writers.
 Appending with an explicit version affects the new files and preserves the manifest's
 default version. This selects the file format, independently of the dataset's commit version.
+
+The Lance `write_options` adapter translates shared configuration into native
+`WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
+compression, prepared blob fields, then explicit layout overrides. Storage binds
+the resulting parameters to its session and commit handler; blob runtime code
+owns handles, placements, and cleanup.

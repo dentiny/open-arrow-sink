@@ -6,7 +6,7 @@ use open_arrow_sink_core::{
     SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{compression::writer_schema, storage::NativeStorage, validation::validate_options};
+use crate::{storage::NativeStorage, validation::validate_options, write_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -67,11 +67,7 @@ impl Sink for LanceDatasetSink {
         let storage_schema = crate::blob::storage_schema(&schema)?;
         if storage_schema != schema {
             validate_options(&schema, &options, self.capability())?;
-            // Apply compression before constructing the native descriptor fields.
-            let encoding_schema = crate::blob::writer_schema(
-                &crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?,
-                options.blob_handle.as_ref(),
-            );
+            let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url)?;
             destination
                 .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
@@ -104,10 +100,7 @@ impl ParallelSink for LanceDatasetSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
-        let encoding_schema = crate::blob::writer_schema(
-            &writer_schema(&schema, &options.compression),
-            options.blob_handle.as_ref(),
-        );
+        let encoding_schema = write_options::writer_schema(&schema, &options)?;
         let mut destination = self.resolve(url)?;
         destination.prepare(&encoding_schema, options.mode).await?;
         let writers = (0..count.get())
