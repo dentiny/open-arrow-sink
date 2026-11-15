@@ -4,8 +4,8 @@ use iceberg::Catalog;
 use iceberg::table::Table;
 use iceberg::writer::IcebergWriter;
 use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, SessionCommitter, WriteSummary, Writer,
-    async_trait, validation,
+    DataWriter, RecordBatch, Result, SchemaRef, SessionCommitter, WriteOptions, WriteSummary,
+    Writer, async_trait, validation,
 };
 
 use crate::{
@@ -22,7 +22,7 @@ pub(crate) struct IcebergTableWriter {
     inner: Box<dyn IcebergWriter>,
     rows: u64,
     failed: bool,
-    cleanup_on_error: bool,
+    options: WriteOptions,
 }
 
 #[async_trait]
@@ -59,11 +59,11 @@ impl Writer for IcebergTableWriter {
             table,
             inner,
             prefix,
-            cleanup_on_error,
+            options,
             ..
         } = *self;
         drop(inner);
-        if cleanup_on_error {
+        if options.cleanup_on_error {
             table.file_io().delete_prefix(prefix).await.map_err(backend)
         } else {
             Ok(())
@@ -78,7 +78,7 @@ impl IcebergTableWriter {
         schema: SchemaRef,
         prefix: String,
         inner: Box<dyn IcebergWriter>,
-        cleanup_on_error: bool,
+        options: WriteOptions,
     ) -> Self {
         Self {
             catalog,
@@ -88,7 +88,7 @@ impl IcebergTableWriter {
             inner,
             rows: 0,
             failed: false,
-            cleanup_on_error,
+            options,
         }
     }
 }

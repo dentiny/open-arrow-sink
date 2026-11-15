@@ -205,7 +205,7 @@ impl IcebergTableSink {
             schema,
             prefix,
             inner,
-            options.cleanup_on_error,
+            options,
         )))
     }
 }
