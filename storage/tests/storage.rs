@@ -49,6 +49,12 @@ async fn namespace_boundaries_and_conditional_creation() {
     ] {
         assert!(storage.path(&url.parse().unwrap()).is_err(), "{url}");
     }
+    assert!(
+        storage
+            .read_range(&"memory:///outside/file".parse().unwrap(), 0..0)
+            .await
+            .is_err()
+    );
     assert!(storage.url("../outside").is_err());
     assert!(storage.remove_all(storage.base_url()).await.is_err());
     let url = storage.url("claim").unwrap();
@@ -72,7 +78,8 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     let mut writer = storage.writer(&aborted).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!storage.exists(&aborted).await.unwrap());
+    // Non-staged files can be visible before close; the owner removes them.
+    storage.delete(&aborted).await.unwrap();
     let sibling = root.join("keep").unwrap();
     storage.create(&sibling, "keep".into()).await.unwrap();
     storage.remove_all(&output).await.unwrap();
@@ -100,4 +107,20 @@ fn storage_policies_validate_without_io() {
         }),
     };
     assert!(config.apply(operator).is_err());
+}
+
+#[tokio::test]
+async fn filesystem_conditional_creation_has_one_winner() {
+    let temp = tempfile::tempdir().unwrap();
+    let url = Url::from_file_path(temp.path().join("claim")).unwrap();
+    let storage = Storage::from_url(&url).unwrap();
+    let (first, second) = tokio::join!(
+        storage.create(&url, "first".into()),
+        storage.create(&url, "second".into())
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    assert_eq!(
+        storage.read(&url).await.unwrap(),
+        if first.is_ok() { "first" } else { "second" }
+    );
 }

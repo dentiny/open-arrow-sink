@@ -26,6 +26,8 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// Filesystem operators must leave `atomic_write_dir` unset: in OpenDAL
+    /// 0.59 staged writes do not atomically enforce `if_not_exists` at publication.
     pub fn new(operator: Operator, mut base_url: Url) -> Result<Self> {
         validate_url(&base_url)?;
         if !base_url.path().ends_with('/') {
@@ -44,20 +46,12 @@ impl Storage {
         let mut base = url.clone();
         base.set_path("/");
         let operator = if url.scheme() == "file" {
-            let local = url
-                .to_file_path()
-                .map_err(|_| invalid("invalid file URL"))?;
-            // Stage on the destination filesystem, including mounted volumes.
-            let parent = local.parent().unwrap_or(std::path::Path::new("/"));
-            let staging = parent
-                .to_str()
-                .ok_or_else(|| invalid("filesystem path must be UTF-8"))?;
-            Operator::new(
-                opendal::services::Fs::default()
-                    .root("/")
-                    .atomic_write_dir(staging),
-            )
-            .map_err(backend)?
+            if url.to_file_path().is_err() {
+                return Err(invalid("invalid file URL"));
+            }
+            // Keep create_new atomic. OpenDAL Fs atomic_write_dir checks for
+            // existence before rename, which is insufficient for competing claims.
+            Operator::new(opendal::services::Fs::default().root("/")).map_err(backend)?
         } else {
             Operator::from_uri(base.as_str()).map_err(backend)?
         };
@@ -126,6 +120,7 @@ impl Storage {
             .map_err(backend)
     }
     pub async fn read_range(&self, url: &Url, range: Range<u64>) -> Result<Bytes> {
+        let path = self.path(url)?;
         if range.start > range.end {
             return Err(invalid("invalid read range"));
         }
@@ -133,7 +128,7 @@ impl Storage {
             return Ok(Bytes::new());
         }
         self.operator
-            .read_with(&self.path(url)?)
+            .read_with(&path)
             .range(range)
             .await
             .map(|buffer| buffer.to_bytes())
@@ -167,6 +162,7 @@ impl Storage {
             inner: Some(writer),
             bytes_written: 0,
             active: true,
+            filesystem: self.operator.info().scheme() == "fs",
         })
     }
     pub async fn list(&self, url: &Url) -> Result<Vec<Url>> {
@@ -266,6 +262,7 @@ pub struct StorageWriter {
     inner: Option<opendal::Writer>,
     bytes_written: u64,
     active: bool,
+    filesystem: bool,
 }
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
@@ -300,7 +297,13 @@ impl StorageWriter {
     pub async fn abort(&mut self) -> Result<()> {
         self.active = false;
         if let Some(mut writer) = self.inner.take() {
-            writer.abort().await.map_err(backend)?;
+            match writer.abort().await {
+                Ok(()) => {}
+                // Non-staged filesystem writes are already visible. Dropping the
+                // handle stops this stream; the owning sink deletes its files.
+                Err(error) if self.filesystem && error.kind() == ErrorKind::Unsupported => {}
+                Err(error) => return Err(backend(error)),
+            }
         }
         Ok(())
     }
