@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
+use more_asserts::assert_gt;
 use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
@@ -140,7 +141,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     );
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let fragments = dataset.get_fragments();
-    assert!(fragments.len() > 1);
+    assert_gt!(fragments.len(), 1);
     let actual = dataset.scan().try_into_batch().await.unwrap();
     assert_eq!(actual.schema(), expected.schema());
     let ids = actual
@@ -244,7 +245,7 @@ async fn compression_survives_rolling_and_round_trips() {
     );
 
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert!(dataset.get_fragments().len() > 1);
+    assert_gt!(dataset.get_fragments().len(), 1);
     let actual = dataset.scan().try_into_batch().await.unwrap();
     let stored_schema = actual.schema();
     assert_eq!(stored_schema.metadata(), schema.metadata());

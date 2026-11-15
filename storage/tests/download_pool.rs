@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use futures::{TryStreamExt, stream};
 use http::{Request, Response, StatusCode};
+use more_asserts::assert_le;
 use open_arrow_sink_storage::{DownloadPool, opendal};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
@@ -82,7 +83,7 @@ async fn streaming_limits_and_cleanup() {
         let mut download = first.stream(url).await.unwrap();
         let mut body = Vec::new();
         while let Some(chunk) = download.try_next().await.unwrap() {
-            assert!(chunk.as_ref().len() <= 8);
+            assert_le!(chunk.as_ref().len(), 8);
             body.extend_from_slice(chunk.as_ref());
         }
         drop(download);
