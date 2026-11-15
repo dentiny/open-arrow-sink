@@ -34,7 +34,7 @@ async fn shared_operator_commit_indexes_and_read_back(#[case] count: usize) {
     use lance::index::DatasetIndexExt;
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("雪 output/").unwrap();
+    let url = storage.url("雪 output%20/").unwrap();
     let options = WriteOptions {
         indexes: vec![IndexSpec::new("value", IndexType::Scalar)],
         ..write_options()
@@ -72,6 +72,8 @@ async fn shared_operator_commit_indexes_and_read_back(#[case] count: usize) {
     values.sort_unstable();
     assert_eq!(values, vec![1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
     assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
+    // Data and the reservation must resolve to the same physical namespace.
+    assert!(storage.list(&url).await.unwrap().len() > 1);
     assert!(
         sink.open(url, batch().schema(), write_options())
             .await

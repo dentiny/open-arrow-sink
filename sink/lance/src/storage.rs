@@ -101,7 +101,9 @@ impl ObjectStoreProvider for Provider {
         ))
     }
     fn extract_path(&self, url: &Url) -> lance::Result<Path> {
-        Path::parse(self.0.path(url).map_err(native)?).map_err(native)
+        // OpendalStore decodes object-store keys. Encode literal percent signs
+        // as PathParts so a URL containing %2520 stays a literal "%20" key.
+        Ok(Path::from(self.0.path(url).map_err(native)?))
     }
     fn calculate_object_store_prefix(
         &self,
