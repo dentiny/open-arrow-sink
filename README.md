@@ -172,9 +172,9 @@ reusing them across sessions.
 
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
-- `open` calls `validation::validate_options` before side effects, including the
-  index and compression capability checks. Call `validation::validate_compression`
-  against the input schema before destination I/O. Index-capable backends call `validation::validate_indexes`
+- `open` calls `validation::validate_options(&schema, &options, capability)` before
+  side effects, including index and compression capability checks and compression
+  column-name validation. Index-capable backends call `validation::validate_indexes`
   and check their supported column types before destination I/O, then check
   backend-specific destination constraints.
 - `write` calls `validation::validate_batch` against the fixed session schema.

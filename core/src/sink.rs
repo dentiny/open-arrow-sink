@@ -8,8 +8,8 @@ pub trait Sink: Send + Sync {
 
     fn capability(&self) -> SinkCapability;
 
-    /// Validate shared options with `validation::validate_options`.
-    /// Call `validation::validate_compression` against the input schema before I/O.
+    /// Validate shared options and compression column names against the input schema
+    /// with `validation::validate_options` before destination I/O.
     /// Sinks that support indexes also call `validation::validate_indexes` and validate
     /// backend-specific index types before destination I/O. Perform any other
     /// destination-specific validation before writing data. The input schema is

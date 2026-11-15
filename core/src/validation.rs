@@ -7,10 +7,14 @@ use crate::{
 };
 use arrow_schema::Schema;
 
-/// Check declared capabilities before opening a destination or producing side effects.
+/// Check declared capabilities and compression column names before destination I/O.
 /// Backends must additionally validate codec-specific parameters, such as Zstd levels.
-pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
-    validate_compression_options(&options.compression, capability.compression)?;
+pub fn validate_options(
+    schema: &Schema,
+    options: &WriteOptions,
+    capability: SinkCapability,
+) -> Result<()> {
+    validate_compression_options(schema, &options.compression, capability.compression)?;
     validate_partition_options(options.partition, &capability.supported_partitions)?;
     validate_index_options(&options.indexes, capability.supported_indexes)?;
     validate_target_file_size_options(options.target_file_size)?;
@@ -18,8 +22,10 @@ pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> R
     Ok(())
 }
 
-/// Check compression scopes and codecs. Backends additionally validate levels.
+/// Check compression scopes, codecs, and exact top-level column names.
+/// Backends additionally validate levels.
 pub fn validate_compression_options(
+    schema: &Schema,
     options: &CompressionOptions,
     capability: CompressionCapability,
 ) -> Result<()> {
@@ -34,6 +40,19 @@ pub fn validate_compression_options(
         if !capability.per_column.contains(&compression.codec()) {
             return Err(Error::Unsupported(format!(
                 "compression {compression:?} on column {column}"
+            )));
+        }
+    }
+    for column in options.columns.keys() {
+        if schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() == column)
+            .count()
+            != 1
+        {
+            return Err(Error::Unsupported(format!(
+                "compression column must identify one top-level field: {column}"
             )));
         }
     }
@@ -113,24 +132,6 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
         schema
             .field_with_name(&index.column)
             .map_err(|_| Error::Unsupported(format!("index column not found: {}", index.column)))?;
-    }
-    Ok(())
-}
-
-/// Validate exact top-level field names before destination I/O.
-pub fn validate_compression(schema: &Schema, compression: &CompressionOptions) -> Result<()> {
-    for column in compression.columns.keys() {
-        if schema
-            .fields()
-            .iter()
-            .filter(|field| field.name() == column)
-            .count()
-            != 1
-        {
-            return Err(Error::Unsupported(format!(
-                "compression column must identify one top-level field: {column}"
-            )));
-        }
     }
     Ok(())
 }

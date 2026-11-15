@@ -59,7 +59,7 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
+        validation::validate_options(&schema, &options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
         let metadata = table.metadata();
         validate_table(&table, options.partition)?;

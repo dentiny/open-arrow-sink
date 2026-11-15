@@ -36,7 +36,7 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
+        validation::validate_options(&schema, &options, self.capability())?;
         fs::create_dir(&directory).await.map_err(backend)?;
         let path = directory.join("part-00000.parquet");
         let file = match OpenOptions::new()
