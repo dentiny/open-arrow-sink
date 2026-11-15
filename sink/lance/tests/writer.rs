@@ -314,6 +314,52 @@ async fn compression_survives_rolling_and_round_trips() {
 }
 
 #[tokio::test]
+async fn unordered_commit_preserves_all_rows() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for id in 0..8 {
+        let input = vec![Some(id * 2), None, Some(id * 2 + 1)];
+        writer
+            .write(
+                RecordBatch::try_from_iter([(
+                    "value",
+                    Arc::new(Int64Array::from(input.clone())) as ArrayRef,
+                )])
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        expected.extend(input);
+    }
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        expected.len() as u64
+    );
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let committed = dataset.scan().try_into_batch().await.unwrap();
+    let mut actual: Vec<_> = committed
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .iter()
+        .collect();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
 async fn explicit_modes_create_append_and_overwrite_versions() {
     use open_arrow_sink_core::WriteMode;
     let temp = tempfile::tempdir().unwrap();
@@ -536,4 +582,150 @@ async fn overwrite_can_replace_schema_without_changing_previous_version() {
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     assert_eq!(dataset.scan().try_into_batch().await.unwrap(), replacement);
     assert_eq!(previous.count_rows(None).await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn parallel_modes_create_append_and_overwrite() {
+    use open_arrow_sink_core::{SinkExt, WriteMode};
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let sink = LanceDatasetSink.layer(UnorderedWriteLayer::new(
+        std::num::NonZeroUsize::new(2).unwrap(),
+    ));
+    for (mode, rows) in [
+        (WriteMode::Create, 16),
+        (WriteMode::Append, 32),
+        (WriteMode::Overwrite, 16),
+    ] {
+        let mut writer = sink
+            .open(
+                path.clone(),
+                batch().schema(),
+                WriteOptions {
+                    mode,
+                    target_file_size: Some(1),
+                    ..options()
+                },
+            )
+            .await
+            .unwrap();
+        for _ in 0..4 {
+            writer.write(batch()).await.unwrap();
+        }
+        assert_eq!(writer.commit().await.unwrap().rows_written, 16);
+        assert_eq!(
+            Dataset::open(path.to_str().unwrap())
+                .await
+                .unwrap()
+                .count_rows(None)
+                .await
+                .unwrap(),
+            rows
+        );
+    }
+    // The shared default Create must not silently append or overwrite.
+    assert!(
+        sink.open(path.clone(), batch().schema(), options())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        Dataset::open(path.to_str().unwrap())
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        16
+    );
+}
+
+#[tokio::test]
+async fn parallel_abort_preserves_existing_dataset_for_append_and_overwrite() {
+    use open_arrow_sink_core::{SinkExt, WriteMode};
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let previous = Dataset::open(path.to_str().unwrap())
+        .await
+        .unwrap()
+        .version()
+        .version;
+    let sink = LanceDatasetSink.layer(UnorderedWriteLayer::new(
+        std::num::NonZeroUsize::new(2).unwrap(),
+    ));
+    for mode in [WriteMode::Append, WriteMode::Overwrite] {
+        let mut writer = sink
+            .open(
+                path.clone(),
+                batch().schema(),
+                WriteOptions { mode, ..options() },
+            )
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.abort().await.unwrap();
+        let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(dataset.version().version, previous);
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 4);
+    }
+}
+
+#[tokio::test]
+async fn parallel_empty_commits_honor_modes() {
+    use open_arrow_sink_core::{SinkExt, WriteMode};
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let sink = LanceDatasetSink.layer(UnorderedWriteLayer::new(
+        std::num::NonZeroUsize::new(2).unwrap(),
+    ));
+    sink.open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let mut writer = LanceDatasetSink
+        .open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: WriteMode::Append,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    for (mode, rows) in [(WriteMode::Append, 4), (WriteMode::Overwrite, 0)] {
+        sink.open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions { mode, ..options() },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+        assert_eq!(
+            Dataset::open(path.to_str().unwrap())
+                .await
+                .unwrap()
+                .count_rows(None)
+                .await
+                .unwrap(),
+            rows
+        );
+    }
 }

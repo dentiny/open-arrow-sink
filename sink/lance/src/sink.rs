@@ -1,16 +1,19 @@
-use std::{io, path::PathBuf};
+use std::{io, num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec, IndexType, Ordering, Result, SchemaRef, Sink,
-    SinkCapability, WriteMode, WriteOptions, Writer, async_trait,
+    CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
+    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{
-    compression::writer_schema, error::backend, validation::validate_options, writer::LanceWriter,
+    compression::writer_schema,
+    error::{backend, invalid_path},
+    validation::validate_options,
+    writer::LanceWriter,
 };
 
 /// Writes a local dataset using native versioned create, append, or overwrite.
-/// Only unordered writes are supported; dataset scan order is not guaranteed.
+/// Create is the shared default. Only unordered writes are supported.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LanceDatasetSink;
 
@@ -44,50 +47,77 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         validate_options(&schema, &options, self.capability())?;
         let encoding_schema = writer_schema(&schema, &options.compression);
-        // Newly created directories are session-owned; existing datasets must
-        // never be recursively removed by abort.
-        // TODO: Use OpenDAL to support remote storage beyond local paths.
-        let path = std::path::absolute(path).map_err(backend)?;
-        let uri = path
-            .to_str()
-            .ok_or_else(|| {
-                backend(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Lance requires a UTF-8 path",
-                ))
-            })?
-            .to_owned();
-        let mode = options.mode;
-        let reserved = match mode {
-            WriteMode::Create => {
-                tokio::fs::create_dir(&path).await.map_err(backend)?;
-                true
-            }
-            WriteMode::Append => {
-                let dataset = lance::Dataset::open(&uri).await.map_err(backend)?;
-                if arrow_schema::Schema::from(dataset.schema()) != *encoding_schema {
-                    return Err(open_arrow_sink_core::Error::SchemaMismatch);
-                }
-                false
-            }
-            WriteMode::Overwrite => {
-                match tokio::fs::create_dir(&path).await {
-                    Ok(()) => true,
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        // Do not turn an arbitrary pre-existing directory into a dataset.
-                        lance::Dataset::open(&uri).await.map_err(backend)?;
-                        false
-                    }
-                    Err(error) => return Err(backend(error)),
-                }
-            }
-        };
+        let (path, uri) = prepare_destination(path, &encoding_schema, options.mode).await?;
         Ok(Box::new(LanceWriter::new(
             schema,
             encoding_schema,
-            reserved.then_some(path),
+            path,
             uri,
             options,
         )))
     }
+}
+
+#[async_trait]
+impl ParallelSink for LanceDatasetSink {
+    type Output = (u64, lance::dataset::transaction::Transaction);
+    async fn open_writers(
+        &self,
+        path: PathBuf,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<WriteSession<Self::Output>> {
+        validate_options(&schema, &options, self.capability())?;
+        let encoding_schema = writer_schema(&schema, &options.compression);
+        let (path, uri) = prepare_destination(path, &encoding_schema, options.mode).await?;
+        let writers = (0..count.get())
+            .map(|_| {
+                Box::new(crate::parallel::FragmentWriter::new(
+                    schema.clone(),
+                    encoding_schema.clone(),
+                    uri.clone(),
+                    &options,
+                )) as Box<dyn DataWriter<Output = Self::Output>>
+            })
+            .collect();
+        Ok(WriteSession {
+            writers,
+            committer: Box::new(crate::committer::LanceCommitter { path, uri, options }),
+        })
+    }
+}
+
+/// Only newly reserved directories belong to this session and may be removed.
+async fn prepare_destination(
+    path: PathBuf,
+    encoding_schema: &SchemaRef,
+    mode: WriteMode,
+) -> Result<(Option<PathBuf>, String)> {
+    // TODO: Use OpenDAL to support remote storage beyond local paths.
+    let path = std::path::absolute(path).map_err(backend)?;
+    let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
+    let reserved = match mode {
+        WriteMode::Create => {
+            tokio::fs::create_dir(&path).await.map_err(backend)?;
+            true
+        }
+        WriteMode::Append => {
+            let dataset = lance::Dataset::open(&uri).await.map_err(backend)?;
+            if arrow_schema::Schema::from(dataset.schema()) != **encoding_schema {
+                return Err(open_arrow_sink_core::Error::SchemaMismatch);
+            }
+            false
+        }
+        WriteMode::Overwrite => match tokio::fs::create_dir(&path).await {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // Never turn an unrelated existing directory into a dataset.
+                lance::Dataset::open(&uri).await.map_err(backend)?;
+                false
+            }
+            Err(error) => return Err(backend(error)),
+        },
+    };
+    Ok((reserved.then_some(path), uri))
 }
