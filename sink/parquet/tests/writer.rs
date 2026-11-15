@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
-use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
 fn batch() -> RecordBatch {
@@ -32,8 +32,12 @@ async fn commit_round_trips_multiple_batches() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
-    let mut writer = ParquetDirectorySink
-        .open(directory.clone(), expected.schema(), options())
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&directory).unwrap(),
+            expected.schema(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.schema(), &expected.schema());
@@ -62,8 +66,12 @@ async fn empty_commit_produces_readable_parquet() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let schema = batch().schema();
-    let writer = ParquetDirectorySink
-        .open(directory.clone(), schema.clone(), options())
+    let writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&directory).unwrap(),
+            schema.clone(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 0);
@@ -82,9 +90,9 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     tokio::fs::write(&sibling, "keep").await.unwrap();
     let directory = temp.path().join("output");
     let batch = batch();
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::default()
         .open(
-            directory.clone(),
+            Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
             WriteOptions {
                 target_file_size: Some(1),
@@ -121,9 +129,9 @@ async fn target_file_size_rolls_files_without_losing_rows(
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::default()
         .open(
-            directory.clone(),
+            Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
             WriteOptions {
                 target_file_size,

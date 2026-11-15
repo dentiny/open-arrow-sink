@@ -1,10 +1,42 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a new local directory path and writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` and writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
-one file per session. The parent must exist; an existing target
-is rejected, including an empty directory. Enable facade feature `sink-parquet`
+one file per session. Missing parents are created; an existing target
+is rejected, including an empty local directory. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
+
+
+## Shared storage
+
+The request for both single and parallel sessions is `Url`, re-exported from this
+crate. Use `ParquetDirectorySink::default()` for URL-resolved storage, or
+`ParquetDirectorySink::new(storage)` to share a configured OpenDAL operator:
+
+```rust,ignore
+use open_arrow_sink_parquet::{ParquetDirectorySink, Storage, Url};
+use open_arrow_sink_storage::opendal;
+
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
+let sink = ParquetDirectorySink::new(storage.clone());
+let destination = storage.url("new-output/")?;
+let writer = sink.open(destination, schema, options).await?;
+```
+
+Convert existing paths with `Url::from_directory_path(std::path::absolute(path)?)`.
+Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-gcp`,
+`parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
+layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
+
+The sink reserves a new prefix with conditional creation of `.open-arrow-sink`.
+It also claims each part name before opening a streaming writer. Backends without
+conditional-create support fail instead of overwriting. External writers must
+not modify a reserved prefix. The marker is removed after a file finishes; all
+part names have already been claimed, so the destination remains occupied.
+Abort removes owned parts and the marker when no other objects remain, preserving
+unrelated files. Drop performs no async cleanup. These rules apply to local and
+remote destinations alike.
 
 Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
 sink does not promise directory scan order. Each write validates its schema and flushes its rows; it
@@ -24,7 +56,7 @@ attempts to remove its directory; failed open/commit also attempts cleanup. Set 
 to `false` to retain session-created output on abort or failure. Cleanup never
 recursively deletes other files. Drop leaves incomplete output and never commits.
 
-No append, overwrite, partitioning, cloud storage or retries.
+No append, overwrite, or partitioning. Storage retries are configured on the OpenDAL operator.
 
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls

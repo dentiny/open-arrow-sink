@@ -4157,9 +4157,11 @@ name = "open-arrow-sink-parquet"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "bytes",
  "futures",
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
+ "open-arrow-sink-storage",
  "parquet",
  "rstest",
  "tempfile",
