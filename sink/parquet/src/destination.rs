@@ -2,7 +2,10 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
-use parquet::arrow::async_writer::AsyncFileWriter;
+use parquet::{
+    arrow::{AsyncArrowWriter, async_writer::AsyncFileWriter},
+    file::properties::WriterProperties,
+};
 
 const RESERVATION: &str = ".open-arrow-sink";
 
@@ -18,15 +21,12 @@ pub(crate) struct Destination {
 impl Destination {
     pub(crate) async fn open(
         storage: Storage,
-        mut directory: Url,
+        directory: Url,
         schema: &SchemaRef,
         mode: WriteMode,
         cleanup_on_error: bool,
     ) -> Result<Self> {
-        crate::validation::validate_destination_path(&storage, &directory)?;
-        if !directory.path().ends_with('/') {
-            directory.path_segments_mut().unwrap().push("");
-        }
+        let directory = storage.directory_url(&directory)?;
         let (directory, prefix, target, remove_directory) = match mode {
             WriteMode::Create => (directory, "part-".into(), None, true),
             WriteMode::Append => {
@@ -66,27 +66,30 @@ impl Destination {
         self.child(&format!("{}{index:05}.parquet", self.prefix))
     }
     async fn reserve(&self) -> Result<()> {
-        crate::validation::validate_fresh_destination(&self.storage, &self.directory).await?;
+        if self.storage.prefix_exists(&self.directory).await? {
+            return Err(crate::error::destination_exists());
+        }
         self.storage
             .create(&self.child(RESERVATION), Bytes::new())
             .await
     }
-    pub(crate) async fn open_file(
+    pub(crate) async fn open_writer(
         &self,
         index: usize,
-        cleanup_on_error: bool,
-    ) -> Result<FileWriter> {
+        schema: SchemaRef,
+        properties: WriterProperties,
+    ) -> Result<AsyncArrowWriter<FileWriter>> {
         let path = self.file(index);
         self.storage.create(&path, Bytes::new()).await?;
-        match self.storage.writer(&path).await {
-            Ok(writer) => Ok(FileWriter(writer)),
-            Err(error) => {
-                if cleanup_on_error {
-                    let _ = self.storage.delete(&path).await;
-                }
-                Err(error)
-            }
+        let result = async {
+            let file = FileWriter(self.storage.writer(&path).await?);
+            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(crate::error::backend)
         }
+        .await;
+        if result.is_err() && self.cleanup_on_error {
+            let _ = self.storage.delete(&path).await;
+        }
+        result
     }
     pub(crate) async fn complete_reservation(&self) -> Result<()> {
         if self.remove_directory {
@@ -97,7 +100,7 @@ impl Destination {
     pub(crate) async fn remove_file(&self, index: usize) -> Result<()> {
         self.storage.delete(&self.file(index)).await
     }
-    pub(crate) async fn remove_reservation(&self, _parallel: bool) -> Result<()> {
+    pub(crate) async fn remove_reservation(&self) -> Result<()> {
         if !self.remove_directory {
             return Ok(());
         }

@@ -10,10 +10,6 @@ pub(crate) fn closed() -> Error {
     backend(io::Error::other("writer is no longer active"))
 }
 
-pub(crate) fn empty_destination() -> Error {
-    backend(io::Error::other("destination must have a nonempty path"))
-}
-
 pub(crate) fn destination_exists() -> Error {
     backend(io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -40,7 +36,4 @@ pub(crate) fn overwrite_unsupported() -> Error {
     Error::Unsupported(
         "Parquet staged overwrite requires a filesystem backend with directory rename".into(),
     )
-}
-pub(crate) fn schema_mismatch() -> Error {
-    Error::SchemaMismatch
 }

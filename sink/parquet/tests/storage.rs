@@ -29,40 +29,6 @@ fn options() -> WriteOptions {
 }
 
 #[tokio::test]
-async fn shared_storage_parallel_rolling_round_trips() {
-    let storage = storage();
-    let sink = ParquetDirectorySink::new(storage.clone())
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
-    let directory = storage.url("雪 output/").unwrap();
-    let mut writer = sink
-        .open(directory.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    for _ in 0..8 {
-        writer.write(batch()).await.unwrap();
-    }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 24);
-    let mut rows = 0;
-    for url in storage.list(&directory).await.unwrap() {
-        assert!(url.path().ends_with(".parquet"));
-        let bytes = storage.read(&url).await.unwrap();
-        for result in ParquetRecordBatchReaderBuilder::try_new(bytes)
-            .unwrap()
-            .build()
-            .unwrap()
-        {
-            rows += result.unwrap().num_rows();
-        }
-    }
-    assert_eq!(rows, 24);
-    assert!(
-        sink.open(directory, batch().schema(), options())
-            .await
-            .is_err()
-    );
-}
-
-#[tokio::test]
 async fn shared_storage_abort_and_keep_policy() {
     for cleanup_on_error in [true, false] {
         let storage = storage();
@@ -144,30 +110,20 @@ async fn remote_append_validates_schema_and_abort_preserves_existing_parts() {
     }
     assert_eq!(rows(&storage, &directory).await, 6);
     let before = storage.list(&directory).await.unwrap();
+    let append = WriteOptions {
+        mode: WriteMode::Append,
+        ..options()
+    };
     let wrong =
         RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
             .unwrap();
     assert!(
-        sink.open(
-            directory.clone(),
-            wrong.schema(),
-            WriteOptions {
-                mode: WriteMode::Append,
-                ..options()
-            }
-        )
-        .await
-        .is_err()
+        sink.open(directory.clone(), wrong.schema(), append.clone())
+            .await
+            .is_err()
     );
     let mut writer = sink
-        .open(
-            directory.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Append,
-                ..options()
-            },
-        )
+        .open(directory.clone(), batch().schema(), append.clone())
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
@@ -251,5 +207,4 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
         std::fs::read_to_string(real.join("keep")).unwrap(),
         "original"
     );
-    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
 }

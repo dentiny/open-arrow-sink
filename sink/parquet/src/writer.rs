@@ -42,18 +42,16 @@ impl Writer for ParquetDirectoryWriter {
                 .await
                 .map_err(backend)?;
             self.writer = None;
-            let file = self
+            let writer = self
                 .destination
-                .open_file(
+                .open_writer(
                     self.file_index(self.files_created),
-                    self.options.cleanup_on_error,
+                    self.schema.clone(),
+                    self.properties.clone(),
                 )
                 .await?;
             self.files_created += 1;
-            self.writer = Some(
-                AsyncArrowWriter::try_new(file, self.schema.clone(), Some(self.properties.clone()))
-                    .map_err(backend)?,
-            );
+            self.writer = Some(writer);
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
         writer.write(&batch).await.map_err(backend)?;
@@ -64,17 +62,10 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = crate::validation::validate_writer_active(self.active) {
+        if let Err(error) = DataWriter::finish(self.as_mut()).await {
             let _ = self.cleanup().await;
             return Err(error);
         }
-        self.active = false;
-        if let Err(error) = self.writer.as_mut().ok_or_else(closed)?.finish().await {
-            let _ = self.cleanup().await;
-            return Err(backend(error));
-        }
-        self.writer = None;
-        self.destination.complete_reservation().await?;
         self.destination.publish().await?;
         Ok(WriteSummary {
             rows_written: self.rows_written,
@@ -132,22 +123,17 @@ impl ParquetDirectoryWriter {
         if !self.options.cleanup_on_error {
             return Ok(());
         }
-        let upload_result = if let Some(writer) = self.writer.take() {
+        let mut result = if let Some(writer) = self.writer.take() {
             writer.into_inner().abort().await
         } else {
             Ok(())
         };
-        let mut result = upload_result;
         for index in 0..self.files_created {
             if let Err(error) = self.destination.remove_file(self.file_index(index)).await {
                 result = Err(error);
             }
         }
-        if let Err(error) = self
-            .destination
-            .remove_reservation(self.file_stride > 1)
-            .await
-        {
+        if let Err(error) = self.destination.remove_reservation().await {
             result = Err(error);
         }
         result

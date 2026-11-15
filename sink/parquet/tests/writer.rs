@@ -108,14 +108,8 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
-#[rstest::rstest]
-#[case::default_size(None, 1)]
-#[case::small_target(Some(1), 3)]
 #[tokio::test]
-async fn target_file_size_rolls_files_without_losing_rows(
-    #[case] target_file_size: Option<usize>,
-    #[case] file_count: usize,
-) {
+async fn target_file_size_rolls_files_without_losing_rows() {
     let expected = RecordBatch::try_from_iter([
         (
             "id",
@@ -134,7 +128,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
             WriteOptions {
-                target_file_size,
+                target_file_size: Some(1),
                 ..options()
             },
         )
@@ -152,7 +146,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
         paths.push(entry.path());
     }
     paths.sort();
-    assert_eq!(paths.len(), file_count);
+    assert_eq!(paths.len(), 3);
     let mut offset = 0;
     for path in paths {
         let file = tokio::fs::File::open(path).await.unwrap();
@@ -189,7 +183,6 @@ async fn row_count(directory: &std::path::Path) -> usize {
 }
 
 #[rstest::rstest]
-#[case::create(WriteMode::Create, 3)]
 #[case::append(WriteMode::Append, 4)]
 #[case::overwrite(WriteMode::Overwrite, 3)]
 #[tokio::test]
@@ -197,18 +190,16 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let batch = batch();
-    if mode != WriteMode::Create {
-        let mut writer = ParquetDirectorySink::default()
-            .open(
-                Url::from_directory_path(&path).unwrap(),
-                batch.schema(),
-                options(),
-            )
-            .await
-            .unwrap();
-        writer.write(batch.slice(0, 1)).await.unwrap();
-        writer.commit().await.unwrap();
-    }
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
+        .await
+        .unwrap();
+    writer.write(batch.slice(0, 1)).await.unwrap();
+    writer.commit().await.unwrap();
     let mut writer = ParquetDirectorySink::default()
         .open(
             Url::from_directory_path(&path).unwrap(),

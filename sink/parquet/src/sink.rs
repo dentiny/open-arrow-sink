@@ -5,11 +5,9 @@ use open_arrow_sink_core::{
     CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
     SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
-use parquet::arrow::AsyncArrowWriter;
 
 use crate::{
-    committer::ParquetCommitter, destination::Destination, error::backend,
-    writer::ParquetDirectoryWriter,
+    committer::ParquetCommitter, destination::Destination, writer::ParquetDirectoryWriter,
 };
 
 /// Writes a URL destination containing `part-00000.parquet`, etc.
@@ -129,21 +127,9 @@ impl ParquetDirectorySink {
         );
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
-            let opened = async {
-                let file = destination
-                    .open_file(index, options.cleanup_on_error)
-                    .await?;
-                match AsyncArrowWriter::try_new(file, schema.clone(), Some(properties.clone())) {
-                    Ok(writer) => Ok(writer),
-                    Err(error) => {
-                        if options.cleanup_on_error {
-                            let _ = destination.remove_file(index).await;
-                        }
-                        Err(backend(error))
-                    }
-                }
-            }
-            .await;
+            let opened = destination
+                .open_writer(index, schema.clone(), properties.clone())
+                .await;
             match opened {
                 Ok(writer) => writers.push(ParquetDirectoryWriter::new(
                     destination.clone(),
@@ -159,7 +145,7 @@ impl ParquetDirectorySink {
                         let _ = Writer::abort(Box::new(writer)).await;
                     }
                     if options.cleanup_on_error {
-                        let _ = destination.remove_reservation(true).await;
+                        let _ = destination.remove_reservation().await;
                     }
                     return Err(error);
                 }
