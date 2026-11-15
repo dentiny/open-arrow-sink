@@ -23,9 +23,10 @@ An empty session leaves the table unchanged.
 Enable identity partition routing with the shared write option:
 
 ```rust
-use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteOptions};
+use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions};
 
 let options = WriteOptions {
+    mode: WriteMode::Append,
     ordering: Ordering::Unordered,
     partition: Some(PartitionOptions {
         partition_type: PartitionType::Identity,
