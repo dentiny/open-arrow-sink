@@ -12,3 +12,6 @@ pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};
 mod compression;
 pub use compression::{CompressionLayer, CompressionSink};
 pub use open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE;
+
+mod download_blob;
+pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};

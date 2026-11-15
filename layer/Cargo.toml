@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Composable layers for Arrow RecordBatch sinks"
 
 [dependencies]
+arrow-array.workspace = true
 open-arrow-sink-storage = { workspace = true, features = ["http"] }
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
@@ -15,5 +16,4 @@ futures.workspace = true
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }
-arrow-array.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "net", "io-util", "time"] }

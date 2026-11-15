@@ -200,3 +200,10 @@ Overwrite publishes a new version, retaining historical versions, and can also
 create a missing dataset. Abort waits for workers to stop and removes only a
 freshly reserved destination when `cleanup_on_error` is enabled. Existing
 datasets and files with an uncertain publication outcome are retained.
+
+`DownloadBlobLayer` uses this streaming interface directly: network chunks are
+appended to native blob files and only completed handles enter record batches.
+A blob larger than the download pool's buffer budget is supported. The shared
+budget applies to application-owned download chunks; Lance's internal I/O and
+encoding buffers are separate. HTTP errors or cancellation poison the layer and
+native session, and a rejected commit aborts the reserved dataset directory.
