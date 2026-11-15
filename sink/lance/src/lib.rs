@@ -19,3 +19,6 @@ mod parallel;
 
 mod storage;
 pub use open_arrow_sink_storage::{Storage, Url};
+
+mod atif;
+pub use atif::{AtifStorageLayer, AtifStorageSink};
