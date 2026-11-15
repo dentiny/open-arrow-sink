@@ -260,8 +260,18 @@ to Lance for create, append, and overwrite, including parallel and blob writers.
 Appending with an explicit version affects the new files and preserves the manifest's
 default version. This selects the file format, independently of the dataset's commit version.
 
+## Configuration adaptation
+
 The Lance `write_options` adapter translates shared configuration into native
 `WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
 compression, prepared blob fields, then explicit layout overrides. Storage binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
+
+## Upload buffering
+
+Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
+sink to control the native data-file and sidecar multipart upload buffers, as
+well as streamed blob uploads through the shared storage writer. A 16 MiB part
+size matches the conversion service's default. Conditional manifest writes retain
+the ordinary OpenDAL adapter; multipart parts preserve their submission order.

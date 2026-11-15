@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{num::NonZeroUsize, ops::Range};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -20,6 +20,7 @@ pub struct Storage {
     // Budget changes wrap this original transport, never an existing limiter.
     base_http_transport: HttpTransporter,
     base_url: Url,
+    upload_part_size: Option<NonZeroUsize>,
 }
 
 impl Storage {
@@ -40,6 +41,7 @@ impl Storage {
             operator: operator.with_context(context),
             base_http_transport,
             base_url,
+            upload_part_size: None,
         })
     }
 
@@ -98,6 +100,17 @@ impl Storage {
             .with_http_transport(limit.wrap(self.base_http_transport.clone()));
         self.operator = self.operator.with_context(context);
         self
+    }
+
+    /// Configure buffering for streaming uploads. OpenDAL applies the backend's
+    /// part-size limits; clones and sink adapters retain this setting.
+    pub fn with_upload_part_size(mut self, size: NonZeroUsize) -> Self {
+        self.upload_part_size = Some(size);
+        self
+    }
+
+    pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
+        self.upload_part_size
     }
 
     pub fn base_url(&self) -> &Url {
@@ -201,9 +214,12 @@ impl Storage {
     pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
         let path = self.nonroot_path(url)?;
         let operator = self.operator();
+        let part_size = self
+            .upload_part_size
+            .map_or(5 * 1024 * 1024, NonZeroUsize::get);
         let writer = operator
             .writer_with(&path)
-            .chunk(5 * 1024 * 1024)
+            .chunk(part_size)
             .concurrent(1)
             .await
             .map_err(|error| map_error("open", &path, error))?;
