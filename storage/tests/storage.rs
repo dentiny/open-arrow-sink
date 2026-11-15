@@ -182,3 +182,34 @@ async fn errors_retain_operation_path_and_opendal_source() {
     }
     panic!("the original OpenDAL error must remain in the source chain");
 }
+
+#[test]
+fn cached_namespace_preserves_decoding_and_boundaries_across_clones() {
+    let storage = Storage::new(
+        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+        "memory:///warehouse%20space/%E9%9B%AA".parse().unwrap(),
+    )
+    .unwrap();
+    let storage = storage.clone();
+    assert_eq!(storage.base_url().path(), "/warehouse%20space/%E9%9B%AA/");
+    for (url, expected) in [
+        ("memory:///warehouse%20space/%E9%9B%AA", ""),
+        ("memory:///warehouse%20space/%E9%9B%AA/", ""),
+        ("memory:///warehouse%20space/%E9%9B%AA/a%20b", "a b"),
+        ("memory:///warehouse%20space/%E9%9B%AA/a%2Fb", "a/b"),
+    ] {
+        assert_eq!(storage.path(&url.parse().unwrap()).unwrap(), expected);
+    }
+    for url in [
+        "memory:///warehouse%20space/%E9%9B%AA2/file",
+        "memory:///warehouse%20space/%E9%9B%AA/%2E%2E%2Foutside",
+        "memory:///warehouse%20space/%E9%9B%AA/%5Coutside",
+        "memory:///warehouse%20space/%E9%9B%AA/%00",
+        "memory:///warehouse%20space/%E9%9B%AA/%FF",
+        "memory://other/warehouse%20space/%E9%9B%AA/file",
+        "memory:///warehouse%20space/%E9%9B%AA/file?query=1",
+        "memory:///warehouse%20space/%E9%9B%AA/file#fragment",
+    ] {
+        assert!(storage.path(&url.parse().unwrap()).is_err(), "{url}");
+    }
+}

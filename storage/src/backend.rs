@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, ops::Range};
+use std::{num::NonZeroUsize, ops::Range, sync::Arc};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -20,6 +20,8 @@ pub struct Storage {
     // Budget changes wrap this original transport, never an existing limiter.
     base_http_transport: HttpTransporter,
     base_url: Url,
+    // Validated once at construction; shared cheaply by storage clones.
+    base_path: Arc<str>,
     upload_part_size: Option<NonZeroUsize>,
 }
 
@@ -32,7 +34,7 @@ impl Storage {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
-        validation::decoded_path(&base_url)?;
+        let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
         let base_http_transport = operator.base_context().http_transport().clone();
         let context = operator.base_context().with_http_transport(
             HttpConcurrencyLimitLayer::default().wrap(base_http_transport.clone()),
@@ -41,6 +43,7 @@ impl Storage {
             operator: operator.with_context(context),
             base_http_transport,
             base_url,
+            base_path,
             upload_part_size: None,
         })
     }
@@ -124,7 +127,7 @@ impl Storage {
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
     pub fn path(&self, url: &Url) -> Result<String> {
-        validation::relative_path(&self.base_url, url)
+        validation::relative_path(&self.base_url, &self.base_path, url)
     }
 
     pub fn url(&self, path: &str) -> Result<Url> {
