@@ -47,6 +47,7 @@ impl Sink for TestSink {
     type Request = ();
     fn capability(&self) -> SinkCapability {
         SinkCapability {
+            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
             ordering: Ordering::PreserveInput,
             compression: Default::default(),
             supported_partitions: vec![],

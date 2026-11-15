@@ -20,6 +20,8 @@ pub enum PartitionType {
 /// Each sink explicitly declares ordering, partition, index, and compression support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkCapability {
+    /// Explicit destination modes accepted by this sink.
+    pub supported_modes: &'static [crate::WriteMode],
     /// `PreserveInput` guarantees input row order in the target's documented
     /// read order; `Unordered` provides no input-order guarantee.
     /// Sequential I/O completion alone does not guarantee logical row order.
