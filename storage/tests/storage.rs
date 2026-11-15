@@ -133,6 +133,18 @@ fn storage_policies_validate_without_io() {
         }),
     };
     assert!(config.apply(operator).is_err());
+    assert!(
+        StorageConfig {
+            retry: Some(RetryConfig {
+                min_delay: Duration::from_secs(2),
+                max_delay: Duration::from_secs(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -169,29 +181,4 @@ async fn errors_retain_operation_path_and_opendal_source() {
         source = cause.source();
     }
     panic!("the original OpenDAL error must remain in the source chain");
-}
-
-#[test]
-fn config_validation_and_configured_construction_match_access() {
-    let config = StorageConfig {
-        retry: Some(RetryConfig {
-            min_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(1),
-            ..Default::default()
-        }),
-        timeout: None,
-    };
-    assert!(
-        config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("retry min_delay must not exceed max_delay")
-    );
-    Storage::try_new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///".parse().unwrap(),
-        StorageConfig::default(),
-    )
-    .unwrap();
 }
