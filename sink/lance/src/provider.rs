@@ -16,8 +16,15 @@ impl ObjectStoreProvider for Provider {
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
         self.0.path(&base_path).map_err(native)?;
+        let object_store: Arc<dyn object_store::ObjectStore> = match self.0.upload_part_size() {
+            Some(size) => Arc::new(crate::upload::UploadStore::new(
+                self.0.operator(),
+                size.get(),
+            )),
+            None => Arc::new(OpendalStore::new(self.0.operator())),
+        };
         let mut store = ObjectStore::new(
-            Arc::new(OpendalStore::new(self.0.operator())),
+            object_store,
             base_path,
             params.block_size,
             params.object_store_wrapper.clone(),

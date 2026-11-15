@@ -7,6 +7,7 @@ mod compression;
 mod error;
 mod provider;
 mod sink;
+mod upload;
 mod validation;
 
 pub use sink::LanceDatasetSink;
