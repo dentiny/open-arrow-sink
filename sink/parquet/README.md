@@ -1,6 +1,6 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a destination `Url` and writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
 one file per session. Missing parents are created; an existing target
 is rejected, including an empty local directory. Enable facade feature `sink-parquet`
@@ -29,7 +29,7 @@ Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-g
 `parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
 layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
 
-The sink reserves a new prefix with conditional creation of `.open-arrow-sink`.
+Create and staged Overwrite reserve a new prefix with conditional creation of `.open-arrow-sink`.
 It also claims each part name before opening a streaming writer. Backends without
 conditional-create support fail instead of overwriting. External writers must
 not modify a reserved prefix. The marker is removed after a file finishes; all
@@ -56,7 +56,7 @@ attempts to remove its directory; failed open/commit also attempts cleanup. Set 
 to `false` to retain session-created output on abort or failure. Cleanup never
 recursively deletes other files. Drop leaves incomplete output and never commits.
 
-No append, overwrite, or partitioning. Storage retries are configured on the OpenDAL operator.
+No partitioning. Storage retries are configured on the OpenDAL operator.
 
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
@@ -105,3 +105,18 @@ Overrides and global settings persist across file rolling.
 Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
 Parquet accepts levels 1 through 22; unsupported levels are rejected before
 creating the destination. `level: None` uses the Parquet default.
+
+## Write modes
+
+Create rejects existing destinations. Append validates the schemas of existing
+root-level Parquet files and writes UUID-prefixed parts, preserving old files and
+unrelated objects on abort. Schema validation uses range reads of Parquet metadata.
+These modes work through the shared filesystem or remote operator.
+
+Overwrite is staged on filesystem backends: old output stays visible until commit,
+then the directory is replaced via backup/rename with restoration on failure.
+The implementation uses OpenDAL for directory renames and cleanup; a local-only
+`symlink_metadata` validation preserves main's rejection of symlink targets because
+OpenDAL stat follows links. Other backends reject Overwrite before creating output;
+object-store prefix swaps do not provide the directory-rename semantics used here.
+External writers must not modify a destination during a session.

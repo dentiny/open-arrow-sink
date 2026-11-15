@@ -132,3 +132,16 @@ so there is no per-worker table commit. An empty session publishes no snapshot.
 Before publication, failures abort every writer according to the cleanup policy.
 After publication starts, errors retain files because the catalog may already
 reference them. Per-writer encoding/fanout buffers multiply with concurrency.
+
+### Supported write modes
+
+`IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
+`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+table. A missing table is an error. The shared default is `WriteMode::Create`,
+which this sink rejects; callers must explicitly select Append.
+
+Create and Overwrite return `Error::Unsupported` before catalog access, leaving
+existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes
+fast append but no public full-overwrite transaction, and `TableIdent` does not
+carry table creation settings. This sink never drops/recreates a table to emulate
+overwrite. Callers can inspect capabilities to choose an appropriate sink or mode.

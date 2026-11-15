@@ -24,7 +24,11 @@ use crate::{
     writer::IcebergTableWriter,
 };
 
-/// Uses a caller-configured catalog; the table must already exist.
+/// Appends to an existing table in a caller-configured catalog.
+/// Append is the only advertised write mode and must be requested explicitly.
+/// The shared default Create and explicit Overwrite are rejected before catalog access: iceberg-rust 0.11 exposes
+/// no public full-overwrite transaction, and this request carries no table
+/// creation configuration. Tables are never dropped/recreated to emulate overwrite.
 pub struct IcebergTableSink {
     catalog: Arc<dyn Catalog>,
 }

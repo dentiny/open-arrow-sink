@@ -4166,6 +4166,7 @@ dependencies = [
  "rstest",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

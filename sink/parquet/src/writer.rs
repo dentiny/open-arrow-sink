@@ -3,6 +3,7 @@ use open_arrow_sink_core::{
     validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
+use std::sync::Arc;
 
 use crate::{
     destination::{Destination, FileWriter},
@@ -10,7 +11,7 @@ use crate::{
 };
 
 pub(crate) struct ParquetDirectoryWriter {
-    destination: Destination,
+    pub(crate) destination: Arc<Destination>,
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<FileWriter>>,
     options: WriteOptions,
@@ -74,6 +75,7 @@ impl Writer for ParquetDirectoryWriter {
         }
         self.writer = None;
         self.destination.complete_reservation().await?;
+        self.destination.publish().await?;
         Ok(WriteSummary {
             rows_written: self.rows_written,
         })
@@ -87,7 +89,7 @@ impl Writer for ParquetDirectoryWriter {
 
 impl ParquetDirectoryWriter {
     pub(crate) fn new(
-        destination: Destination,
+        destination: Arc<Destination>,
         schema: SchemaRef,
         writer: AsyncArrowWriter<FileWriter>,
         options: WriteOptions,

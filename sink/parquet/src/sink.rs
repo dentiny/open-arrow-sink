@@ -1,5 +1,5 @@
 use open_arrow_sink_storage::{Storage, Url};
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
     CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
@@ -12,8 +12,9 @@ use crate::{
     writer::ParquetDirectoryWriter,
 };
 
-/// Creates a new URL destination containing `part-00000.parquet`, etc.
-/// Existing destinations are never replaced. Missing parent directories are created.
+/// Writes a URL destination containing `part-00000.parquet`, etc.
+/// Create, append, and filesystem staged overwrite are supported. Missing parents are created.
+/// Callers must exclude concurrent writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
 /// directory transaction. Drop does not commit or clean up incomplete files.
@@ -37,7 +38,11 @@ impl Sink for ParquetDirectorySink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
+            supported_modes: &[
+                open_arrow_sink_core::WriteMode::Create,
+                open_arrow_sink_core::WriteMode::Append,
+                open_arrow_sink_core::WriteMode::Overwrite,
+            ],
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: crate::compression::SUPPORTED_CODECS,
@@ -75,12 +80,13 @@ impl ParallelSink for ParquetDirectorySink {
         let writers = self
             .create_writers(directory, schema, options, count)
             .await?;
+        let destination = writers[0].destination.clone();
         Ok(WriteSession {
             writers: writers
                 .into_iter()
                 .map(|w| Box::new(w) as Box<dyn DataWriter<Output = u64>>)
                 .collect(),
-            committer: Box::new(ParquetCommitter),
+            committer: Box::new(ParquetCommitter(destination)),
         })
     }
 }
@@ -99,20 +105,16 @@ impl ParquetDirectorySink {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&directory)?,
         };
-        let destination = Destination::new(storage, directory)?;
-        self.create_writers_at(destination, schema, options, count, properties)
-            .await
-    }
-
-    pub(crate) async fn create_writers_at(
-        &self,
-        destination: Destination,
-        schema: SchemaRef,
-        options: WriteOptions,
-        count: NonZeroUsize,
-        properties: parquet::file::properties::WriterProperties,
-    ) -> Result<Vec<ParquetDirectoryWriter>> {
-        destination.reserve().await?;
+        let destination = Arc::new(
+            Destination::open(
+                storage,
+                directory,
+                &schema,
+                options.mode,
+                options.cleanup_on_error,
+            )
+            .await?,
+        );
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
             let opened = async {
