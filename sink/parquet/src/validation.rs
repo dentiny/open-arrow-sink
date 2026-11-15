@@ -1,3 +1,4 @@
+use futures::{TryStreamExt, stream};
 use open_arrow_sink_core::Result;
 use open_arrow_sink_storage::{Storage, Url};
 
@@ -25,18 +26,22 @@ pub(crate) async fn validate_append_directory(
     if metadata.is_none() && files.is_empty() && !storage.exists(directory).await? {
         return Err(error::missing_directory());
     }
-    for file in files {
-        if file
-            .path()
-            .strip_prefix(directory.path())
-            .is_some_and(|relative| !relative.contains('/') && relative.ends_with(".parquet"))
-        {
-            let actual = crate::reader::schema(storage.clone(), file).await?;
-            if &actual != schema {
-                return Err(open_arrow_sink_core::Error::SchemaMismatch);
+    // Overlap metadata I/O while bounding the number of schemas in flight.
+    stream::iter(files.into_iter().map(Ok))
+        .try_for_each_concurrent(8, |file| async move {
+            if file
+                .path()
+                .strip_prefix(directory.path())
+                .is_some_and(|relative| !relative.contains('/') && relative.ends_with(".parquet"))
+            {
+                let actual = crate::reader::schema(storage.clone(), file).await?;
+                if &actual != schema {
+                    return Err(open_arrow_sink_core::Error::SchemaMismatch);
+                }
             }
-        }
-    }
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 
