@@ -110,3 +110,19 @@ A runnable index construction example (destination must not exist):
 ```sh
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
+
+## Streaming native blobs
+
+Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
+value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
+finish it to obtain a session-owned `BlobHandle`. Attach handles with
+`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
+non-null binary placeholders. Null cells remain null. Ordinary materialized
+binary values can still be written through `Writer::write`.
+
+Streams append directly through Lance's native `DedicatedBlobWriter`, and batches
+carry managed blob descriptors. Streaming values use dedicated storage without
+buffering the full payload to select inline or packed storage. Normal binary
+inputs continue through Lance's native storage selection. Handles from another
+session and duplicate/null placements are rejected. Dropping an unfinished blob
+poisons the session, and abort or a rejected commit removes the reserved dataset.

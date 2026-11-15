@@ -7,6 +7,9 @@ repository.workspace = true
 description = "Minimal local Lance dataset sink"
 
 [dependencies]
+lance-io = { version = "14.0.1", default-features = false }
+object_store = { version = "0.14", default-features = false }
+uuid = { version = "1", features = ["v4"] }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

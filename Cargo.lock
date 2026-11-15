@@ -3843,6 +3843,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
+ "bytes",
  "thiserror",
 ]
 
@@ -3867,12 +3868,15 @@ dependencies = [
  "arrow-schema",
  "lance",
  "lance-index",
+ "lance-io",
  "lance-linalg",
  "more-asserts",
+ "object_store 0.14.2",
  "open-arrow-sink-core",
  "rstest",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
