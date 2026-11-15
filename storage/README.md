@@ -58,6 +58,10 @@ wrapped with that same budget, including when a native sink SDK uses it.
 the storage binding. Errors retain operation/object context and their original
 OpenDAL source through the sink core's existing backend-error contract.
 
+A [shared HTTP budget proposal](../docs/shared-http-budget.md) describes how to
+replace the copied limiter with a neutral component and share one explicit
+request budget across access and sink operators. It is not implemented yet.
+
 The remaining additions support this repository's write contract: a URL-scoped
 namespace, streaming close/abort, conditional creation, and owned-output cleanup.
 The access repository's read-only `ByteReader` and `NamedFileAccessor` contracts
