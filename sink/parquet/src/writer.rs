@@ -1,7 +1,8 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
+    validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use tokio::fs::{self, File, OpenOptions};
@@ -16,6 +17,8 @@ pub(crate) struct ParquetDirectoryWriter {
     properties: WriterProperties,
     rows_written: u64,
     files_created: usize,
+    first_file: usize,
+    file_stride: usize,
 }
 
 #[async_trait]
@@ -76,6 +79,8 @@ impl ParquetDirectoryWriter {
         writer: AsyncArrowWriter<File>,
         options: WriteOptions,
         properties: WriterProperties,
+        first_file: usize,
+        file_stride: usize,
     ) -> Self {
         Self {
             directory,
@@ -85,6 +90,8 @@ impl ParquetDirectoryWriter {
             properties,
             rows_written: 0,
             files_created: 1,
+            first_file,
+            file_stride,
         }
     }
 
@@ -98,6 +105,7 @@ impl ParquetDirectoryWriter {
     }
 
     fn file_path(&self, index: usize) -> PathBuf {
+        let index = self.first_file + index * self.file_stride;
         self.directory.join(format!("part-{index:05}.parquet"))
     }
 
@@ -113,6 +121,37 @@ impl ParquetDirectoryWriter {
             }
         }
         // Never recursively delete a directory: other files may have been added.
-        fs::remove_dir(&self.directory).await
+        match fs::remove_dir(&self.directory).await {
+            // Other shards or unrelated files can still own this directory.
+            Err(error)
+                if self.file_stride > 1
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+                    ) =>
+            {
+                Ok(())
+            }
+            result => result,
+        }
+    }
+}
+
+#[async_trait]
+impl DataWriter for ParquetDirectoryWriter {
+    type Output = u64;
+    fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        Writer::write(self, batch).await
+    }
+    async fn finish(&mut self) -> Result<u64> {
+        let writer = self.writer.take().ok_or_else(closed)?;
+        writer.close().await.map_err(backend)?;
+        Ok(self.rows_written)
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        Writer::abort(self).await
     }
 }
