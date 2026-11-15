@@ -1,16 +1,20 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
-use open_arrow_sink_parquet::ParquetDirectorySink;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
+use open_arrow_sink_storage::opendal;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[tokio::test]
 async fn unordered_commit_preserves_all_rows() {
-    let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("output");
+    let storage = Storage::new(
+        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+        "memory:///warehouse/".parse().unwrap(),
+    )
+    .unwrap();
+    let directory = storage.url("雪 output/").unwrap();
     let make_batch = |id| {
         RecordBatch::try_from_iter([
             (
@@ -24,13 +28,14 @@ async fn unordered_commit_preserves_all_rows() {
         ])
         .unwrap()
     };
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::new(storage.clone())
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
         .open(
             directory.clone(),
             make_batch(0).schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
+                target_file_size: Some(1),
                 ..Default::default()
             },
         )
@@ -50,15 +55,14 @@ async fn unordered_commit_preserves_all_rows() {
         expected.len() as u64
     );
     let mut actual = Vec::new();
-    let mut files = tokio::fs::read_dir(&directory).await.unwrap();
-    while let Some(entry) = files.next_entry().await.unwrap() {
-        let file = tokio::fs::File::open(entry.path()).await.unwrap();
-        let mut batches = ParquetRecordBatchStreamBuilder::new(file)
-            .await
+    for file in storage.list(&directory).await.unwrap() {
+        assert!(file.path().ends_with(".parquet"));
+        for batch in ParquetRecordBatchReaderBuilder::try_new(storage.read(&file).await.unwrap())
             .unwrap()
             .build()
-            .unwrap();
-        while let Some(batch) = batches.try_next().await.unwrap() {
+            .unwrap()
+        {
+            let batch = batch.unwrap();
             let ids = batch
                 .column(0)
                 .as_any()
@@ -78,4 +82,17 @@ async fn unordered_commit_preserves_all_rows() {
     actual.sort_unstable();
     expected.sort_unstable();
     assert_eq!(actual, expected);
+    assert!(
+        ParquetDirectorySink::new(storage)
+            .open(
+                directory,
+                make_batch(0).schema(),
+                WriteOptions {
+                    ordering: Ordering::Unordered,
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+    );
 }

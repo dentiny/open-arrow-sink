@@ -1,10 +1,42 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` writes a local directory. Create mode (the default) writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
-one file per session. The parent must exist; Create rejects an existing target,
-including an empty directory. Append and Overwrite are described below. Enable facade feature `sink-parquet`
+one file per session. Missing parents are created; an existing target
+is rejected, including an empty local directory. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
+
+
+## Shared storage
+
+The request for both single and parallel sessions is `Url`, re-exported from this
+crate. Use `ParquetDirectorySink::default()` for URL-resolved storage, or
+`ParquetDirectorySink::new(storage)` to share a configured OpenDAL operator:
+
+```rust,ignore
+use open_arrow_sink_parquet::{ParquetDirectorySink, Storage, Url};
+use open_arrow_sink_storage::opendal;
+
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
+let sink = ParquetDirectorySink::new(storage.clone());
+let destination = storage.url("new-output/")?;
+let writer = sink.open(destination, schema, options).await?;
+```
+
+Convert existing paths with `Url::from_directory_path(std::path::absolute(path)?)`.
+Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-gcp`,
+`parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
+layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
+
+Create and staged Overwrite reserve a new prefix with conditional creation of `.open-arrow-sink`.
+It also claims each part name before opening a streaming writer. Backends without
+conditional-create support fail instead of overwriting. External writers must
+not modify a reserved prefix. The marker is removed after a file finishes; all
+part names have already been claimed, so the destination remains occupied.
+Abort removes owned parts and the marker when no other objects remain, preserving
+unrelated files. Drop performs no async cleanup. These rules apply to local and
+remote destinations alike.
 
 Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
 sink does not promise directory scan order. Each write validates its schema and flushes its rows; it
@@ -16,15 +48,15 @@ nonempty batches once the current file's encoded bytes reach the target. A batch
 and the file footer can exceed the target; it is not a strict maximum. `None`
 keeps the single-file behavior. An empty session still creates one readable file.
 
-Commit completes the final file footer. In Create and Append modes, files are
-visible while writing. There is no durability/fsync guarantee.
+Commit completes the final file footer. The target is visible while writing and has no
+atomic directory transaction or durability/fsync guarantee.
 
 `WriteOptions.cleanup_on_error` defaults to `true`: abort removes this session's files and
 attempts to remove its directory; failed open/commit also attempts cleanup. Set it
 to `false` to retain session-created output on abort or failure. Cleanup never
 recursively deletes other files. Drop leaves incomplete output and never commits.
 
-No append, overwrite, partitioning, cloud storage or retries.
+No partitioning. Storage retries are configured on the OpenDAL operator.
 
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
@@ -74,19 +106,17 @@ Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
 Parquet accepts levels 1 through 22; unsupported levels are rejected before
 creating the destination. `level: None` uses the Parquet default.
 
-### Write modes
+## Write modes
 
-Set `WriteOptions.mode` to `WriteMode::Create` (the default when omitted),
-`WriteMode::Append`, or `WriteMode::Overwrite`.
-Append requires an existing directory, checks the schema of its `.parquet` files,
-and adds uniquely named files; abort removes only the session's files. Overwrite
-writes a sibling staging directory and replaces the complete destination on commit,
-including unrelated files in that destination. Abort preserves the old directory.
-An empty overwrite publishes an empty, readable Parquet file.
+Create rejects existing destinations. Append validates the schemas of existing
+root-level Parquet files and writes UUID-prefixed parts, preserving old files and
+unrelated objects on abort. Schema validation uses range reads of Parquet metadata.
+These modes work through the shared filesystem or remote operator.
 
-The parent directory must exist. Callers must exclude other writes or replacement of
-the destination for the session lifetime. Directory replacement uses two renames
-with rollback on a failed second rename; readers can observe a brief missing path,
-so it is not an atomic directory transaction. Cancellation during publication may
-leave staging or backup directories; inspect them before retrying. Create and append files are visible
-before commit. `cleanup_on_error = false` retains unfinished session output.
+Overwrite is staged on filesystem backends: old output stays visible until commit,
+then the directory is replaced via backup/rename with restoration on failure.
+The implementation uses OpenDAL for directory renames and cleanup; a local-only
+`symlink_metadata` validation preserves main's rejection of symlink targets because
+OpenDAL stat follows links. Other backends reject Overwrite before creating output;
+object-store prefix swaps do not provide the directory-rename semantics used here.
+External writers must not modify a destination during a session.

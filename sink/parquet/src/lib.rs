@@ -1,11 +1,14 @@
-//! Local local directory sink with optional target-size Parquet file rolling.
+//! Create-only URL directory sink with optional target-size Parquet file rolling.
 
 mod committer;
 mod compression;
 mod destination;
 mod error;
+mod file_writer;
+mod reader;
 mod sink;
 mod validation;
 mod writer;
 
+pub use open_arrow_sink_storage::{Storage, Url};
 pub use sink::ParquetDirectorySink;

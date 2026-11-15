@@ -1,94 +1,163 @@
-use std::{io, path::PathBuf};
-
+use bytes::Bytes;
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use tokio::fs;
+use open_arrow_sink_storage::{Storage, Url};
+use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
-use crate::{error::backend, validation};
+use crate::file_writer::FileWriter;
 
-/// Overwrite stages a complete directory; append owns only its unique files.
-/// Callers must exclude other writes or directory replacement for the session lifetime.
+const RESERVATION: &str = ".open-arrow-sink";
+
+/// Session-owned parts and optional filesystem staging directory.
 pub(crate) struct Destination {
-    pub directory: PathBuf,
-    pub prefix: String,
-    pub remove_directory: bool,
-    target: Option<PathBuf>,
+    storage: Storage,
+    directory: Url,
+    prefix: String,
+    // Create owns the destination; overwrite owns its staging directory.
+    // Append shares an existing directory and must preserve its reservation.
+    // Only owners create/remove the reservation and clean up the empty directory.
+    owns_directory: bool,
+    target: Option<Url>,
     cleanup_on_error: bool,
 }
-
 impl Destination {
-    pub async fn open(
-        path: PathBuf,
+    pub(crate) async fn open(
+        storage: Storage,
+        directory: Url,
         schema: &SchemaRef,
         mode: WriteMode,
         cleanup_on_error: bool,
     ) -> Result<Self> {
-        match mode {
-            WriteMode::Create => {
-                fs::create_dir(&path).await.map_err(backend)?;
-                Ok(Self {
-                    directory: path,
-                    prefix: "part-".into(),
-                    remove_directory: true,
-                    target: None,
-                    cleanup_on_error,
-                })
-            }
+        let directory = storage.directory_url(&directory)?;
+        let (directory, prefix, target, owns_directory) = match mode {
+            WriteMode::Create => (directory, "part-".into(), None, true),
             WriteMode::Append => {
-                validation::validate_append_directory(&path, schema).await?;
-                Ok(Self {
-                    directory: path,
-                    prefix: format!("part-{}-", uuid::Uuid::new_v4()),
-                    remove_directory: false,
-                    target: None,
-                    cleanup_on_error,
-                })
+                crate::validation::validate_append_directory(&storage, &directory, schema).await?;
+                (
+                    directory,
+                    format!("part-{}-", uuid::Uuid::new_v4()),
+                    None,
+                    false,
+                )
             }
             WriteMode::Overwrite => {
-                validation::validate_overwrite_directory(&path).await?;
-                let directory =
-                    path.with_file_name(format!(".open-arrow-sink-{}", uuid::Uuid::new_v4()));
-                fs::create_dir(&directory).await.map_err(backend)?;
-                Ok(Self {
-                    directory,
-                    prefix: "part-".into(),
-                    remove_directory: true,
-                    target: Some(path),
-                    cleanup_on_error,
-                })
+                crate::validation::validate_overwrite_directory(&storage, &directory).await?;
+                let stage = directory
+                    .join(&format!("../.open-arrow-sink-{}/", uuid::Uuid::new_v4()))
+                    .unwrap();
+                (stage, "part-".into(), Some(directory), true)
             }
+        };
+        let destination = Self {
+            storage,
+            directory,
+            prefix,
+            target,
+            owns_directory,
+            cleanup_on_error,
+        };
+        if destination.owns_directory {
+            destination.reserve().await?;
         }
+        Ok(destination)
     }
-
-    pub async fn publish(&self) -> Result<()> {
-        let result = self.publish_inner().await;
-        if result.is_err() && self.cleanup_on_error && self.target.is_some() {
-            // A failed publication owns its cleanup; parallel callers must not
-            // abort writers after entering the session committer.
-            let _ = fs::remove_dir_all(&self.directory).await;
+    fn child(&self, name: &str) -> Url {
+        self.directory.join(name).unwrap()
+    }
+    fn file(&self, index: usize) -> Url {
+        self.child(&format!("{}{index:05}.parquet", self.prefix))
+    }
+    async fn reserve(&self) -> Result<()> {
+        if self.storage.prefix_exists(&self.directory).await? {
+            return Err(crate::error::destination_exists());
+        }
+        self.storage
+            .create(&self.child(RESERVATION), Bytes::new())
+            .await
+    }
+    pub(crate) async fn open_writer(
+        &self,
+        index: usize,
+        schema: SchemaRef,
+        properties: WriterProperties,
+    ) -> Result<AsyncArrowWriter<FileWriter>> {
+        let path = self.file(index);
+        self.storage.create(&path, Bytes::new()).await?;
+        let result = async {
+            let file = FileWriter(self.storage.writer(&path).await?);
+            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(crate::error::backend)
+        }
+        .await;
+        if result.is_err() && self.cleanup_on_error {
+            let _ = self.storage.delete(&path).await;
         }
         result
     }
-
+    pub(crate) async fn complete_reservation(&self) -> Result<()> {
+        if self.owns_directory {
+            self.storage.delete(&self.child(RESERVATION)).await?;
+        }
+        Ok(())
+    }
+    pub(crate) async fn remove_file(&self, index: usize) -> Result<()> {
+        self.storage.delete(&self.file(index)).await
+    }
+    pub(crate) async fn remove_reservation(&self) -> Result<()> {
+        if !self.owns_directory {
+            return Ok(());
+        }
+        let marker = self.child(RESERVATION);
+        if self
+            .storage
+            .list(&self.directory)
+            .await?
+            .iter()
+            .any(|url| url != &marker)
+        {
+            return Ok(());
+        }
+        self.storage.delete(&marker).await?;
+        self.storage.remove_empty_directory(&self.directory).await
+    }
+    async fn rename_directory(&self, from: &Url, to: &Url) -> Result<()> {
+        // Fs supports directory rename at the backend; omit trailing slashes
+        // because OpenDAL's public rename path check requires file-shaped paths.
+        let from = self.storage.path(from)?;
+        let to = self.storage.path(to)?;
+        self.storage
+            .operator()
+            .rename(from.trim_end_matches('/'), to.trim_end_matches('/'))
+            .await
+            .map_err(crate::error::backend)
+    }
+    pub(crate) async fn publish(&self) -> Result<()> {
+        let result = self.publish_inner().await;
+        if result.is_err() && self.cleanup_on_error && self.target.is_some() {
+            let _ = self.storage.remove_all(&self.directory).await;
+        }
+        result
+    }
     async fn publish_inner(&self) -> Result<()> {
         let Some(target) = &self.target else {
             return Ok(());
         };
-        let backup =
-            target.with_file_name(format!(".open-arrow-sink-old-{}", uuid::Uuid::new_v4()));
-        let had_target = match fs::rename(target, &backup).await {
-            Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(backend(error)),
-        };
-        if let Err(error) = fs::rename(&self.directory, target).await {
-            if had_target {
-                let _ = fs::rename(&backup, target).await;
-            }
-            return Err(backend(error));
-        }
-        // Publication succeeded. A backup cleanup failure must not report a failed write.
+        let backup = target
+            .join(&format!(
+                "../.open-arrow-sink-old-{}/",
+                uuid::Uuid::new_v4()
+            ))
+            .unwrap();
+        let had_target = self.storage.exists(target).await?;
         if had_target {
-            let _ = fs::remove_dir_all(backup).await;
+            self.rename_directory(target, &backup).await?;
+        }
+        if let Err(error) = self.rename_directory(&self.directory, target).await {
+            if had_target {
+                let _ = self.rename_directory(&backup, target).await;
+            }
+            return Err(error);
+        }
+        if had_target {
+            let _ = self.storage.remove_all(&backup).await;
         }
         Ok(())
     }

@@ -1,37 +1,58 @@
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use open_arrow_sink_storage::{Storage, Url};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
     CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
     SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
-use parquet::arrow::AsyncArrowWriter;
-use tokio::fs::{self, OpenOptions};
 
 use crate::{
-    committer::ParquetCommitter, destination::Destination, error::backend,
-    writer::ParquetDirectoryWriter,
+    committer::ParquetCommitter, destination::Destination, writer::ParquetDirectoryWriter,
 };
 
-/// Writes a local directory containing Parquet files. Create is the default.
-/// The parent directory must exist; overwrite stages output until commit.
-/// Callers must exclude other writes or directory replacement during a session.
+/// Writes a URL destination containing `part-00000.parquet`, etc.
+/// Create, append, and filesystem staged overwrite are supported. Missing parents are created.
+/// Callers must exclude concurrent writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
 /// directory transaction. Drop does not commit or clean up incomplete files.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ParquetDirectorySink;
+#[derive(Debug, Clone, Default)]
+pub struct ParquetDirectorySink {
+    storage: Option<Storage>,
+}
+
+impl ParquetDirectorySink {
+    /// Reuse a configured OpenDAL operator, including credentials and layers.
+    pub fn new(storage: Storage) -> Self {
+        Self {
+            storage: Some(storage),
+        }
+    }
+}
 
 #[async_trait]
 impl Sink for ParquetDirectorySink {
-    type Request = PathBuf;
+    type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[
+        let supported_modes: &'static [open_arrow_sink_core::WriteMode] = if self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| storage.operator().info().scheme() != "fs")
+        {
+            &[
+                open_arrow_sink_core::WriteMode::Create,
+                open_arrow_sink_core::WriteMode::Append,
+            ]
+        } else {
+            &[
                 open_arrow_sink_core::WriteMode::Create,
                 open_arrow_sink_core::WriteMode::Append,
                 open_arrow_sink_core::WriteMode::Overwrite,
-            ],
+            ]
+        };
+        SinkCapability {
+            supported_modes,
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: crate::compression::SUPPORTED_CODECS,
@@ -44,7 +65,7 @@ impl Sink for ParquetDirectorySink {
 
     async fn open(
         &self,
-        directory: PathBuf,
+        directory: Url,
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
@@ -61,7 +82,7 @@ impl ParallelSink for ParquetDirectorySink {
 
     async fn open_writers(
         &self,
-        directory: PathBuf,
+        directory: Url,
         schema: SchemaRef,
         options: WriteOptions,
         count: NonZeroUsize,
@@ -83,38 +104,32 @@ impl ParallelSink for ParquetDirectorySink {
 impl ParquetDirectorySink {
     async fn create_writers(
         &self,
-        directory: PathBuf,
+        directory: Url,
         schema: SchemaRef,
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<Vec<ParquetDirectoryWriter>> {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
+        let storage = match &self.storage {
+            Some(storage) => storage.clone(),
+            None => Storage::from_url(&directory)?,
+        };
         let destination = Arc::new(
-            Destination::open(directory, &schema, options.mode, options.cleanup_on_error).await?,
+            Destination::open(
+                storage,
+                directory,
+                &schema,
+                options.mode,
+                options.cleanup_on_error,
+            )
+            .await?,
         );
-        let directory = &destination.directory;
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
-            let path = directory.join(format!("{}{index:05}.parquet", destination.prefix));
-            let opened = async {
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .await
-                    .map_err(backend)?;
-                match AsyncArrowWriter::try_new(file, schema.clone(), Some(properties.clone())) {
-                    Ok(writer) => Ok(writer),
-                    Err(error) => {
-                        if options.cleanup_on_error {
-                            let _ = fs::remove_file(&path).await;
-                        }
-                        Err(backend(error))
-                    }
-                }
-            }
-            .await;
+            let opened = destination
+                .open_writer(index, schema.clone(), properties.clone())
+                .await;
             match opened {
                 Ok(writer) => writers.push(ParquetDirectoryWriter::new(
                     destination.clone(),
@@ -129,8 +144,8 @@ impl ParquetDirectorySink {
                     for writer in writers {
                         let _ = Writer::abort(Box::new(writer)).await;
                     }
-                    if options.cleanup_on_error && destination.remove_directory {
-                        let _ = fs::remove_dir(&directory).await;
+                    if options.cleanup_on_error {
+                        let _ = destination.remove_reservation().await;
                     }
                     return Err(error);
                 }

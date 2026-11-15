@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
-use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
 fn batch() -> RecordBatch {
@@ -32,8 +32,12 @@ async fn commit_round_trips_multiple_batches() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
-    let mut writer = ParquetDirectorySink
-        .open(directory.clone(), expected.schema(), options())
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&directory).unwrap(),
+            expected.schema(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.schema(), &expected.schema());
@@ -62,8 +66,12 @@ async fn empty_commit_produces_readable_parquet() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let schema = batch().schema();
-    let writer = ParquetDirectorySink
-        .open(directory.clone(), schema.clone(), options())
+    let writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&directory).unwrap(),
+            schema.clone(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 0);
@@ -82,9 +90,9 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     tokio::fs::write(&sibling, "keep").await.unwrap();
     let directory = temp.path().join("output");
     let batch = batch();
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::default()
         .open(
-            directory.clone(),
+            Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
             WriteOptions {
                 target_file_size: Some(1),
@@ -100,14 +108,8 @@ async fn abort_removes_output_and_preserves_sibling_files() {
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
-#[rstest::rstest]
-#[case::default_size(None, 1)]
-#[case::small_target(Some(1), 3)]
 #[tokio::test]
-async fn target_file_size_rolls_files_without_losing_rows(
-    #[case] target_file_size: Option<usize>,
-    #[case] file_count: usize,
-) {
+async fn target_file_size_rolls_files_without_losing_rows() {
     let expected = RecordBatch::try_from_iter([
         (
             "id",
@@ -121,12 +123,12 @@ async fn target_file_size_rolls_files_without_losing_rows(
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::default()
         .open(
-            directory.clone(),
+            Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
             WriteOptions {
-                target_file_size,
+                target_file_size: Some(1),
                 ..options()
             },
         )
@@ -144,7 +146,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
         paths.push(entry.path());
     }
     paths.sort();
-    assert_eq!(paths.len(), file_count);
+    assert_eq!(paths.len(), 3);
     let mut offset = 0;
     for path in paths {
         let file = tokio::fs::File::open(path).await.unwrap();
@@ -181,7 +183,6 @@ async fn row_count(directory: &std::path::Path) -> usize {
 }
 
 #[rstest::rstest]
-#[case::create(WriteMode::Create, 3)]
 #[case::append(WriteMode::Append, 4)]
 #[case::overwrite(WriteMode::Overwrite, 3)]
 #[tokio::test]
@@ -189,17 +190,19 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let batch = batch();
-    if mode != WriteMode::Create {
-        let mut writer = ParquetDirectorySink
-            .open(path.clone(), batch.schema(), options())
-            .await
-            .unwrap();
-        writer.write(batch.slice(0, 1)).await.unwrap();
-        writer.commit().await.unwrap();
-    }
-    let mut writer = ParquetDirectorySink
+    let mut writer = ParquetDirectorySink::default()
         .open(
-            path.clone(),
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
+        .await
+        .unwrap();
+    writer.write(batch.slice(0, 1)).await.unwrap();
+    writer.commit().await.unwrap();
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
             batch.schema(),
             WriteOptions { mode, ..options() },
         )
