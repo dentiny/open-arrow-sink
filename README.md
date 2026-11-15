@@ -224,6 +224,9 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
   column-name validation. Index-capable backends call `validation::validate_indexes`
   and check their supported column types before destination I/O, then check
   backend-specific destination constraints.
+- Use `validation::unique_column_index` to resolve exact, unique top-level
+  column names in extensions. It returns `None` for missing or ambiguous names;
+  dots are literal. Index, compression, and download validation share this rule.
 - `write` calls `validation::validate_batch` against the fixed session schema.
   Equality includes column order, types, nullability and metadata; casts are explicit.
 - `commit` completes buffered writes using the backend's documented visibility
