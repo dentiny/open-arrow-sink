@@ -4,7 +4,7 @@ use std::{
 };
 
 use futures::{
-    AsyncReadExt,
+    TryStreamExt,
     stream::{self, BoxStream},
 };
 use http::{Request, Response, Uri};
@@ -148,13 +148,13 @@ impl DownloadPool {
             .reader("blob")
             .await
             .map_err(backend)?
-            .into_futures_async_read(..)
+            .into_stream(..)
             .await
             .map_err(backend)?;
         let pool = self.clone();
         Ok(Box::pin(stream::try_unfold(
-            (reader, pool, request),
-            |(mut reader, pool, request)| async move {
+            (reader, Buffer::new(), pool, request),
+            |(mut reader, mut pending, pool, request)| async move {
                 let capacity = CHUNK_BYTES.min(pool.max_buffered_bytes.get());
                 let reservation = pool
                     .buffers
@@ -162,14 +162,17 @@ impl DownloadPool {
                     .acquire_many_owned(capacity as u32)
                     .await
                     .expect("pool is never closed");
-                let mut buffer = vec![0; capacity];
-                let read = reader.read(&mut buffer).await.map_err(backend)?;
-                if read == 0 {
-                    return Ok(None);
+                if pending.is_empty() {
+                    let Some(buffer) = reader.try_next().await.map_err(backend)? else {
+                        return Ok(None);
+                    };
+                    pending = buffer;
                 }
-                buffer.truncate(read);
-                let chunk = BlobChunk::with_guard(buffer, reservation);
-                Ok(Some((chunk, (reader, pool, request))))
+                // Copy only the reserved slice so a small chunk cannot retain a
+                // larger OpenDAL backing allocation beyond its accounted budget.
+                let size = capacity.min(pending.len());
+                let chunk = BlobChunk::with_guard(pending.split_to(size).to_vec(), reservation);
+                Ok(Some((chunk, (reader, pending, pool, request))))
             },
         )))
     }
