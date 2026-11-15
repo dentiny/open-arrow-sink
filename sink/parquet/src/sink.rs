@@ -58,6 +58,7 @@ impl Sink for ParquetDirectorySink {
                 global: crate::compression::SUPPORTED_CODECS,
                 per_column: crate::compression::SUPPORTED_CODECS,
                 structural_encodings: &[],
+                nested_columns: false,
             },
             supported_partitions: vec![],
             supports_blob_handle: false,

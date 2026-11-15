@@ -57,6 +57,7 @@ impl Sink for IcebergTableSink {
                 ],
                 per_column: &[],
                 structural_encodings: &[],
+                nested_columns: false,
             },
             supported_partitions: vec![
                 PartitionType::Identity,
