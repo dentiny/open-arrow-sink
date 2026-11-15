@@ -4,7 +4,9 @@ use lance::dataset::{
     CommitBuilder,
     transaction::{Operation, Transaction},
 };
-use open_arrow_sink_core::{Error, IndexSpec, Result, SessionCommitter, WriteSummary, async_trait};
+use open_arrow_sink_core::{
+    Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
+};
 
 use crate::{error::backend, index::build_indexes};
 
@@ -13,8 +15,7 @@ type Output = (u64, Transaction);
 pub(crate) struct LanceCommitter {
     pub path: PathBuf,
     pub uri: String,
-    pub indexes: Vec<IndexSpec>,
-    pub cleanup_on_error: bool,
+    pub options: WriteOptions,
 }
 
 #[async_trait]
@@ -51,13 +52,13 @@ impl SessionCommitter<Output> for LanceCommitter {
             .execute(transaction)
             .await
             .map_err(backend)?;
-        build_indexes(&mut dataset, &self.indexes)
+        build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
         Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        if self.cleanup_on_error {
+        if self.options.cleanup_on_error {
             tokio::fs::remove_dir_all(&self.path)
                 .await
                 .map_err(backend)?;
