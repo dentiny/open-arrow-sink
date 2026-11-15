@@ -3893,6 +3893,7 @@ dependencies = [
  "arrow-array",
  "futures",
  "open-arrow-sink-core",
+ "open-arrow-sink-layer",
  "parquet",
  "rstest",
  "tempfile",

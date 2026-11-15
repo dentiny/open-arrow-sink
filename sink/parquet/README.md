@@ -35,3 +35,10 @@ cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parqu
 This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
 `WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
 or accessing the destination. The default empty list keeps existing behavior.
+
+## Compression
+
+Supports global compression and per-column overrides through `WriteOptions.compression`
+or `CompressionLayer`. Codecs: Uncompressed, Snappy, Gzip, Zstd, Lz4Raw. Column
+keys are exact top-level Arrow names; nested fields apply to all descendant columns.
+Overrides and global settings persist across file rolling.

@@ -8,10 +8,18 @@ description = "Minimal local Parquet directory sink"
 
 [dependencies]
 open-arrow-sink-core.workspace = true
-parquet = { workspace = true, features = ["arrow", "async"] }
+parquet = { workspace = true, features = [
+  "arrow",
+  "async",
+  "snap",
+  "flate2-zlib-rs",
+  "zstd",
+  "lz4",
+] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
+open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
 futures.workspace = true
