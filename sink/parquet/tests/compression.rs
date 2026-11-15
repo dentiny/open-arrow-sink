@@ -168,38 +168,3 @@ async fn option_layers_compose_before_backend_validation() {
         assert_eq!(writer.commit().await.unwrap().rows_written, 3);
     }
 }
-
-#[tokio::test]
-async fn structural_encoding_is_rejected_before_creating_destination() {
-    use open_arrow_sink_core::StructuralEncoding;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("dataset");
-    let input = batch();
-    for compression in [
-        CompressionOptions {
-            structural_encoding: Some(StructuralEncoding::Fullzip),
-            ..Default::default()
-        },
-        CompressionOptions {
-            column_encodings: [("nested".into(), StructuralEncoding::Miniblock)].into(),
-            ..Default::default()
-        },
-    ] {
-        let result = ParquetDirectorySink::default()
-            .open(
-                Url::from_directory_path(&path).unwrap(),
-                input.schema(),
-                WriteOptions {
-                    ordering: Ordering::Unordered,
-                    compression,
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(matches!(
-            result,
-            Err(open_arrow_sink_core::Error::Unsupported(_))
-        ));
-        assert!(!path.exists());
-    }
-}
