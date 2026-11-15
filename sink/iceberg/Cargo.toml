@@ -12,6 +12,7 @@ iceberg = "0.11"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+parquet = { workspace = true, features = ["arrow"] }
 rstest.workspace = true
 arrow-array.workspace = true
 futures = "0.3"

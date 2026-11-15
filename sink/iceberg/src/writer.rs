@@ -5,10 +5,13 @@ use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::writer::IcebergWriter;
 use open_arrow_sink_core::{
-    Error, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::error::backend;
+use crate::{
+    error::backend,
+    validation::{validate_commit_state, validate_write_state},
+};
 
 pub(crate) struct IcebergTableWriter {
     catalog: Arc<dyn Catalog>,
@@ -27,9 +30,7 @@ impl Writer for IcebergTableWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(Error::Unsupported("abort or drop the failed writer".into()));
-        }
+        validate_write_state(self.failed)?;
         // Mark before awaiting so cancellation also makes this session unusable.
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
@@ -41,9 +42,7 @@ impl Writer for IcebergTableWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
-            return Err(Error::Unsupported("cannot commit a failed writer".into()));
-        }
+        validate_commit_state(self.failed)?;
         let files = self.inner.close().await.map_err(backend)?;
         if !files.is_empty() {
             let tx = Transaction::new(&self.table);

@@ -1,9 +1,11 @@
+use iceberg::Result;
 use iceberg::arrow::RecordBatchPartitionSplitter;
 use iceberg::spec::{DataFile, PartitionSpecRef, SchemaRef};
 use iceberg::writer::partitioning::{PartitioningWriter, fanout_writer::FanoutWriter};
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
-use iceberg::{Error, ErrorKind, Result};
 use open_arrow_sink_core::{RecordBatch, async_trait};
+
+use crate::error::partition_writer_closed;
 
 /// Adapt the SDK's keyed partition writer to its RecordBatch writer interface.
 /// The schema/spec are pinned at open; the SDK computes keys and file metadata.
@@ -29,10 +31,7 @@ impl<B: IcebergWriterBuilder> IcebergWriter for PartitionWriterAdapter<B> {
             return Ok(());
         }
         let batches = self.splitter.split(&batch)?;
-        let inner = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "partition writer is closed"))?;
+        let inner = self.inner.as_mut().ok_or_else(partition_writer_closed)?;
         for (key, batch) in batches {
             inner.write(key, batch).await?;
         }
@@ -40,10 +39,7 @@ impl<B: IcebergWriterBuilder> IcebergWriter for PartitionWriterAdapter<B> {
     }
 
     async fn close(&mut self) -> Result<Vec<DataFile>> {
-        let inner = self
-            .inner
-            .take()
-            .ok_or_else(|| Error::new(ErrorKind::Unexpected, "partition writer is closed"))?;
+        let inner = self.inner.take().ok_or_else(partition_writer_closed)?;
         inner.close().await
     }
 }
