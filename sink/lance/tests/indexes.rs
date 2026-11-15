@@ -160,3 +160,87 @@ async fn builds_all_index_kinds_and_queries_them() {
         0
     );
 }
+
+#[rstest::rstest]
+#[case::reject(open_arrow_sink_core::ExistingIndexPolicy::Error)]
+#[case::keep(open_arrow_sink_core::ExistingIndexPolicy::Keep)]
+#[case::rebuild(open_arrow_sink_core::ExistingIndexPolicy::Rebuild)]
+#[tokio::test]
+async fn append_index_policy(#[case] policy: open_arrow_sink_core::ExistingIndexPolicy) {
+    use open_arrow_sink_core::{ExistingIndexPolicy, WriteMode};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("indexed");
+    let url = Url::from_directory_path(&path).unwrap();
+    let batch = vectors(16);
+    let sink = LanceDatasetSink::default();
+    let spec = Spec::new("id", Kind::Scalar);
+    let mut writer = sink
+        .open(
+            url.clone(),
+            batch.schema(),
+            indexed_options(vec![spec.clone()]),
+        )
+        .await
+        .unwrap();
+    writer.write(batch.clone()).await.unwrap();
+    writer.commit().await.unwrap();
+    let opened = sink
+        .open(
+            url,
+            batch.schema(),
+            WriteOptions {
+                mode: WriteMode::Append,
+                ..indexed_options(vec![spec.with_existing_policy(policy)])
+            },
+        )
+        .await;
+    if policy == ExistingIndexPolicy::Error {
+        assert!(opened.is_err());
+    } else {
+        let mut writer = opened.unwrap();
+        writer.write(batch).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        dataset.count_rows(None).await.unwrap(),
+        if policy == ExistingIndexPolicy::Error {
+            16
+        } else {
+            32
+        }
+    );
+    let indexes = dataset.load_indices().await.unwrap();
+    assert_eq!(indexes.len(), 1);
+    let covered = indexes[0].fragment_bitmap.as_ref().unwrap();
+    if policy == ExistingIndexPolicy::Rebuild {
+        assert!(
+            dataset
+                .get_fragments()
+                .iter()
+                .all(|f| covered.contains(f.id() as u32))
+        );
+    } else if policy == ExistingIndexPolicy::Keep {
+        assert!(
+            dataset
+                .get_fragments()
+                .iter()
+                .any(|f| !covered.contains(f.id() as u32))
+        );
+    }
+    assert_eq!(
+        dataset
+            .scan()
+            .filter("id = 1")
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap()
+            .num_rows(),
+        if policy == ExistingIndexPolicy::Error {
+            1
+        } else {
+            2
+        }
+    );
+}

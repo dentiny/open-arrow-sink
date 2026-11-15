@@ -97,8 +97,7 @@ An empty index list preserves the underlying sink behavior.
 
 Index creation clones the dataset handle returned by the native data commit and
 spawns one Tokio task per requested index. Each task builds and commits its index
-through Lance, potentially publishing another dataset version. Names are deterministic
-and existing indexes are never replaced. All started tasks are awaited, including
+through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
 when one fails, and the original dataset handle is refreshed after they finish.
 The first observed error is returned after all tasks complete. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
