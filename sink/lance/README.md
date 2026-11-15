@@ -122,7 +122,7 @@ binary values can still be written through `Writer::write`.
 
 Streams append directly through Lance's native `DedicatedBlobWriter`, and batches
 carry managed blob descriptors. Streaming values use dedicated storage without
-buffering the full payload to select inline or packed storage. Normal binary
-inputs continue through Lance's native storage selection. Handles from another
+buffering the full payload to select inline or packed storage. Materialized binary
+inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session, and abort or a rejected commit removes the reserved dataset.
