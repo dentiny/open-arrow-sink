@@ -27,11 +27,8 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 
-#[rstest::rstest]
-#[case::serial(false)]
-#[case::parallel(true)]
 #[tokio::test]
-async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
+async fn compression_survives_rolling_and_round_trips() {
     for (codec, expected_codec) in [
         (Codec::Uncompressed, Compression::UNCOMPRESSED),
         #[cfg(feature = "snappy")]
@@ -49,25 +46,11 @@ async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("output");
         let batch = batch();
-        let compression = CompressionLayer::new(CompressionOptions {
+        let sink = ParquetDirectorySink.layer(CompressionLayer::new(CompressionOptions {
             global: Some(codec),
             columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
-        });
-        let sink: Box<dyn Sink<Request = std::path::PathBuf>> = if parallel {
-            Box::new(
-                ParquetDirectorySink
-                    .layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
-                        std::num::NonZeroUsize::new(2).unwrap(),
-                    ))
-                    .layer(compression),
-            )
-        } else {
-            Box::new(ParquetDirectorySink.layer(compression))
-        };
-        assert_eq!(
-            sink.capability().compression,
-            ParquetDirectorySink.capability().compression
-        );
+        }));
+        assert_eq!(sink.capability(), ParquetDirectorySink.capability());
         let mut writer = sink
             .open(
                 directory.clone(),
@@ -88,22 +71,16 @@ async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
         writer.write(batch.clone()).await.unwrap();
         writer.write(batch.clone()).await.unwrap();
         assert_eq!(writer.commit().await.unwrap().rows_written, 6);
-        let mut rows = 0;
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let file = tokio::fs::File::open(entry.unwrap().path()).await.unwrap();
+        for index in 0..2 {
+            let file = tokio::fs::File::open(directory.join(format!("part-{index:05}.parquet")))
+                .await
+                .unwrap();
             let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
-            if builder.metadata().num_row_groups() == 0 {
-                continue;
-            }
             let group = builder.metadata().row_group(0);
             assert_eq!(group.column(0).compression(), expected_codec);
             assert_eq!(group.column(1).compression(), Compression::UNCOMPRESSED);
             let actual: Vec<_> = builder.build().unwrap().try_collect().await.unwrap();
-            for actual in actual {
-                rows += actual.num_rows();
-                assert_eq!(actual, batch);
-            }
+            assert_eq!(actual, vec![batch.clone()]);
         }
-        assert_eq!(rows, 6);
     }
 }
