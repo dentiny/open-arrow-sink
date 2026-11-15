@@ -137,3 +137,9 @@ pub(crate) fn blob_owner() -> Error {
 pub(crate) fn duplicate_blob_placement() -> Error {
     invalid_blob("duplicate blob placement")
 }
+
+pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Error {
+    Error::Unsupported(format!(
+        "Lance storage version must be 2.2 or 2.3: {version}"
+    ))
+}
