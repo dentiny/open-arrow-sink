@@ -1,3 +1,5 @@
+use arrow_array::RecordBatchReader;
+use arrow_schema::ArrowError;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
@@ -6,12 +8,50 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, failed, worker_stopped},
+    error::{aborted, backend, failed, worker_stopped},
     storage::NativeStorage,
-    writer::{ChannelReader, Message},
 };
 
 type Output = (u64, Transaction);
+
+enum Message {
+    Batch(RecordBatch),
+    Commit,
+}
+
+struct ChannelReader {
+    schema: SchemaRef,
+    receiver: mpsc::Receiver<Message>,
+    finished: bool,
+}
+
+impl Iterator for ChannelReader {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        // Lance polls RecordBatchReader on its blocking background iterator.
+        match self.receiver.blocking_recv() {
+            Some(Message::Batch(batch)) => Some(Ok(batch)),
+            Some(Message::Commit) => {
+                self.finished = true;
+                None
+            }
+            None => {
+                self.finished = true;
+                Some(Err(aborted()))
+            }
+        }
+    }
+}
+
+impl RecordBatchReader for ChannelReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
@@ -64,7 +104,7 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_fragment_write_state(self.failed, self.sender.is_some())?;
+        crate::validation::validate_write_state(self.failed || self.sender.is_none())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;

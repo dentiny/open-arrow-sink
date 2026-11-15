@@ -1,15 +1,14 @@
+use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::{Storage, Url};
 use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
     CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
-    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
+    SchemaRef, Sink, SinkCapability, SinkExt, WriteMode, WriteOptions, WriteSession, Writer,
+    async_trait,
 };
 
-use crate::{
-    compression::writer_schema, storage::NativeStorage, validation::validate_options,
-    writer::LanceWriter,
-};
+use crate::{compression::writer_schema, storage::NativeStorage, validation::validate_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -65,16 +64,11 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validate_options(&schema, &options, self.capability())?;
-        let encoding_schema = writer_schema(&schema, &options.compression);
-        let mut destination = self.resolve(url)?;
-        destination.prepare(&encoding_schema, options.mode).await?;
-        Ok(Box::new(LanceWriter::new(
-            schema,
-            encoding_schema,
-            destination,
-            options,
-        )))
+        // Use the same fragment writing and publication path for every session.
+        self.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::MIN))
+            .open(url, schema, options)
+            .await
     }
 }
 

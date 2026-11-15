@@ -30,26 +30,20 @@ impl NativeStorage {
         })
     }
     pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
-        match mode {
-            WriteMode::Create => self.reserve().await?,
-            WriteMode::Append => {
-                crate::validation::validate_existing_dataset(self.dataset_builder(), Some(schema))
-                    .await?
-            }
-            WriteMode::Overwrite => {
-                if self.storage.prefix_exists(&self.url).await? {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None)
-                        .await?;
-                } else {
-                    self.reserve().await?;
-                }
-            }
+        if mode == WriteMode::Append {
+            return crate::validation::validate_existing_dataset(
+                self.dataset_builder(),
+                Some(schema),
+            )
+            .await;
         }
-        Ok(())
-    }
-    async fn reserve(&mut self) -> Result<()> {
         if self.storage.prefix_exists(&self.url).await? {
-            return Err(crate::error::destination_exists());
+            return match mode {
+                WriteMode::Create => Err(crate::error::destination_exists()),
+                _ => {
+                    crate::validation::validate_existing_dataset(self.dataset_builder(), None).await
+                }
+            };
         }
         self.storage
             .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())

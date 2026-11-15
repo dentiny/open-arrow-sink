@@ -105,7 +105,7 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(error::schema_mismatch());
+        return Err(open_arrow_sink_core::Error::SchemaMismatch);
     }
     Ok(())
 }
@@ -130,13 +130,6 @@ pub(crate) fn validate_transaction_compatibility(
 
 pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
     if failed {
-        return Err(error::failed());
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_fragment_write_state(failed: bool, sender_open: bool) -> Result<()> {
-    if failed || !sender_open {
         return Err(error::failed());
     }
     Ok(())

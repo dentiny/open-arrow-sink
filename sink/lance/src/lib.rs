@@ -6,7 +6,6 @@ mod error;
 mod provider;
 mod sink;
 mod validation;
-mod writer;
 
 pub use sink::LanceDatasetSink;
 

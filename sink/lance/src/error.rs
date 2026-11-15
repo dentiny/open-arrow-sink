@@ -92,6 +92,3 @@ pub(crate) fn empty_writer_session() -> Error {
 pub(crate) fn different_dataset_versions() -> Error {
     Error::Unsupported("Lance writers observed different dataset versions".into())
 }
-pub(crate) fn schema_mismatch() -> Error {
-    Error::SchemaMismatch
-}
