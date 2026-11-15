@@ -539,3 +539,194 @@ async fn downloads_columns_concurrently_with_single_row_batches() {
         assert_eq!(values.value(0), expected);
     }
 }
+
+#[tokio::test]
+async fn opendal_preserves_signed_queries_and_escaped_paths() {
+    let (server, mut events) = gated_server().await;
+    let paths = [
+        "/images//a%2Fb%20c?X-Amz-Signature=a%2Fb%2B&x=1+2&x=3",
+        "/?token=a%2Fb",
+        "/trailing/?download=1",
+    ];
+    let urls = paths.map(|path| format!("{}{path}#ignored-fragment", server.url));
+    let input = batch(urls.iter().map(|url| Some(url.as_str())).collect());
+    let capture = Capture::default();
+    let mut writer = capture
+        .clone()
+        .layer(DownloadBlobLayer::new(
+            ["url".to_owned()].into_iter().collect(),
+        ))
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let write = tokio::spawn(async move {
+        writer.write(input).await.unwrap();
+        writer.commit().await.unwrap();
+    });
+    for _ in paths {
+        next_request(&mut events).await.send(()).unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = capture.0.lock().unwrap();
+    let values = state.batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .unwrap();
+    for (row, path) in paths.into_iter().enumerate() {
+        assert_eq!(values.value(row), path.as_bytes());
+    }
+}
+
+#[tokio::test]
+async fn opendal_timeout_on_body_releases_pool_capacity() {
+    use open_arrow_sink_layer::DownloadPool;
+    use opendal::layers::TimeoutLayer;
+
+    let (server, mut events) = gated_server().await;
+    let pool = Arc::new(
+        DownloadPool::new(NonZeroUsize::new(1).unwrap())
+            .unwrap()
+            .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_millis(100))),
+    );
+    let layer =
+        DownloadBlobLayer::new(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
+    let input = batch(vec![Some(&server.url)]);
+    let capture = Capture::default();
+    let mut writer = capture
+        .clone()
+        .layer(layer.clone())
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let mut write = Box::pin(writer.write(input.clone()));
+    let held_body = tokio::select! {
+        _ = &mut write => panic!("response body should still be pending"),
+        request = next_request(&mut events) => request,
+    };
+    let error = tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("timeout"), "{error}");
+    assert!(writer.commit().await.is_err());
+    assert!(capture.0.lock().unwrap().aborted);
+
+    let mut next_writer = Capture::default()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let mut write = Box::pin(next_writer.write(input));
+    let body = tokio::select! {
+        _ = &mut write => panic!("response body should still be pending"),
+        request = next_request(&mut events) => request,
+    };
+    body.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap();
+    next_writer.commit().await.unwrap();
+    drop(held_body);
+}
+
+#[tokio::test]
+async fn opendal_retries_transient_errors_only_when_configured() {
+    use open_arrow_sink_layer::DownloadPool;
+    use opendal::layers::{RetryLayer, TimeoutLayer};
+
+    for retry in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/blob?token=a%2Fb", listener.local_addr().unwrap());
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requests = attempts.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                assert!(request.starts_with(b"GET /blob?token=a%2Fb HTTP/1.1\r\n"));
+                let attempt = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = if attempt == 0 {
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                };
+                socket.write_all(response).await.unwrap();
+            }
+        });
+        let server = Server { url, task };
+        let mut pool = DownloadPool::new(NonZeroUsize::new(1).unwrap()).unwrap();
+        if retry {
+            pool = pool
+                .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_secs(1)))
+                .with_layer(
+                    RetryLayer::default()
+                        .with_min_delay(Duration::from_millis(1))
+                        .with_max_delay(Duration::from_millis(1))
+                        .with_max_times(1),
+                );
+        }
+        let capture = Capture::default();
+        let input = batch(vec![Some(&server.url)]);
+        let mut writer = capture
+            .clone()
+            .layer(
+                DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
+                    .with_download_pool(Arc::new(pool)),
+            )
+            .open((), input.schema(), WriteOptions::default())
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), writer.write(input))
+            .await
+            .unwrap();
+        assert_eq!(result.is_ok(), retry, "{result:?}");
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            if retry { 2 } else { 1 }
+        );
+        if retry {
+            writer.commit().await.unwrap();
+            let state = capture.0.lock().unwrap();
+            let values = state.batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .unwrap();
+            assert_eq!(values.value(0), b"ok");
+        } else {
+            assert!(writer.commit().await.is_err());
+            assert!(capture.0.lock().unwrap().aborted);
+        }
+    }
+}
+
+#[tokio::test]
+async fn opendal_error_response_bodies_obey_blob_limit() {
+    for response in [
+        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd".as_slice(),
+        b"HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n0\r\n\r\n",
+    ] {
+        let server = server(response, Duration::ZERO).await;
+        let input = batch(vec![Some(&server.url)]);
+        let capture = Capture::default();
+        let mut writer = capture.clone().layer(
+            DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
+                .with_max_blob_bytes(NonZeroUsize::new(3).unwrap()),
+        ).open((), input.schema(), WriteOptions::default()).await.unwrap();
+        let error = writer.write(input).await.unwrap_err();
+        assert!(error.to_string().contains("blob exceeds max_blob_bytes"), "{error}");
+        assert!(writer.commit().await.is_err());
+        assert!(capture.0.lock().unwrap().aborted);
+    }
+}

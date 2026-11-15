@@ -88,10 +88,10 @@ into Lance-owned storage. Other sinks receive ordinary `LargeBinary` values with
 the marker. Ordinary unmarked binary columns retain their existing behavior.
 
 Downloads run concurrently on the caller's Tokio runtime, following HTTP redirects,
-with no retries or request timeout. By default, all layers and writers share a
-process-wide `DownloadPool` with at most 16 active downloads and a shared HTTP
-client. The limit covers the entire response body. Output retains input row and
-column order even when downloads finish out of order. Defaults are a 16 MiB limit
+using OpenDAL's HTTP service. By default, no retries or timeout are configured;
+all layers and writers share a process-wide `DownloadPool` with at most 16 active
+downloads and a shared OpenDAL operator. The limit covers the entire response body,
+including any configured retries. Output retains input row and column order even when downloads finish out of order. Defaults are a 16 MiB limit
 per blob and at most 16 rows per forwarded batch. Configure these with
 `with_max_blob_bytes` and `with_rows_per_batch` (both take
 `NonZeroUsize`). The size limit is checked while reading, including responses
@@ -114,10 +114,30 @@ let layer = DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect(
 # }
 ```
 
-`DownloadPool::with_client` accepts a caller-configured `reqwest::Client` for
-custom TLS, proxy, or other HTTP settings. Pools use the caller's runtime without
-detached worker tasks. Cancelling a write drops its pending downloads and releases
-their permits; failures also cancel remaining downloads in the current chunk.
+Use `DownloadPool::with_layer` to apply OpenDAL layers consistently to every
+download in a pool. For example, opt into per-I/O timeouts and retries with:
+
+```rust,no_run
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use open_arrow_sink::layer::DownloadPool;
+use opendal::layers::{RetryLayer, TimeoutLayer};
+
+# fn example() -> open_arrow_sink::Result<()> {
+let pool = Arc::new(
+    DownloadPool::new(NonZeroUsize::new(8).unwrap())?
+        .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_secs(10)))
+        .with_layer(RetryLayer::default()),
+);
+# Ok(())
+# }
+```
+
+Add `TimeoutLayer` before `RetryLayer` so each attempt has an I/O deadline and
+cancellation does not interrupt the retry layer's state restoration. These are
+OpenDAL operation/I/O timeouts, rather than a total deadline across all retries.
+Source URL queries and escaped paths are preserved, including signed URLs.
+Pools use the caller's runtime without detached worker tasks. Cancelling a write
+drops its pending downloads and releases their permits; failures also cancel remaining downloads in the current chunk.
 
 A failed or cancelled write poisons the session: subsequent writes fail and
 `commit` aborts the inner writer. Earlier output chunks may already have been

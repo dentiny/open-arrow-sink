@@ -38,25 +38,12 @@ pub(crate) fn validate_download_config(
     Ok(indices)
 }
 
-pub(crate) fn validate_blob_url(url: &str) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(url).map_err(|_| failure("invalid blob URL"))?;
+pub(crate) fn validate_blob_url(url: &str) -> Result<url::Url> {
+    let url = url::Url::parse(url).map_err(|_| failure("invalid blob URL"))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(failure("blob URL must use HTTP or HTTPS"));
     }
     Ok(url)
-}
-
-pub(crate) fn validate_blob_response(response: &reqwest::Response, limit: usize) -> Result<()> {
-    if !response.status().is_success() {
-        return Err(failure(format!(
-            "unexpected HTTP status: {}",
-            response.status()
-        )));
-    }
-    if response.content_length().is_some_and(|n| n > limit as u64) {
-        return Err(failure("blob exceeds max_blob_bytes"));
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_blob_chunk(buffered: usize, chunk: usize, limit: usize) -> Result<()> {
