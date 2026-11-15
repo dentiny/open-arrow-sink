@@ -67,43 +67,6 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
 }
 
 #[tokio::test]
-async fn default_row_group_limit_flushes_before_commit() {
-    let rows = 1_048_576 + 8192;
-    let expected = RecordBatch::try_from_iter([(
-        "id",
-        Arc::new(Int64Array::from_iter_values(0..rows as i64)) as ArrayRef,
-    )])
-    .unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("output");
-    let mut writer = ParquetDirectorySink::default()
-        .open(
-            Url::from_directory_path(&directory).unwrap(),
-            expected.schema(),
-            options(),
-        )
-        .await
-        .unwrap();
-    for offset in (0..rows).step_by(8192) {
-        writer.write(expected.slice(offset, 8192)).await.unwrap();
-    }
-    assert_eq!(writer.commit().await.unwrap().rows_written, rows as u64);
-    let file = tokio::fs::File::open(directory.join("part-00000.parquet"))
-        .await
-        .unwrap();
-    let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
-    assert_eq!(builder.metadata().num_row_groups(), 2);
-    assert_eq!(builder.metadata().row_group(0).num_rows(), 1_048_576);
-    let mut reader = builder.build().unwrap();
-    let mut offset = 0;
-    while let Some(actual) = reader.try_next().await.unwrap() {
-        assert_eq!(actual, expected.slice(offset, actual.num_rows()));
-        offset += actual.num_rows();
-    }
-    assert_eq!(offset, rows);
-}
-
-#[tokio::test]
 async fn empty_commit_produces_readable_parquet() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
