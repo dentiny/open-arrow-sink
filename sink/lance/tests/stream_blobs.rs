@@ -120,3 +120,27 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
         }
     }
 }
+
+#[tokio::test]
+async fn appends_to_a_blob_dataset() {
+    let storage = storage();
+    let url = storage.url("existing/").unwrap();
+    let sink = LanceDatasetSink::new(storage);
+    for mode in [
+        open_arrow_sink_core::WriteMode::Create,
+        open_arrow_sink_core::WriteMode::Append,
+    ] {
+        let mut writer = sink
+            .open(
+                url.clone(),
+                input().schema(),
+                WriteOptions { mode, ..options() },
+            )
+            .await
+            .unwrap();
+        writer.write(input()).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 6);
+}

@@ -195,3 +195,25 @@ pub(crate) fn storage_batch(
     }
     Ok(output)
 }
+
+/// Lance persists logical blob fields, rather than the prepared descriptor shape.
+pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+                Arc::new(
+                    field.as_ref().clone().with_data_type(
+                        lance::blob::blob_field(field.name(), field.is_nullable())
+                            .data_type()
+                            .clone(),
+                    ),
+                )
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
