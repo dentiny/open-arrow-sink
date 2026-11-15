@@ -51,8 +51,7 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
-        validation::validate_compression(&schema, &options.compression)?;
+        validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         fs::create_dir(&directory).await.map_err(backend)?;
         let path = directory.join("part-00000.parquet");

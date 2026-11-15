@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{
-    CompressionCodec as Codec, CompressionOptions, Ordering, Sink, SinkExt, WriteOptions,
+    Compression as Codec, CompressionOptions, Ordering, Sink, SinkExt, WriteOptions,
 };
 use open_arrow_sink_layer::CompressionLayer;
 use open_arrow_sink_parquet::ParquetDirectorySink;
@@ -31,7 +31,7 @@ fn batch() -> RecordBatch {
 #[case(Codec::Uncompressed, Compression::UNCOMPRESSED)]
 #[case(Codec::Snappy, Compression::SNAPPY)]
 #[case(Codec::Gzip, Compression::GZIP(Default::default()))]
-#[case(Codec::Zstd, Compression::ZSTD(Default::default()))]
+#[case(Codec::Zstd { level: None }, Compression::ZSTD(Default::default()))]
 #[case(Codec::Lz4Raw, Compression::LZ4_RAW)]
 #[tokio::test]
 async fn compression_survives_rolling_and_round_trips(

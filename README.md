@@ -45,12 +45,19 @@ the last installed layer is outermost.
 
 `WriteOptions.compression` selects a global default and/or per-column overrides.
 Empty `CompressionOptions::default()` preserves backend defaults; explicit
-`CompressionCodec::Uncompressed` disables compression. Column overrides take
-precedence over the global codec. Codecs use their default compression levels.
+`Compression::Uncompressed` disables compression. Column overrides take
+precedence over the entire global compression setting, including its level.
+`Compression::Zstd { level: Some(9) }` selects an explicit Zstandard level;
+`level: None` preserves the backend's default level. Other codecs use their
+backend defaults. Levels use `i32` so backends that support negative Zstandard
+levels can expose them. Each backend validates its supported level range before
+destination I/O and must reject unsupported values without silently clamping or
+ignoring them.
 
 `SinkCapability.compression` advertises supported codecs independently through
 `CompressionCapability.global` and `.per_column`; an empty slice means that
-scope is unsupported. The shared validator rejects unsupported scopes and codecs
+scope is unsupported. Capabilities use `CompressionCodec` identifiers, independent
+of the requested level. The shared validator rejects unsupported scopes and codecs
 before destination I/O, including requests to disable compression.
 
 Backend support is declared by each sink; consult its README before selecting
@@ -58,11 +65,11 @@ a scope or codec. The shared interface does not promise that every sink supports
 every codec.
 
 ```rust,ignore
-use open_arrow_sink::{CompressionCodec, CompressionOptions, SinkExt, layer::CompressionLayer};
+use open_arrow_sink::{Compression, CompressionOptions, SinkExt, layer::CompressionLayer};
 
 let sink = backend.layer(CompressionLayer::new(CompressionOptions {
-    global: Some(CompressionCodec::Zstd),
-    columns: [("embedding".into(), CompressionCodec::Uncompressed)].into(),
+    global: Some(Compression::Zstd { level: Some(9) }),
+    columns: [("embedding".into(), Compression::Uncompressed)].into(),
 }));
 ```
 
@@ -165,9 +172,9 @@ reusing them across sessions.
 
 Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
-- `open` calls `validation::validate_options` before side effects, including the
-  index and compression capability checks. Call `validation::validate_compression`
-  against the input schema before destination I/O. Index-capable backends call `validation::validate_indexes`
+- `open` calls `validation::validate_options(&schema, &options, capability)` before
+  side effects, including index and compression capability checks and compression
+  column-name validation. Index-capable backends call `validation::validate_indexes`
   and check their supported column types before destination I/O, then check
   backend-specific destination constraints.
 - `write` calls `validation::validate_batch` against the fixed session schema.
