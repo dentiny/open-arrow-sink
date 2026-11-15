@@ -45,6 +45,10 @@ impl Sink for LanceDatasetSink {
             compression: CompressionCapability {
                 global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
                 per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
+                structural_encodings: &[
+                    open_arrow_sink_core::StructuralEncoding::Miniblock,
+                    open_arrow_sink_core::StructuralEncoding::Fullzip,
+                ],
             },
             supported_partitions: vec![],
             supports_blob_handle: true,
