@@ -17,10 +17,11 @@ use open_arrow_sink_core::{
 };
 
 use crate::{
+    committer::IcebergCommitter,
     error::backend,
     partition::PartitionWriterAdapter,
     validation::{validate_options, validate_table},
-    writer::{IcebergCommitter, IcebergTableWriter},
+    writer::IcebergTableWriter,
 };
 
 /// Uses a caller-configured catalog; the table must already exist.
