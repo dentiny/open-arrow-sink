@@ -10,6 +10,7 @@ The library includes shared contracts, ordering, compression, and unordered writ
 ```text
 core/       Sink, Writer, DataWriter, WriteSession, SessionCommitter, shared options
 layer/      OrderingLayer, CompressionLayer, UnorderedWriteLayer
+storage/    Shared OpenDAL byte I/O, URL namespaces, and storage policies
 src/        Public facade
 ```
 

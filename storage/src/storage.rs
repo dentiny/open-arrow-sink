@@ -1,0 +1,297 @@
+use std::{io, ops::Range};
+
+use bytes::Bytes;
+use futures::TryStreamExt;
+use open_arrow_sink_core::{Error, Result};
+use opendal::{ErrorKind, Operator};
+use percent_encoding::percent_decode_str;
+use url::{Position, Url};
+
+pub(crate) fn invalid(message: &str) -> Error {
+    Error::Backend(Box::new(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        message.to_owned(),
+    )))
+}
+fn backend(error: opendal::Error) -> Error {
+    Error::Backend(Box::new(error))
+}
+
+/// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
+/// The operator's root must correspond exactly to `base_url`.
+#[derive(Clone, Debug)]
+pub struct Storage {
+    operator: Operator,
+    base_url: Url,
+}
+
+impl Storage {
+    pub fn new(operator: Operator, mut base_url: Url) -> Result<Self> {
+        validate_url(&base_url)?;
+        if !base_url.path().ends_with('/') {
+            let path = format!("{}/", base_url.path());
+            base_url.set_path(&path);
+        }
+        decoded_path(&base_url)?;
+        Ok(Self { operator, base_url })
+    }
+
+    /// Resolve a URL using enabled OpenDAL services. For custom credentials,
+    /// endpoints, or shared memory stores, pass a configured operator to `new`.
+    /// Backend features are additive; no cloud services are enabled by default.
+    pub fn from_url(url: &Url) -> Result<Self> {
+        validate_url(url)?;
+        let mut base = url.clone();
+        base.set_path("/");
+        let operator = if url.scheme() == "file" {
+            if url.to_file_path().is_err() {
+                return Err(invalid("invalid file URL"));
+            }
+            Operator::new(opendal::services::Fs::default().root("/")).map_err(backend)?
+        } else {
+            Operator::from_uri(base.as_str()).map_err(backend)?
+        };
+        Self::new(operator, base)
+    }
+
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+    pub fn operator(&self) -> &Operator {
+        &self.operator
+    }
+
+    /// Decode a URL to an operator-relative path, rejecting paths outside its root.
+    pub fn path(&self, url: &Url) -> Result<String> {
+        validate_url(url)?;
+        if url[..Position::BeforePath] != self.base_url[..Position::BeforePath] {
+            return Err(invalid("URL does not belong to this storage endpoint"));
+        }
+        let path = decoded_path(url)?;
+        let base = decoded_path(&self.base_url)?;
+        if path.trim_end_matches('/') == base.trim_end_matches('/') {
+            return Ok(String::new());
+        }
+        path.strip_prefix(&base)
+            .map(str::to_owned)
+            .ok_or_else(|| invalid("URL is outside the storage root"))
+    }
+
+    pub fn url(&self, path: &str) -> Result<Url> {
+        validate_path(path)?;
+        let mut url = self.base_url.clone();
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| invalid("URL cannot contain paths"))?;
+            segments.pop_if_empty();
+            for segment in path
+                .trim_end_matches('/')
+                .split('/')
+                .filter(|s| !s.is_empty())
+            {
+                segments.push(segment);
+            }
+            if path.ends_with('/') {
+                segments.push("");
+            }
+        }
+        Ok(url)
+    }
+
+    pub async fn exists(&self, url: &Url) -> Result<bool> {
+        self.operator
+            .exists(&self.path(url)?)
+            .await
+            .map_err(backend)
+    }
+    pub async fn stat(&self, url: &Url) -> Result<opendal::Metadata> {
+        self.operator.stat(&self.path(url)?).await.map_err(backend)
+    }
+    pub async fn read(&self, url: &Url) -> Result<Bytes> {
+        self.operator
+            .read(&self.path(url)?)
+            .await
+            .map(|buffer| buffer.to_bytes())
+            .map_err(backend)
+    }
+    pub async fn read_range(&self, url: &Url, range: Range<u64>) -> Result<Bytes> {
+        if range.start > range.end {
+            return Err(invalid("invalid read range"));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+        self.operator
+            .read_with(&self.path(url)?)
+            .range(range)
+            .await
+            .map(|buffer| buffer.to_bytes())
+            .map_err(backend)
+    }
+    pub async fn write(&self, url: &Url, bytes: Bytes) -> Result<()> {
+        self.operator
+            .write(&self.nonroot_path(url)?, bytes)
+            .await
+            .map(|_| ())
+            .map_err(backend)
+    }
+    /// Atomic conditional creation. Unsupported backends fail instead of overwriting.
+    pub async fn create(&self, url: &Url, bytes: Bytes) -> Result<()> {
+        self.operator
+            .write_with(&self.nonroot_path(url)?, bytes)
+            .if_not_exists(true)
+            .await
+            .map(|_| ())
+            .map_err(backend)
+    }
+    pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
+        let writer = self
+            .operator
+            .writer_with(&self.nonroot_path(url)?)
+            .chunk(5 * 1024 * 1024)
+            .concurrent(1)
+            .await
+            .map_err(backend)?;
+        Ok(StorageWriter {
+            inner: Some(writer),
+            bytes_written: 0,
+            active: true,
+        })
+    }
+    pub async fn list(&self, url: &Url) -> Result<Vec<Url>> {
+        let path = directory_path(&self.path(url)?);
+        let mut entries = self
+            .operator
+            .lister_with(&path)
+            .recursive(true)
+            .await
+            .map_err(backend)?;
+        let mut urls = Vec::new();
+        while let Some(entry) = entries.try_next().await.map_err(backend)? {
+            if entry.metadata().is_file() {
+                urls.push(self.url(entry.path())?);
+            }
+        }
+        Ok(urls)
+    }
+    pub async fn delete(&self, url: &Url) -> Result<()> {
+        match self.operator.delete(&self.nonroot_path(url)?).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(backend(error)),
+        }
+    }
+    /// Remove a session-owned namespace. The caller must own every object beneath it.
+    /// Refuse to remove an entire operator root.
+    pub async fn remove_all(&self, url: &Url) -> Result<()> {
+        self.operator
+            .delete_with(&directory_path(&self.nonroot_path(url)?))
+            .recursive(true)
+            .await
+            .map_err(backend)
+    }
+    /// Delete a directory only when it is empty. Never recursively remove its contents.
+    pub async fn remove_empty_directory(&self, url: &Url) -> Result<()> {
+        if !self.list(url).await?.is_empty() {
+            return Ok(());
+        }
+        self.operator
+            .delete(&directory_path(&self.nonroot_path(url)?))
+            .await
+            .map_err(backend)
+    }
+    fn nonroot_path(&self, url: &Url) -> Result<String> {
+        let path = self.path(url)?;
+        if path.is_empty() {
+            return Err(invalid("operation requires a nonempty path"));
+        }
+        Ok(path)
+    }
+}
+
+fn directory_path(path: &str) -> String {
+    if path.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", path.trim_end_matches('/'))
+    }
+}
+fn validate_url(url: &Url) -> Result<()> {
+    if url.cannot_be_a_base()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(invalid(
+            "storage URLs must be hierarchical and contain no query, fragment, or credentials",
+        ));
+    }
+    Ok(())
+}
+fn decoded_path(url: &Url) -> Result<String> {
+    let decoded = percent_decode_str(url.path())
+        .decode_utf8()
+        .map_err(|_| invalid("URL path must be UTF-8"))?
+        .into_owned();
+    validate_path(decoded.trim_start_matches('/'))?;
+    Ok(decoded)
+}
+fn validate_path(path: &str) -> Result<()> {
+    if path.contains(['\\', '\0'])
+        || path
+            .trim_end_matches('/')
+            .split('/')
+            .any(|part| part == "." || part == "..")
+    {
+        return Err(invalid("invalid storage path"));
+    }
+    Ok(())
+}
+
+/// A streaming byte writer with explicit close/abort and terminal failure semantics.
+/// Drop never commits or performs async cleanup.
+pub struct StorageWriter {
+    inner: Option<opendal::Writer>,
+    bytes_written: u64,
+    active: bool,
+}
+impl StorageWriter {
+    pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
+        if !self.active {
+            return Err(invalid("writer is no longer active"));
+        }
+        self.active = false;
+        self.inner
+            .as_mut()
+            .ok_or_else(|| invalid("writer is closed"))?
+            .write(bytes.clone())
+            .await
+            .map_err(backend)?;
+        self.bytes_written += bytes.len() as u64;
+        self.active = true;
+        Ok(())
+    }
+    pub async fn close(&mut self) -> Result<u64> {
+        if !self.active {
+            return Err(invalid("writer is no longer active"));
+        }
+        self.active = false;
+        self.inner
+            .as_mut()
+            .ok_or_else(|| invalid("writer is closed"))?
+            .close()
+            .await
+            .map_err(backend)?;
+        self.inner = None;
+        Ok(self.bytes_written)
+    }
+    pub async fn abort(&mut self) -> Result<()> {
+        self.active = false;
+        if let Some(mut writer) = self.inner.take() {
+            writer.abort().await.map_err(backend)?;
+        }
+        Ok(())
+    }
+}

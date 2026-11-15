@@ -1,0 +1,31 @@
+[package]
+name = "open-arrow-sink-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared OpenDAL storage for Arrow sinks"
+
+[features]
+default = []
+aws = ["opendal/services-s3", "opendal/http-transport-reqwest"]
+gcp = ["opendal/services-gcs", "opendal/http-transport-reqwest"]
+azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
+
+[dependencies]
+bytes = "1"
+futures.workspace = true
+open-arrow-sink-core.workspace = true
+opendal = { version = "0.59.2", default-features = false, features = [
+  "auto-register-services",
+  "services-fs",
+  "executors-tokio",
+  "layers-retry",
+  "layers-timeout",
+] }
+percent-encoding = "2"
+url = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

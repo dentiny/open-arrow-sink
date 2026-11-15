@@ -9,3 +9,5 @@ pub use open_arrow_sink_iceberg as iceberg;
 pub use open_arrow_sink_lance as lance;
 #[cfg(feature = "sink-parquet")]
 pub use open_arrow_sink_parquet as parquet;
+
+pub use open_arrow_sink_storage as storage;
