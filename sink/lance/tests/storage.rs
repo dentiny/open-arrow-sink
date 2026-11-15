@@ -79,34 +79,35 @@ async fn shared_operator_commit_indexes_and_read_back() {
     );
 }
 
+#[rstest::rstest]
+#[case::cleanup(true)]
+#[case::keep(false)]
 #[tokio::test]
-async fn shared_operator_abort_honors_cleanup() {
-    for cleanup_on_error in [true, false] {
-        let storage = storage();
-        let sink = LanceDatasetSink::new(storage.clone())
-            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
-        let url = storage.url("aborted/").unwrap();
-        let mut writer = sink
-            .open(
-                url.clone(),
-                batch().schema(),
-                WriteOptions {
-                    cleanup_on_error,
-                    ..write_options()
-                },
-            )
-            .await
-            .unwrap();
-        writer.write(batch()).await.unwrap();
-        let sibling = storage.url("keep").unwrap();
-        storage.write(&sibling, "keep".into()).await.unwrap();
-        writer.abort().await.unwrap();
-        assert_eq!(
-            storage.list(&url).await.unwrap().is_empty(),
-            cleanup_on_error
-        );
-        assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
-    }
+async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone())
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
+    let url = storage.url("aborted/").unwrap();
+    let mut writer = sink
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                cleanup_on_error,
+                ..write_options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    let sibling = storage.url("keep").unwrap();
+    storage.write(&sibling, "keep".into()).await.unwrap();
+    writer.abort().await.unwrap();
+    assert_eq!(
+        storage.list(&url).await.unwrap().is_empty(),
+        cleanup_on_error
+    );
+    assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
 }
 
 #[tokio::test]

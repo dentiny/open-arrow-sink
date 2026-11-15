@@ -4196,6 +4196,7 @@ dependencies = [
  "futures",
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
+ "rstest",
  "tokio",
 ]
 
@@ -4228,6 +4229,7 @@ dependencies = [
  "open-arrow-sink-core",
  "opendal",
  "percent-encoding",
+ "rstest",
  "tempfile",
  "tokio",
  "url",

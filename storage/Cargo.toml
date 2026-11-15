@@ -33,4 +33,5 @@ url = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
+rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
