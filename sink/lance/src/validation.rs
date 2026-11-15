@@ -1,7 +1,8 @@
 //! Configuration validation before destination creation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, validation,
+    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -18,8 +19,10 @@ pub(crate) fn validate_options(
         .iter()
         .chain(options.compression.columns.values())
     {
+        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
         if let Compression::Zstd { level: Some(level) } = compression
-            && !(0..=22).contains(level)
+            && *level != 0
+            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
         {
             return Err(error::invalid_compression_level(*level));
         }
