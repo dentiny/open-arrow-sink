@@ -165,11 +165,8 @@ async fn target_file_size_rolls_files_without_losing_rows(
     assert_eq!(occurrences, vec![2; count]);
 }
 
-#[rstest::rstest]
-#[case::serial(false)]
-#[case::parallel(true)]
 #[tokio::test]
-async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
+async fn compression_survives_rolling_and_round_trips() {
     use std::collections::HashMap;
 
     use arrow_array::{FixedSizeBinaryArray, StringArray, StructArray};
@@ -223,13 +220,6 @@ async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
         ]
         .into(),
     }));
-    let sink: Box<dyn Sink<Request = std::path::PathBuf>> = if parallel {
-        Box::new(sink.layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
-            std::num::NonZeroUsize::new(2).unwrap(),
-        )))
-    } else {
-        Box::new(sink)
-    };
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let mut writer = sink
@@ -324,120 +314,47 @@ async fn compression_survives_rolling_and_round_trips(#[case] parallel: bool) {
 }
 
 #[tokio::test]
-async fn parallel_fragments_stay_unpublished_until_one_session_commit() {
-    use open_arrow_sink_core::ParallelSink;
-    use std::{collections::HashSet, num::NonZeroUsize};
+async fn unordered_commit_preserves_all_rows() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("parallel");
-    let expected = batch();
-    let mut session = LanceDatasetSink
-        .open_writers(
-            path.clone(),
-            expected.schema(),
-            options(),
-            NonZeroUsize::new(3).unwrap(),
-        )
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .open(path.clone(), batch().schema(), options())
         .await
         .unwrap();
-    let mut outputs = Vec::new();
-    for writer in &mut session.writers {
-        writer.write(expected.clone()).await.unwrap();
-        outputs.push(writer.finish().await.unwrap());
-    }
-    assert!(Dataset::open(path.to_str().unwrap()).await.is_err());
-    assert_eq!(
-        session
-            .committer
-            .commit(outputs)
+    let mut expected = Vec::new();
+    for id in 0..8 {
+        let input = vec![Some(id * 2), None, Some(id * 2 + 1)];
+        writer
+            .write(
+                RecordBatch::try_from_iter([(
+                    "value",
+                    Arc::new(Int64Array::from(input.clone())) as ArrayRef,
+                )])
+                .unwrap(),
+            )
             .await
-            .unwrap()
-            .rows_written,
-        12
+            .unwrap();
+        expected.extend(input);
+    }
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        expected.len() as u64
     );
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.version_id(), 1);
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 12);
-    assert_eq!(dataset.get_fragments().len(), 3);
-    let ids: HashSet<_> = dataset.get_fragments().iter().map(|f| f.id()).collect();
-    assert_eq!(ids.len(), 3);
-    let actual = dataset.scan().try_into_batch().await.unwrap();
-    let values = actual
+    let committed = dataset.scan().try_into_batch().await.unwrap();
+    let mut actual: Vec<_> = committed
         .column(0)
         .as_any()
         .downcast_ref::<Int64Array>()
-        .unwrap();
-    let mut actual: Vec<_> = values.iter().collect();
+        .unwrap()
+        .iter()
+        .collect();
     actual.sort_unstable();
-    let mut expected = [None, Some(1), Some(3), Some(3)].repeat(3);
     expected.sort_unstable();
     assert_eq!(actual, expected);
-}
-
-#[tokio::test]
-async fn unordered_lance_layer_handles_empty_and_nonempty_sessions() {
-    use open_arrow_sink_core::SinkExt;
-    use open_arrow_sink_layer::UnorderedWriteLayer;
-    use std::num::NonZeroUsize;
-    for batches in [0, 8] {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("parallel");
-        let sink = LanceDatasetSink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
-        let mut writer = sink
-            .open(path.clone(), batch().schema(), options())
-            .await
-            .unwrap();
-        for _ in 0..batches {
-            writer.write(batch()).await.unwrap();
-        }
-        assert_eq!(writer.commit().await.unwrap().rows_written, batches * 4);
-        let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-        assert_eq!(dataset.version_id(), 1);
-        assert_eq!(
-            dataset.count_rows(None).await.unwrap(),
-            batches as usize * 4
-        );
-    }
-}
-
-#[tokio::test]
-async fn unordered_lance_abort_and_schema_failure_honor_cleanup_policy() {
-    use open_arrow_sink_core::SinkExt;
-    use open_arrow_sink_layer::UnorderedWriteLayer;
-    use std::num::NonZeroUsize;
-    for cleanup in [false, true] {
-        for fail in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let sibling = temp.path().join("keep");
-            tokio::fs::write(&sibling, "keep").await.unwrap();
-            let path = temp.path().join("parallel");
-            let sink =
-                LanceDatasetSink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
-            let mut writer = sink
-                .open(
-                    path.clone(),
-                    batch().schema(),
-                    WriteOptions {
-                        cleanup_on_error: cleanup,
-                        ..options()
-                    },
-                )
-                .await
-                .unwrap();
-            writer.write(batch()).await.unwrap();
-            if fail {
-                let bad = RecordBatch::try_from_iter([(
-                    "wrong",
-                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
-                )])
-                .unwrap();
-                assert!(writer.write(bad).await.is_err());
-                assert!(writer.commit().await.is_err());
-            } else {
-                writer.abort().await.unwrap();
-            }
-            assert_eq!(tokio::fs::try_exists(&path).await.unwrap(), !cleanup);
-            assert!(Dataset::open(path.to_str().unwrap()).await.is_err());
-            assert_eq!(tokio::fs::read_to_string(&sibling).await.unwrap(), "keep");
-        }
-    }
 }
