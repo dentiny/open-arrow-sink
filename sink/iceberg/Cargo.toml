@@ -8,17 +8,17 @@ description = "Minimal append-only Iceberg table sink"
 
 [dependencies]
 open-arrow-sink-storage.workspace = true
-bytes = "1"
+bytes.workspace = true
 futures.workspace = true
-serde = "1"
-typetag = "0.2"
+serde.workspace = true
+typetag.workspace = true
 open-arrow-sink-core.workspace = true
-iceberg = "0.11"
-uuid = { version = "1", features = ["v4"] }
+iceberg.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 parquet = { workspace = true, features = ["arrow"] }
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 arrow-array.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
