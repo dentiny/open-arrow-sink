@@ -4172,7 +4172,6 @@ name = "open-arrow-sink-lance"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-cast",
  "arrow-schema",
  "bytes",
  "futures",

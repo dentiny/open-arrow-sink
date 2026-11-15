@@ -291,29 +291,3 @@ the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 [Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
 [Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
 [Extend a sink](../../docs/extending-sinks.md)
-
-## Optional ATIF metadata storage adaptation
-
-Compose `LanceDatasetSink::default().layer(AtifStorageLayer)` using
-`open_arrow_sink_lance::AtifStorageLayer` (or the facade's `lance` module).
-The layer reads existing Arrow field metadata:
-
-- `lance_conversion:source_type = atif`
-- `lance_conversion:storage_policy = text` or `blob`
-
-It recursively crosses structs, lists, large lists, and fixed-size lists.
-Marked Binary/LargeBinary/BinaryView media become native logical Blob V2 fields;
-marked text remains ordinary LargeBinary with Zstd as its default compression.
-Existing text compression metadata is retained and explicit writer compression
-options still override it. Unlike the older converter's LZ4 request, this default
-uses a codec consistently supported by this sink. Unmarked binary fields keep
-their original storage. Unknown policies or unsupported marked types fail before
-opening a destination. Field/schema metadata, nulls, offsets, and row boundaries
-are preserved; native blob thresholds apply to nested marked media too.
-
-This is opt-in: the ordinary Lance sink never interprets ATIF metadata. The
-layer accepts already materialized binary payloads; upstream readers own document
-parsing and media fetching. Its caller-facing schema stays unchanged, while the
-inner sink sees native logical blob fields. It supports parallel sessions and
-Append with matching effective schemas. It does not expose create_blob or
-write_with_blobs; place streaming download logic in a separate compatible path.
