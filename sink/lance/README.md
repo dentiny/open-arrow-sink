@@ -217,6 +217,7 @@ Requests are `Url` values. Convert local paths with
 endpoints, or shared memory, pass a configured `Storage`:
 
 ```rust,ignore
+use open_arrow_sink_core::Sink;
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_storage::opendal;
 
@@ -272,6 +273,12 @@ owns handles, placements, and cleanup.
 
 Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
 sink to control the native data-file and sidecar multipart upload buffers, as
-well as streamed blob uploads through the shared storage writer. A 16 MiB part
-size matches the conversion service's default. Conditional manifest writes retain
+well as streamed blob uploads through the shared storage writer. For example, select a 16 MiB part
+size to tune buffering for your workload. Conditional manifest writes retain
 the ordinary OpenDAL adapter; multipart parts preserve their submission order.
+
+## Related documentation
+
+[Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
+[Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
+[Extend a sink](../../docs/extending-sinks.md)

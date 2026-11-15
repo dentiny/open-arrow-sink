@@ -1,9 +1,9 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and, with default features, writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
-one file per session. Missing parents are created; an existing target
-is rejected, including an empty local directory. Enable facade feature `sink-parquet`
+one file per session. Missing parents are created. The default Create mode
+rejects an existing target, including an empty local directory. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
 
 
@@ -14,6 +14,7 @@ crate. Use `ParquetDirectorySink::default()` for URL-resolved storage, or
 `ParquetDirectorySink::new(storage)` to share a configured OpenDAL operator:
 
 ```rust,ignore
+use open_arrow_sink_core::Sink;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage, Url};
 use open_arrow_sink_storage::opendal;
 
@@ -71,7 +72,7 @@ Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
 failure aborts every writer according to the cleanup policy. Files remain visible
-before commit; there is no atomic directory transaction. See the root README for
+before commit; there is no atomic directory transaction. See the [layer guide](../../layer/README.md) for
 buffering, cancellation, partial commit, and layer composition semantics.
 
 ```sh
@@ -120,7 +121,13 @@ These modes work through the shared filesystem or remote operator.
 Overwrite is staged on filesystem backends: old output stays visible until commit,
 then the directory is replaced via backup/rename with restoration on failure.
 The implementation uses OpenDAL for directory renames and cleanup; a local-only
-`symlink_metadata` validation preserves main's rejection of symlink targets because
+`symlink_metadata` validation rejects symlink targets because
 OpenDAL stat follows links. Other backends reject Overwrite before creating output;
 object-store prefix swaps do not provide the directory-rename semantics used here.
 External writers must not modify a destination during a session.
+
+## Related documentation
+
+[Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
+[Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
+[Extend a sink](../../docs/extending-sinks.md)

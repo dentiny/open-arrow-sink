@@ -180,3 +180,9 @@ existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes
 fast append but no public full-overwrite transaction, and `TableIdent` does not
 carry table creation settings. This sink never drops/recreates a table to emulate
 overwrite. Callers can inspect capabilities to choose an appropriate sink or mode.
+
+## Related documentation
+
+[Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
+[Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
+[Extend a sink](../../docs/extending-sinks.md)
