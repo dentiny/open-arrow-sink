@@ -66,14 +66,7 @@ impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
         writers: NonZeroUsize,
     ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
         options.ordering = self.ordering;
-        validation::validate_options(
-            &schema,
-            &options,
-            SinkCapability {
-                ordering: Ordering::Unordered,
-                ..self.inner.capability()
-            },
-        )?;
+        validation::validate_options(&schema, &options, self.inner.capability())?;
         self.inner
             .open_writers(request, schema, options, writers)
             .await
