@@ -1,10 +1,9 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use tokio::fs;
 
-use crate::error::backend;
+use crate::{error::backend, validation};
 
 /// Overwrite stages a complete directory; append owns only its unique files.
 /// Callers must exclude other writes or directory replacement for the session lifetime.
@@ -35,18 +34,7 @@ impl Destination {
                 })
             }
             WriteMode::Append => {
-                let mut entries = fs::read_dir(&path).await.map_err(backend)?;
-                while let Some(entry) = entries.next_entry().await.map_err(backend)? {
-                    if entry.path().extension().is_some_and(|ext| ext == "parquet") {
-                        let file = fs::File::open(entry.path()).await.map_err(backend)?;
-                        let reader = ParquetRecordBatchStreamBuilder::new(file)
-                            .await
-                            .map_err(backend)?;
-                        if reader.schema() != schema {
-                            return Err(open_arrow_sink_core::Error::SchemaMismatch);
-                        }
-                    }
-                }
+                validation::validate_append_directory(&path, schema).await?;
                 Ok(Self {
                     directory: path,
                     prefix: format!("part-{}-", uuid::Uuid::new_v4()),
@@ -56,16 +44,7 @@ impl Destination {
                 })
             }
             WriteMode::Overwrite => {
-                match fs::symlink_metadata(&path).await {
-                    Ok(metadata) if !metadata.is_dir() => {
-                        return Err(backend(io::Error::other(
-                            "destination must be a directory, not a file or symlink",
-                        )));
-                    }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(backend(error)),
-                }
+                validation::validate_overwrite_directory(&path).await?;
                 let directory =
                     path.with_file_name(format!(".open-arrow-sink-{}", uuid::Uuid::new_v4()));
                 fs::create_dir(&directory).await.map_err(backend)?;

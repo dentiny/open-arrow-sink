@@ -7,10 +7,7 @@ use open_arrow_sink_core::{
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use tokio::fs::{self, File, OpenOptions};
 
-use crate::{
-    destination::Destination,
-    error::{backend, closed},
-};
+use crate::{destination::Destination, error::backend, validation::validate_writer_state};
 
 pub(crate) struct ParquetDirectoryWriter {
     pub(crate) destination: Arc<Destination>,
@@ -32,7 +29,7 @@ impl Writer for ParquetDirectoryWriter {
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         // Taking ownership also makes a failed or cancelled write terminal.
-        let mut writer = self.writer.take().ok_or_else(closed)?;
+        let mut writer = validate_writer_state(self.writer.take())?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.should_roll_file(&writer, batch.num_rows()) {
             writer.close().await.map_err(backend)?;
@@ -56,9 +53,12 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        let Some(writer) = self.writer.take() else {
-            let _ = self.cleanup().await;
-            return Err(closed());
+        let writer = match validate_writer_state(self.writer.take()) {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = self.cleanup().await;
+                return Err(error);
+            }
         };
         if let Err(error) = writer.close().await {
             let _ = self.cleanup().await;
@@ -156,7 +156,7 @@ impl DataWriter for ParquetDirectoryWriter {
         Writer::write(self, batch).await
     }
     async fn finish(&mut self) -> Result<u64> {
-        let writer = self.writer.take().ok_or_else(closed)?;
+        let writer = validate_writer_state(self.writer.take())?;
         writer.close().await.map_err(backend)?;
         Ok(self.rows_written)
     }
