@@ -78,7 +78,7 @@ impl Storage {
         exact.path_segments_mut().unwrap().pop_if_empty();
         Ok(self.exists(&exact).await?
             || self.exists(&directory).await?
-            || !self.list(&directory).await?.is_empty())
+            || self.has_files(&directory).await?)
     }
 
     /// Apply optional retry/timeout policies to the supplied OpenDAL operator.
@@ -136,6 +136,15 @@ impl Storage {
             .exists(&path)
             .await
             .map_err(|error| map_error("exists", &path, error))
+    }
+    /// Read metadata once, returning `None` only when the object is not found.
+    pub async fn stat_optional(&self, url: &Url) -> Result<Option<opendal::Metadata>> {
+        let path = self.path(url)?;
+        match self.operator().stat(&path).await {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(error) if error.kind() == opendal::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(map_error("stat", &path, error)),
+        }
     }
     pub async fn stat(&self, url: &Url) -> Result<opendal::Metadata> {
         let path = self.path(url)?;
@@ -202,12 +211,7 @@ impl Storage {
     }
     pub async fn list(&self, url: &Url) -> Result<Vec<Url>> {
         let path = directory_path(&self.path(url)?);
-        let mut entries = self
-            .operator()
-            .lister_with(&path)
-            .recursive(true)
-            .await
-            .map_err(|error| map_error("list", &path, error))?;
+        let mut entries = self.lister(&path).await?;
         let mut urls = Vec::new();
         while let Some(entry) = entries
             .try_next()
@@ -236,7 +240,7 @@ impl Storage {
     }
     /// Delete a directory only when it is empty. Never recursively remove its contents.
     pub async fn remove_empty_directory(&self, url: &Url) -> Result<()> {
-        if !self.list(url).await?.is_empty() {
+        if self.has_files(url).await? {
             return Ok(());
         }
         let path = directory_path(&self.nonroot_path(url)?);
@@ -244,6 +248,21 @@ impl Storage {
             .delete(&path)
             .await
             .map_err(|error| map_error("delete", &path, error))
+    }
+    async fn lister(&self, path: &str) -> Result<opendal::Lister> {
+        self.operator()
+            .lister_with(path)
+            .recursive(true)
+            .await
+            .map_err(|error| map_error("list", path, error))
+    }
+    async fn has_files(&self, url: &Url) -> Result<bool> {
+        let path = directory_path(&self.path(url)?);
+        self.lister(&path)
+            .await?
+            .try_any(|entry| futures::future::ready(entry.metadata().is_file()))
+            .await
+            .map_err(|error| map_error("list", &path, error))
     }
     fn nonroot_path(&self, url: &Url) -> Result<String> {
         let path = self.path(url)?;
