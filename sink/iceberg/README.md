@@ -105,3 +105,10 @@ rows, and reads them through the Iceberg scanner.
 This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
 `WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
 or accessing the destination. The default empty list keeps existing behavior.
+
+## Compression
+
+Supports global data-file compression through `WriteOptions.compression` or
+`CompressionLayer`: Uncompressed, Snappy, Gzip, Zstd, Lz4Raw. Overrides apply only
+to this session, retaining other table writer settings. Column overrides are
+unsupported and rejected before catalog access. Empty options retain table defaults.

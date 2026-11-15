@@ -698,3 +698,94 @@ async fn assert_numeric_partition_round_trip(
         );
     }
 }
+
+#[rstest::rstest]
+#[case(
+    open_arrow_sink_core::CompressionCodec::Uncompressed,
+    parquet::basic::Compression::UNCOMPRESSED
+)]
+#[case(
+    open_arrow_sink_core::CompressionCodec::Snappy,
+    parquet::basic::Compression::SNAPPY
+)]
+#[case(
+    open_arrow_sink_core::CompressionCodec::Gzip,
+    parquet::basic::Compression::GZIP(Default::default())
+)]
+#[case(
+    open_arrow_sink_core::CompressionCodec::Zstd,
+    parquet::basic::Compression::ZSTD(Default::default())
+)]
+#[case(
+    open_arrow_sink_core::CompressionCodec::Lz4Raw,
+    parquet::basic::Compression::LZ4_RAW
+)]
+#[tokio::test]
+async fn session_compression_overrides_data_files_without_changing_table(
+    #[case] codec: open_arrow_sink_core::CompressionCodec,
+    #[case] expected: parquet::basic::Compression,
+) {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let (catalog, identifier, schema) = table().await;
+    let before = catalog.load_table(&identifier).await.unwrap();
+    let sink = IcebergTableSink::new(catalog.clone());
+    let mut options = options();
+    options.compression.global = Some(codec);
+    options.target_file_size = Some(1);
+    let mut writer = sink
+        .open(identifier.clone(), schema.clone(), options)
+        .await
+        .unwrap();
+    writer.write(batch(schema.clone())).await.unwrap();
+    writer.write(batch(schema)).await.unwrap();
+    writer.commit().await.unwrap();
+    let table = catalog.load_table(&identifier).await.unwrap();
+    assert_eq!(
+        table.metadata().properties(),
+        before.metadata().properties()
+    );
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(!files.is_empty());
+    for file in files {
+        let bytes = table
+            .file_io()
+            .new_input(file.data_file_path())
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        let reader = SerializedFileReader::new(bytes).unwrap();
+        for group in reader.metadata().row_groups() {
+            for column in group.columns() {
+                assert_eq!(column.compression(), expected);
+            }
+        }
+    }
+    assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 6);
+}
+
+#[tokio::test]
+async fn column_compression_rejected_before_catalog_access() {
+    use open_arrow_sink_core::CompressionCodec;
+    let (catalog, _, schema) = table().await;
+    let sink = IcebergTableSink::new(catalog);
+    let missing = TableIdent::new(NamespaceIdent::new("missing".into()), "missing".into());
+    let mut options = options();
+    options
+        .compression
+        .columns
+        .insert("id".into(), CompressionCodec::Snappy);
+    assert!(matches!(
+        sink.open(missing, schema, options).await,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
+}
