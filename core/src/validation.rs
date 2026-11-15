@@ -18,11 +18,26 @@ pub fn validate_options(
     options: &WriteOptions,
     capability: SinkCapability,
 ) -> Result<()> {
+    validate_mode_options(options.mode, capability.supported_modes)?;
     validate_compression_options(schema, &options.compression, capability.compression)?;
     validate_partition_options(options.partition, &capability.supported_partitions)?;
     validate_index_options(&options.indexes, capability.supported_indexes)?;
     validate_target_file_size_options(options.target_file_size)?;
     validate_ordering_options(options.ordering, capability.ordering)?;
+    Ok(())
+}
+
+/// Reject unsupported explicit modes before opening or modifying a destination.
+/// None delegates default selection to the backend.
+pub fn validate_mode_options(
+    mode: Option<crate::WriteMode>,
+    supported_modes: &[crate::WriteMode],
+) -> Result<()> {
+    if let Some(mode) = mode
+        && !supported_modes.contains(&mode)
+    {
+        return Err(Error::Unsupported(format!("write mode: {mode:?}")));
+    }
     Ok(())
 }
 

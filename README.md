@@ -250,3 +250,16 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
+
+### Destination write modes
+
+`WriteOptions.mode` accepts `Some(WriteMode::Create)`, `Some(WriteMode::Append)`,
+or `Some(WriteMode::Overwrite)`. Create requires a new destination; append requires
+an existing one; overwrite replaces all rows (not just affected partitions) and
+may create a missing destination. Consult the backend documentation for publication
+and cleanup guarantees. `SinkCapability.supported_modes` lists implemented modes;
+unsupported explicit modes are rejected before destination I/O.
+
+The default `None` preserves existing behavior: Parquet and Lance create a new
+directory, while Iceberg appends to an existing catalog table. Ordering and other
+options remain independent of mode.
