@@ -76,7 +76,7 @@ impl FragmentWriter {
             receiver,
             finished: false,
         };
-        let params = destination.write_params(options)?;
+        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())

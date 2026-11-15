@@ -132,6 +132,43 @@ when `cleanup_on_error` is enabled; existing datasets are preserved. Each sessio
 owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
 streamed blobs when appending to or overwriting an existing dataset.
 
+## External blob ingestion
+
+Lance advertises `SinkCapability.supports_blob_handle`. Configure each session
+through `WriteOptions.blob_handle`; the storage thresholds match Lance `BlobFieldOptions`:
+
+```rust
+use std::num::NonZeroUsize;
+use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Ordering, WriteOptions};
+
+let options = WriteOptions {
+    ordering: Ordering::Unordered,
+    blob_handle: Some(BlobHandleConfig {
+        external_blob_mode: ExternalBlobMode::Ingest,
+        inline_size_threshold: Some(16 * 1024),
+        dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
+    }),
+    ..Default::default()
+};
+```
+
+Native logical blob source URIs are copied into destination-owned storage with
+`Ingest`. The two layout options are payload-size boundaries in bytes:
+
+- `inline_size_threshold: Option<usize>`: maximum size kept inline before using packed storage.
+- `dedicated_size_threshold: Option<NonZeroUsize>`: maximum size kept packed before using dedicated storage.
+
+These options map through native `BlobFieldOptions` to top-level blob field metadata.
+Explicit values override existing field thresholds; `None` preserves field metadata
+or Lance defaults (64 KiB inline, 4 MiB dedicated). Values strictly above each
+threshold move to the next storage class. Dedicated selection takes precedence.
+They control native logical blob writes, including ingested URIs. Already prepared
+streaming handles retain their chosen dedicated storage layout.
+The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
+or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
+This setting applies to native logical blob inputs in single and parallel writes;
+`DownloadBlobLayer` already creates destination-owned managed streams directly.
+
 ## Compression
 
 Supports global and per-column `Compression::Zstd { level }` and
@@ -222,6 +259,14 @@ existing manifest's format for an existing dataset. An explicit version is passe
 to Lance for create, append, and overwrite, including parallel and blob writers.
 Appending with an explicit version affects the new files and preserves the manifest's
 default version. This selects the file format, independently of the dataset's commit version.
+
+## Configuration adaptation
+
+The Lance `write_options` adapter translates shared configuration into native
+`WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
+compression, prepared blob fields, then explicit layout overrides. Storage binds
+the resulting parameters to its session and commit handler; blob runtime code
+owns handles, placements, and cleanup.
 
 ## Upload buffering
 

@@ -9,6 +9,7 @@ mod provider;
 mod sink;
 mod upload;
 mod validation;
+mod write_options;
 
 pub use sink::LanceDatasetSink;
 

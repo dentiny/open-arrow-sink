@@ -10,11 +10,6 @@ pub trait Writer: Send {
     /// Success means accepted, not committed. Buffering must be bounded.
     async fn write(&mut self, batch: RecordBatch) -> Result<()>;
 
-    /// Whether this writer accepts streaming blobs and their session-owned handles.
-    fn supports_blob_streams(&self) -> bool {
-        false
-    }
-
     /// Start a native blob. An unfinished or failed blob poisons the write session.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         Err(crate::error::unsupported_blob_streams())

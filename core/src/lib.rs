@@ -28,7 +28,9 @@ pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;
 
 mod blob;
-pub use blob::{BlobChunk, BlobHandle, BlobPlacement, BlobWriter};
+pub use blob::{
+    BlobChunk, BlobHandle, BlobHandleConfig, BlobPlacement, BlobWriter, ExternalBlobMode,
+};
 
 /// Field metadata marking binary values that backends may map to native blobs.
 pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";

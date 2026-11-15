@@ -59,6 +59,7 @@ impl Sink for Capture {
             },
             ordering: Ordering::PreserveInput,
             supported_partitions: vec![],
+            supports_blob_handle: true,
             supports_storage_version: false,
             supported_indexes: &[],
         }
@@ -81,9 +82,6 @@ impl Sink for Capture {
 impl Writer for CaptureWriter {
     fn schema(&self) -> &SchemaRef {
         &self.schema
-    }
-    fn supports_blob_streams(&self) -> bool {
-        true
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         Ok(Box::new(CaptureBlob(Vec::new())))
@@ -790,45 +788,23 @@ async fn opendal_retries_transient_errors_only_when_configured() {
 }
 
 #[tokio::test]
-async fn rejects_non_streaming_writers_instead_of_materializing_payloads() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    struct PlainSink(Capture);
-    struct PlainWriter(Box<dyn Writer>);
+async fn rejects_missing_blob_capability_before_open() {
+    struct UnsupportedSink;
     #[async_trait]
-    impl Sink for PlainSink {
+    impl Sink for UnsupportedSink {
         type Request = ();
         fn capability(&self) -> SinkCapability {
-            self.0.capability()
+            SinkCapability {
+                supports_blob_handle: false,
+                ..Capture::default().capability()
+            }
         }
-        async fn open(
-            &self,
-            request: (),
-            schema: SchemaRef,
-            options: WriteOptions,
-        ) -> Result<Box<dyn Writer>> {
-            Ok(Box::new(PlainWriter(
-                self.0.open(request, schema, options).await?,
-            )))
+        async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
+            panic!("unsupported sink must not be opened");
         }
     }
-    #[async_trait]
-    impl Writer for PlainWriter {
-        fn schema(&self) -> &SchemaRef {
-            self.0.schema()
-        }
-        async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-            self.0.write(batch).await
-        }
-        async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-            self.0.commit().await
-        }
-        async fn abort(self: Box<Self>) -> Result<()> {
-            self.0.abort().await
-        }
-    }
-    let capture = Capture::default();
     let input = batch(vec![Some("https://example.invalid/blob")]);
-    let result = PlainSink(capture.clone())
+    let result = UnsupportedSink
         .layer(download_layer(["url".to_owned()].into_iter().collect()))
         .open((), input.schema(), WriteOptions::default())
         .await;
@@ -836,5 +812,4 @@ async fn rejects_non_streaming_writers_instead_of_materializing_payloads() {
         result,
         Err(open_arrow_sink_core::Error::Unsupported(_))
     ));
-    assert!(capture.0.lock().unwrap().aborted);
 }

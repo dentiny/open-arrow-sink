@@ -129,31 +129,34 @@ pub(crate) async fn create_blob(
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
     crate::validation::validate_blob_schema(schema)?;
-    let mut has_blobs = false;
+    if !schema
+        .fields()
+        .iter()
+        .any(|field| field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true"))
+    {
+        return Ok(schema.clone());
+    }
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
             if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
-                return Ok(field.clone());
+                return field.clone();
             }
-            has_blobs = true;
             let native = BlobDescriptorArrayBuilder::new(field.name())
                 .field()
                 .clone();
             let mut metadata = field.metadata().clone();
             metadata.extend(native.metadata().clone());
-            Ok(Arc::new(
+            Arc::new(
                 native
                     .with_nullable(field.is_nullable())
                     .with_metadata(metadata),
-            ))
+            )
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let mut metadata = schema.metadata().clone();
-    if has_blobs {
-        metadata.insert("lance.blob.managed".into(), "true".into());
-    }
+    metadata.insert("lance.blob.managed".into(), "true".into());
     Ok(Arc::new(Schema::new_with_metadata(fields, metadata)))
 }
 
