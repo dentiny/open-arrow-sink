@@ -215,3 +215,72 @@ async fn abort_invalidates_live_blob_writers() {
     assert!(blob.finish().await.is_err());
     assert!(!path.exists());
 }
+
+#[tokio::test]
+async fn marked_binary_uses_native_blob_v2_and_round_trips_null_empty_and_payload() {
+    use arrow_array::LargeBinaryArray;
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::datatypes::BlobHandling;
+    use open_arrow_sink_core::BLOB_METADATA_KEY;
+
+    let payload = vec![0xab; 128 * 1024];
+    let values = Arc::new(LargeBinaryArray::from(vec![
+        Some(payload.as_slice()),
+        None,
+        Some(b"".as_slice()),
+    ]));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("blob", DataType::LargeBinary, true)
+            .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into()),
+        Field::new("ordinary_binary", DataType::LargeBinary, true),
+    ]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![values.clone(), values]).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("blobs.lance");
+    let mut writer = LanceDatasetSink
+        .open(path.clone(), schema.clone(), options())
+        .await
+        .unwrap();
+    assert_eq!(writer.schema(), &schema);
+    writer.write(batch.clone()).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let native_schema = arrow_schema::Schema::from(dataset.schema());
+    assert_eq!(
+        native_schema.field(0).metadata()["ARROW:extension:name"],
+        "lance.blob.v2"
+    );
+    assert!(matches!(
+        native_schema.field(0).data_type(),
+        DataType::Struct(_)
+    ));
+    assert_eq!(native_schema.field(1).data_type(), &DataType::LargeBinary);
+    let actual = dataset
+        .scan()
+        .blob_handling(BlobHandling::AllBinary)
+        .try_into_batch()
+        .await
+        .unwrap();
+    for index in 0..2 {
+        assert_eq!(actual.column(index), batch.column(index));
+    }
+}
+
+#[tokio::test]
+async fn invalid_blob_marker_is_rejected_before_creating_destination() {
+    use arrow_schema::{DataType, Field, Schema};
+    use open_arrow_sink_core::BLOB_METADATA_KEY;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("blob", DataType::Utf8, true)
+            .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into()),
+    ]));
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("invalid.lance");
+    assert!(
+        LanceDatasetSink
+            .open(path.clone(), schema, options())
+            .await
+            .is_err()
+    );
+    assert!(!path.exists());
+}
