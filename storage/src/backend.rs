@@ -60,7 +60,9 @@ impl Storage {
 
     /// Validate a non-root destination and give it directory URL semantics.
     pub fn directory_url(&self, url: &Url) -> Result<Url> {
-        self.nonroot_path(url)?;
+        if self.path(url)?.trim_matches('/').is_empty() {
+            return Err(error::empty_path());
+        }
         let mut directory = url.clone();
         if !directory.path().ends_with('/') {
             directory.path_segments_mut().unwrap().push("");
