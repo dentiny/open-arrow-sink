@@ -223,15 +223,16 @@ async fn failed_rolling_never_removes_a_conflicting_foreign_file() {
         .open_writers(directory.clone(), batch().schema(), options(), count(2))
         .await
         .unwrap();
-    let mut writer = writers.remove(0);
+    let mut writer = writers.writers.remove(0);
     writer.write(batch()).await.unwrap();
     let foreign = directory.join("part-00002.parquet");
     tokio::fs::write(&foreign, b"keep").await.unwrap();
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
-    for writer in writers {
+    for writer in writers.writers {
         writer.abort().await.unwrap();
     }
+    writers.committer.abort().await.unwrap();
     assert_eq!(files(&directory).await, vec![foreign.clone()]);
     assert_eq!(tokio::fs::read(foreign).await.unwrap(), b"keep");
 }
@@ -252,4 +253,37 @@ async fn schema_failure_prevents_commit_and_cleans_all_files() {
     assert!(writer.write(wrong).await.is_err());
     assert!(writer.commit().await.is_err());
     assert!(!directory.exists());
+}
+
+#[tokio::test]
+async fn finished_parquet_outputs_remain_owned_until_session_publication() {
+    use open_arrow_sink_core::ParallelSink;
+    for cleanup in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("output");
+        let mut session = ParquetDirectorySink
+            .open_writers(
+                directory.clone(),
+                batch().schema(),
+                WriteOptions {
+                    cleanup_on_error: cleanup,
+                    ..options()
+                },
+                count(2),
+            )
+            .await
+            .unwrap();
+        for writer in &mut session.writers {
+            writer.write(batch()).await.unwrap();
+            writer.finish().await.unwrap();
+        }
+        for writer in session.writers {
+            writer.abort().await.unwrap();
+        }
+        session.committer.abort().await.unwrap();
+        assert_eq!(directory.exists(), !cleanup);
+        if !cleanup {
+            assert_eq!(files(&directory).await.len(), 2);
+        }
+    }
 }

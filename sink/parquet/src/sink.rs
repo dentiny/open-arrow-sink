@@ -1,8 +1,8 @@
 use std::{num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    Ordering, ParallelSink, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
-    async_trait, validation,
+    DataWriter, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter, Sink, SinkCapability,
+    WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
 };
 use parquet::arrow::AsyncArrowWriter;
 use tokio::fs::{self, OpenOptions};
@@ -36,24 +36,62 @@ impl Sink for ParquetDirectorySink {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         let mut writers = self
-            .open_writers(directory, schema, options, NonZeroUsize::new(1).unwrap())
+            .create_writers(directory, schema, options, NonZeroUsize::new(1).unwrap())
             .await?;
-        Ok(writers.pop().unwrap())
+        Ok(Box::new(writers.pop().unwrap()))
     }
 }
 
 #[async_trait]
 impl ParallelSink for ParquetDirectorySink {
+    type Output = u64;
+
     async fn open_writers(
         &self,
         directory: PathBuf,
         schema: SchemaRef,
         options: WriteOptions,
         count: NonZeroUsize,
-    ) -> Result<Vec<Box<dyn Writer>>> {
+    ) -> Result<WriteSession<Self::Output>> {
+        let writers = self
+            .create_writers(directory, schema, options, count)
+            .await?;
+        Ok(WriteSession {
+            writers: writers
+                .into_iter()
+                .map(|w| Box::new(w) as Box<dyn DataWriter<Output = u64>>)
+                .collect(),
+            committer: Box::new(ParquetCommitter),
+        })
+    }
+}
+
+struct ParquetCommitter;
+
+#[async_trait]
+impl SessionCommitter<u64> for ParquetCommitter {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+        // Parquet has no metadata transaction; finish already closed each footer.
+        Ok(WriteSummary {
+            rows_written: outputs.into_iter().sum(),
+        })
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ParquetDirectorySink {
+    async fn create_writers(
+        &self,
+        directory: PathBuf,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<Vec<ParquetDirectoryWriter>> {
         validation::validate_options(&options, self.capability())?;
         fs::create_dir(&directory).await.map_err(backend)?;
-        let mut writers: Vec<Box<dyn Writer>> = Vec::new();
+        let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
             let path = directory.join(format!("part-{index:05}.parquet"));
             let opened = async {
@@ -75,17 +113,17 @@ impl ParallelSink for ParquetDirectorySink {
             }
             .await;
             match opened {
-                Ok(writer) => writers.push(Box::new(ParquetDirectoryWriter::new(
+                Ok(writer) => writers.push(ParquetDirectoryWriter::new(
                     directory.clone(),
                     schema.clone(),
                     writer,
                     options.clone(),
                     index,
                     count.get(),
-                ))),
+                )),
                 Err(error) => {
                     for writer in writers {
-                        let _ = writer.abort().await;
+                        let _ = Writer::abort(Box::new(writer)).await;
                     }
                     if options.cleanup_on_error {
                         let _ = fs::remove_dir(&directory).await;

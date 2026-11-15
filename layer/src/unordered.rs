@@ -2,8 +2,8 @@ use std::num::NonZeroUsize;
 
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, WriteSummary, Writer, async_trait, validation,
+    DataWriter, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter,
+    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::error::unsupported;
@@ -57,30 +57,49 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     ) -> Result<Box<dyn Writer>> {
         // Reordering must be explicitly permitted, including with one writer.
         validation::validate_options(&options, self.capability())?;
-        let writers = self
+        let session = self
             .inner
             .open_writers(request, schema.clone(), options, self.writers)
             .await?;
+        if session.writers.len() != self.writers.get()
+            || session
+                .writers
+                .iter()
+                .any(|writer| writer.schema() != &schema)
+        {
+            for writer in session.writers {
+                let _ = writer.abort().await;
+            }
+            let _ = session.committer.abort().await;
+            return Err(open_arrow_sink_core::Error::Unsupported(
+                "backend returned an invalid parallel writer session".into(),
+            ));
+        }
         Ok(Box::new(UnorderedWriter {
             schema,
-            idle: writers,
+            idle: session.writers,
+            committer: Some(session.committer),
             pending: FuturesUnordered::new(),
             failed: false,
         }))
     }
 }
 
-type PendingWrite = BoxFuture<'static, (Box<dyn Writer>, Result<()>)>;
+type PendingWrite<T> = BoxFuture<'static, (Box<dyn DataWriter<Output = T>>, Result<()>)>;
 
-struct UnorderedWriter {
+struct UnorderedWriter<T: Send + 'static> {
     schema: SchemaRef,
-    idle: Vec<Box<dyn Writer>>,
-    pending: FuturesUnordered<PendingWrite>,
+    idle: Vec<Box<dyn DataWriter<Output = T>>>,
+    committer: Option<Box<dyn SessionCommitter<T>>>,
+    pending: FuturesUnordered<PendingWrite<T>>,
     failed: bool,
 }
 
-impl UnorderedWriter {
-    fn complete(&mut self, (writer, result): (Box<dyn Writer>, Result<()>)) -> Result<()> {
+impl<T: Send + 'static> UnorderedWriter<T> {
+    fn complete(
+        &mut self,
+        (writer, result): (Box<dyn DataWriter<Output = T>>, Result<()>),
+    ) -> Result<()> {
         // Retain ownership even on error so abort can clean up the failed writer.
         self.idle.push(writer);
         result
@@ -105,12 +124,17 @@ impl UnorderedWriter {
                 first_error.get_or_insert(error);
             }
         }
+        if let Some(committer) = self.committer.take()
+            && let Err(error) = committer.abort().await
+        {
+            first_error.get_or_insert(error);
+        }
         first_error.map_or(Ok(()), Err)
     }
 }
 
 #[async_trait]
-impl Writer for UnorderedWriter {
+impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -156,17 +180,36 @@ impl Writer for UnorderedWriter {
             let _ = self.cleanup().await;
             return Err(error);
         }
-        let mut summary = WriteSummary::default();
-        while let Some(writer) = self.idle.pop() {
-            match writer.commit().await {
-                Ok(result) => summary.rows_written += result.rows_written,
+        // Finish in parallel, retaining every writer until all finish results
+        // are known. A preparation error must never publish a partial session.
+        let mut finishing = FuturesUnordered::new();
+        for mut writer in self.idle.drain(..) {
+            finishing.push(async move {
+                let result = writer.finish().await;
+                (writer, result)
+            });
+        }
+        let mut outputs = Vec::new();
+        let mut first_error = None;
+        while let Some((writer, result)) = finishing.next().await {
+            self.idle.push(writer);
+            match result {
+                Ok(output) => outputs.push(output),
                 Err(error) => {
-                    let _ = self.cleanup().await;
-                    return Err(error);
+                    first_error.get_or_insert(error);
                 }
             }
         }
-        Ok(summary)
+        if let Some(error) = first_error {
+            let _ = self.cleanup().await;
+            return Err(error);
+        }
+        // From here publication and any ambiguous failure belong to the backend.
+        self.committer
+            .take()
+            .expect("session has a committer")
+            .commit(outputs)
+            .await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {

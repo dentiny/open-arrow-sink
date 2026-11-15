@@ -1,22 +1,22 @@
 use crate::{Result, SchemaRef, SinkCapability, WriteOptions, Writer, async_trait};
 use std::num::NonZeroUsize;
 
-/// A backend that can reserve multiple independent writers for one destination.
-/// Success returns exactly the requested number of writers with the supplied
-/// schema. Writers must use disjoint output names and honor the options. On an
-/// open error, clean up already opened writers according to cleanup_on_error.
-/// Commits are independent: a later failure cannot roll back earlier commits.
-/// Abort must only remove output owned by that writer, preserving other writers.
-/// After cancellation of open, drop never commits and async cleanup is not promised.
+/// A sink that creates independent data writers within one publication session.
+/// Reserve the destination once and return exactly `writers` schema-compatible
+/// writers. Output names must be disjoint. Clean up a failed open according to
+/// the cleanup policy; cancellation/drop never promises asynchronous cleanup.
 #[async_trait]
 pub trait ParallelSink: Sink {
+    /// Backend-owned metadata, such as Iceberg data files or Lance fragments.
+    type Output: Send + 'static;
+
     async fn open_writers(
         &self,
         request: Self::Request,
         schema: SchemaRef,
         options: WriteOptions,
         writers: NonZeroUsize,
-    ) -> Result<Vec<Box<dyn Writer>>>;
+    ) -> Result<crate::WriteSession<Self::Output>>;
 }
 
 /// Reusable configuration that opens independently owned write sessions.

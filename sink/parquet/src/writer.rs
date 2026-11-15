@@ -1,7 +1,8 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
+    validation,
 };
 use parquet::arrow::AsyncArrowWriter;
 use tokio::fs::{self, File, OpenOptions};
@@ -128,5 +129,24 @@ impl ParquetDirectoryWriter {
             }
             result => result,
         }
+    }
+}
+
+#[async_trait]
+impl DataWriter for ParquetDirectoryWriter {
+    type Output = u64;
+    fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        Writer::write(self, batch).await
+    }
+    async fn finish(&mut self) -> Result<u64> {
+        let writer = self.writer.take().ok_or_else(closed)?;
+        writer.close().await.map_err(backend)?;
+        Ok(self.rows_written)
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        Writer::abort(self).await
     }
 }

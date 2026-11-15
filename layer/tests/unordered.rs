@@ -1,8 +1,8 @@
 use arrow_array::{Int64Array, RecordBatch};
 use futures::{FutureExt, channel::oneshot};
 use open_arrow_sink_core::{
-    Error, Ordering, ParallelSink, Result, SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions,
-    WriteSummary, Writer, async_trait,
+    DataWriter, Error, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter, Sink,
+    SinkCapability, SinkExt, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
 };
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use std::{
@@ -21,6 +21,13 @@ struct State {
     gates: Vec<oneshot::Sender<()>>,
     fail_write: bool,
     fail_commit: bool,
+    fail_finish: bool,
+    fail_abort: bool,
+    wrong_count: bool,
+    wrong_schema: bool,
+    prepared: usize,
+    commit_attempts: usize,
+    session_aborted: usize,
 }
 
 struct TestSink(Arc<Mutex<State>>);
@@ -52,32 +59,46 @@ impl Sink for TestSink {
 
 #[async_trait]
 impl ParallelSink for TestSink {
+    type Output = u64;
     async fn open_writers(
         &self,
         _: (),
         schema: SchemaRef,
         _: WriteOptions,
         writers: NonZeroUsize,
-    ) -> Result<Vec<Box<dyn Writer>>> {
+    ) -> Result<WriteSession<u64>> {
         let mut result = Vec::new();
-        for _ in 0..writers.get() {
+        let count = if self.0.lock().unwrap().wrong_count {
+            0
+        } else {
+            writers.get()
+        };
+        for _ in 0..count {
             let (sender, receiver) = oneshot::channel();
             let mut state = self.0.lock().unwrap();
             state.opened += 1;
             state.gates.push(sender);
             result.push(Box::new(TestWriter {
                 state: self.0.clone(),
-                schema: schema.clone(),
+                schema: if state.wrong_schema {
+                    Arc::new(arrow_schema::Schema::empty())
+                } else {
+                    schema.clone()
+                },
                 gate: Some(receiver),
                 rows: 0,
-            }) as Box<dyn Writer>);
+            }) as Box<dyn DataWriter<Output = u64>>);
         }
-        Ok(result)
+        Ok(WriteSession {
+            writers: result,
+            committer: Box::new(TestCommitter(self.0.clone())),
+        })
     }
 }
 
 #[async_trait]
-impl Writer for TestWriter {
+impl DataWriter for TestWriter {
+    type Output = u64;
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -94,19 +115,42 @@ impl Writer for TestWriter {
         self.rows += batch.num_rows() as u64;
         Ok(())
     }
-    async fn commit(self: Box<Self>) -> Result<WriteSummary> {
+    async fn finish(&mut self) -> Result<u64> {
         let mut state = self.state.lock().unwrap();
+        state.prepared += 1;
+        if state.fail_finish && state.prepared == 1 {
+            return Err(error());
+        }
+        Ok(self.rows)
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.aborted += 1;
+        if state.fail_abort {
+            return Err(error());
+        }
+        Ok(())
+    }
+}
+
+struct TestCommitter(Arc<Mutex<State>>);
+#[async_trait]
+impl SessionCommitter<u64> for TestCommitter {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+        let mut state = self.0.lock().unwrap();
+        assert_eq!(state.prepared, state.opened);
+        state.commit_attempts += 1;
         if state.fail_commit {
             return Err(error());
         }
         state.committed += 1;
-        state.rows += self.rows;
+        state.rows = outputs.into_iter().sum();
         Ok(WriteSummary {
-            rows_written: self.rows,
+            rows_written: state.rows,
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        self.state.lock().unwrap().aborted += 1;
+        self.0.lock().unwrap().session_aborted += 1;
         Ok(())
     }
 }
@@ -152,7 +196,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
     }
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
     let state = state.lock().unwrap();
-    assert_eq!((state.committed, state.rows, state.finished), (2, 9, 3));
+    assert_eq!((state.committed, state.rows, state.finished), (1, 9, 3));
 }
 
 #[tokio::test]
@@ -195,7 +239,7 @@ async fn commit_drains_writes_and_abort_discards_them() {
         assert_eq!(state.finished, 1);
         assert_eq!(
             (state.committed, state.aborted),
-            if abort { (0, 2) } else { (2, 0) }
+            if abort { (0, 2) } else { (1, 0) }
         );
     }
 }
@@ -253,7 +297,7 @@ async fn schema_error_is_terminal_even_for_empty_batches() {
 }
 
 #[tokio::test]
-async fn commit_failure_aborts_remaining_writers() {
+async fn publication_failure_does_not_delete_possibly_published_data() {
     let state = Arc::new(Mutex::new(State {
         fail_commit: true,
         ..Default::default()
@@ -264,7 +308,15 @@ async fn commit_failure_aborts_remaining_writers() {
         .unwrap();
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!((state.committed, state.aborted), (0, 1));
+    assert_eq!(
+        (
+            state.committed,
+            state.aborted,
+            state.commit_attempts,
+            state.session_aborted
+        ),
+        (0, 0, 1, 0)
+    );
 }
 
 #[tokio::test]
@@ -315,4 +367,63 @@ async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
     assert_eq!(state.lock().unwrap().aborted, 2);
+}
+
+#[tokio::test]
+async fn finish_failure_aborts_even_successfully_finished_writers_without_publication() {
+    let state = Arc::new(Mutex::new(State {
+        fail_finish: true,
+        ..Default::default()
+    }));
+    let writer = sink(&state)
+        .open((), batch().schema(), options())
+        .await
+        .unwrap();
+    assert!(writer.commit().await.is_err());
+    let state = state.lock().unwrap();
+    assert_eq!(
+        (
+            state.prepared,
+            state.commit_attempts,
+            state.aborted,
+            state.session_aborted
+        ),
+        (2, 0, 2, 1)
+    );
+}
+
+#[tokio::test]
+async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted() {
+    for wrong_count in [false, true] {
+        let state = Arc::new(Mutex::new(State {
+            wrong_count,
+            wrong_schema: !wrong_count,
+            ..Default::default()
+        }));
+        assert!(
+            sink(&state)
+                .open((), batch().schema(), options())
+                .await
+                .is_err()
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.aborted, state.opened);
+        assert_eq!(state.session_aborted, 1);
+        assert_eq!(state.commit_attempts, 0);
+    }
+}
+
+#[tokio::test]
+async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
+    let state = Arc::new(Mutex::new(State {
+        fail_abort: true,
+        ..Default::default()
+    }));
+    let writer = sink(&state)
+        .open((), batch().schema(), options())
+        .await
+        .unwrap();
+    assert!(writer.abort().await.is_err());
+    let state = state.lock().unwrap();
+    assert_eq!((state.aborted, state.session_aborted), (2, 1));
 }

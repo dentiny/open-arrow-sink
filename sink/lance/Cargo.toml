@@ -16,6 +16,7 @@ lance = { version = "14.0.1", default-features = false }
 tokio = { version = "1", features = ["fs", "rt", "sync"] }
 
 [dev-dependencies]
+open-arrow-sink-layer.workspace = true
 more-asserts.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

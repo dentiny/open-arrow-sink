@@ -32,8 +32,10 @@ For concurrent files, wrap the sink in
 files. Each writer rolls independently using disjoint indices (writer 0 owns
 0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
-distribution and directory scan order are unspecified. Commit completes all
-footers but is not an atomic directory transaction. See the root README for
+distribution and directory scan order are unspecified. Data writers finish all
+footers before the session committer returns the combined row count. A finish
+failure aborts every writer according to the cleanup policy. Files remain visible
+before commit; there is no atomic directory transaction. See the root README for
 buffering, cancellation, partial commit, and layer composition semantics.
 
 ```sh

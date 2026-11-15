@@ -8,3 +8,5 @@ mod writer;
 pub use sink::LanceDatasetSink;
 
 mod index;
+
+mod parallel;

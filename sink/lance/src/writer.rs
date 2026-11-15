@@ -13,15 +13,15 @@ use crate::{
     index::build_indexes,
 };
 
-enum Message {
+pub(crate) enum Message {
     Batch(RecordBatch),
     Commit,
 }
 
-struct ChannelReader {
-    schema: SchemaRef,
-    receiver: mpsc::Receiver<Message>,
-    finished: bool,
+pub(crate) struct ChannelReader {
+    pub(crate) schema: SchemaRef,
+    pub(crate) receiver: mpsc::Receiver<Message>,
+    pub(crate) finished: bool,
 }
 
 impl Iterator for ChannelReader {

@@ -57,13 +57,14 @@ impl<S: Sink> Sink for OrderingSink<S> {
 
 #[async_trait]
 impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
+    type Output = S::Output;
     async fn open_writers(
         &self,
         request: Self::Request,
         schema: SchemaRef,
         mut options: WriteOptions,
         writers: NonZeroUsize,
-    ) -> Result<Vec<Box<dyn Writer>>> {
+    ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
         options.ordering = self.ordering;
         validation::validate_options(
             &options,

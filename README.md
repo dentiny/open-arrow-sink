@@ -8,7 +8,7 @@ The library includes shared contracts, ordering and unordered write layers, and 
 [Lance](sink/lance/README.md) sinks.
 
 ```text
-core/       Sink, Writer, Layer, options, capabilities, validation and errors
+core/       Sink, Writer, DataWriter, WriteSession, SessionCommitter, shared options
 layer/      OrderingLayer and UnorderedWriteLayer
 src/        Public facade
 ```
@@ -63,10 +63,17 @@ writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
 
-The inner sink must implement `ParallelSink`; Parquet supports this today. The
-trait lets a backend reserve one destination and assign disjoint output files
-without cloning requests or opening the same directory repeatedly. Iceberg and
-Lance do not yet implement this trait. No source-library metadata is needed.
+The inner sink implements `ParallelSink`. Parquet, Iceberg, and Lance all support
+this contract. The sink reserves a single destination and returns a `WriteSession`
+containing independent `DataWriter`s and one `SessionCommitter`. The layer never
+interprets backend output metadata, file names, partition specs, or manifests.
+No source-library metadata is needed.
+
+| Backend | Independent data writers | One session publication |
+| --- | --- | --- |
+| Parquet | Disjoint rolling Parquet files | Sum rows after all file footers finish; no directory transaction |
+| Iceberg | Parquet files, including partition routing | One fast-append transaction containing all data files |
+| Lance | Uncommitted fragments | One data manifest containing all fragments; indexes are built afterward |
 
 At most one batch per writer is in flight. When all writers are busy, `write`
 waits for one to finish. An available writer accepts the next nonempty batch;
@@ -74,19 +81,24 @@ there is no round-robin or file-order guarantee. Empty batches are validated and
 otherwise ignored. The bound is in batches, not bytes. Each backend also retains
 its own encoding buffers.
 
-There are no spawned tasks: I/O progresses while `write`, `commit`, or `abort`
-is polled. A successful `write` means accepted; an asynchronous error may surface
+The layer spawns no tasks: it polls data-writer futures during `write`, `commit`,
+or `abort`. Backends may use their native workers (Lance uses bounded channels). A successful `write` means accepted; an asynchronous error may surface
 in a later call. An error or cancellation of `write` makes the session terminal;
-abort or drop it. Commit drains writes before committing each backend writer and
-sums their row counts. Abort waits for in-flight I/O and attempts to abort every
-writer, even if another abort fails. Drop never commits or performs async cleanup.
+abort or drop it. Commit drains accepted writes, finishes every data writer,
+then calls the session committer once with all outputs. A finish failure aborts
+all writers, including those that already finished, without publishing the session.
+Abort waits for in-flight I/O and attempts to abort every writer, even if another
+abort fails, then aborts the session. Drop never commits or performs async cleanup.
 
 `Ordering::PreserveInput` is rejected before opening files. An outer
 `OrderingLayer::new(Ordering::Unordered)` can explicitly enable reordering.
 
-Commit is not atomic across files. If one writer fails to commit, remaining
-writers are aborted, but already committed files may remain visible. Cleanup
-honors `cleanup_on_error` and never removes another writer's or unrelated files.
+Publication guarantees belong to the backend. Parquet files become visible before
+commit and have no atomic directory transaction. Iceberg and Lance gather all
+outputs into one native data commit. Once publication begins, its outcome may be
+uncertain on error or cancellation: the layer does not delete potentially committed
+data. The session committer owns publication-failure handling. Before publication,
+cleanup honors `cleanup_on_error` and removes only session-owned output.
 
 ## Partitioning
 
@@ -173,6 +185,16 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,
 write modes, schema evolution or transaction framework is included in this change.
+
+For concurrent writing, additionally implement `ParallelSink` with a backend-owned
+`Output` type. Return exactly the requested number of schema-compatible data writers
+and one committer. `DataWriter::finish(&mut self)` returns metadata without publishing;
+retain sufficient ownership for `abort` to clean up even after finish. The session
+committer receives every output only after all finishes succeed. Its `abort` runs
+after all writer aborts, including when a writer abort reports an error. Once its
+`commit` is entered, it owns publication and cleanup decisions; the layer will not
+abort the data writers afterward. Drop/cancelled open or commit do not promise async
+cleanup. Metadata accumulates until commit; the batch limit is not a metadata limit.
 
 ## Development
 
