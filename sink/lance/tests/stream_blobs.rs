@@ -200,3 +200,18 @@ async fn ordinary_materialized_blob_values_still_use_native_storage() {
     assert!(values.is_null(1));
     assert_eq!(values.value(2), b"");
 }
+
+#[tokio::test]
+async fn abort_invalidates_live_blob_writers() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .open(path.clone(), input().schema(), options())
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    writer.abort().await.unwrap();
+    assert!(blob.write(BlobChunk::new(vec![1; 8])).await.is_err());
+    assert!(blob.finish().await.is_err());
+    assert!(!path.exists());
+}

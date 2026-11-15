@@ -141,6 +141,7 @@ impl Writer for LanceWriter {
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
+        self.blob_session.failed.store(true, Ordering::Relaxed);
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
