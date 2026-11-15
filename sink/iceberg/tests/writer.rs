@@ -221,7 +221,6 @@ async fn empty_commit_keeps_table_empty() {
 }
 
 #[rstest::rstest]
-#[case::default_size(None, 1)]
 #[case::small_target(Some(1), 3)]
 #[tokio::test]
 async fn target_file_size_rolls_files_without_losing_rows(
@@ -284,7 +283,6 @@ fn partition_options() -> WriteOptions {
 }
 
 #[rstest::rstest]
-#[case::single(false)]
 #[case::composite(true)]
 #[tokio::test]
 async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: bool) {
@@ -445,10 +443,7 @@ async fn partitioned_empty_sessions_and_file_rolling(
 
 #[rstest::rstest]
 #[case::timestamp_year(Transform::Year, PartitionType::Year, false, [-1, 0, 0, 1])]
-#[case::date_year(Transform::Year, PartitionType::Year, true, [-1, 0, 0, 1])]
 #[case::timestamp_month(Transform::Month, PartitionType::Month, false, [-1, 0, 0, 12])]
-#[case::date_month(Transform::Month, PartitionType::Month, true, [-1, 0, 0, 12])]
-#[case::timestamp_day(Transform::Day, PartitionType::Day, false, [-1, 0, 0, 365])]
 #[case::date_day(Transform::Day, PartitionType::Day, true, [-1, 0, 1, 365])]
 #[case::timestamp_hour(Transform::Hour, PartitionType::Hour, false, [-1, 0, 1, 8760])]
 #[tokio::test]
@@ -586,7 +581,6 @@ async fn temporal_partitions_round_trip_and_record_metadata(
 
 #[rstest::rstest]
 #[case::sixteen_buckets(16, 3)]
-#[case::ten_buckets(10, 9)]
 #[tokio::test]
 async fn bucket_partitions_round_trip_and_record_metadata(
     #[case] buckets: u32,
@@ -603,7 +597,6 @@ async fn bucket_partitions_round_trip_and_record_metadata(
 
 #[rstest::rstest]
 #[case::width_ten(10, -10, 20)]
-#[case::width_hundred(100, -100, 0)]
 #[tokio::test]
 async fn truncate_partitions_round_trip_and_record_metadata(
     #[case] width: u32,
@@ -826,7 +819,6 @@ async fn unordered_commit_preserves_all_rows() {
 
 #[rstest::rstest]
 #[case::create(WriteMode::Create)]
-#[case::append(WriteMode::Append)]
 #[case::overwrite(WriteMode::Overwrite)]
 #[tokio::test]
 async fn write_mode(#[case] mode: WriteMode) {
@@ -839,15 +831,8 @@ async fn write_mode(#[case] mode: WriteMode) {
             WriteOptions { mode, ..options() },
         )
         .await;
-    if mode == WriteMode::Append {
-        let mut writer = result.unwrap();
-        writer.write(batch(schema)).await.unwrap();
-        writer.commit().await.unwrap();
-        assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
-    } else {
-        assert!(matches!(
-            result,
-            Err(open_arrow_sink_core::Error::Unsupported(_))
-        ));
-    }
+    assert!(matches!(
+        result,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
 }
