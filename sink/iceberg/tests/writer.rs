@@ -34,6 +34,14 @@ async fn table_with_value_type(
     spec: Option<UnboundPartitionSpec>,
     value_type: PrimitiveType,
 ) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
+    table_with_properties(spec, value_type, HashMap::new()).await
+}
+
+async fn table_with_properties(
+    spec: Option<UnboundPartitionSpec>,
+    value_type: PrimitiveType,
+    properties: HashMap<String, String>,
+) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
     let catalog: Arc<dyn Catalog> = Arc::new(
         MemoryCatalogBuilder::default()
             .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
@@ -80,6 +88,7 @@ async fn table_with_value_type(
                 .name("numbers".into())
                 .schema(schema)
                 .partition_spec_opt(spec)
+                .properties(properties)
                 .build(),
         )
         .await
@@ -221,13 +230,21 @@ async fn empty_commit_keeps_table_empty() {
 }
 
 #[rstest::rstest]
-#[case::small_target(Some(1), 3)]
+#[case::small_target(Some(1), None, 3)]
+#[case::table_target(None, Some("1"), 3)]
+#[case::explicit_target_overrides_table(Some(usize::MAX), Some("1"), 1)]
 #[tokio::test]
 async fn target_file_size_rolls_files_without_losing_rows(
     #[case] target_file_size: Option<usize>,
+    #[case] table_target: Option<&str>,
     #[case] file_count: usize,
 ) {
-    let (catalog, identifier, schema) = table().await;
+    let properties = table_target
+        .map(|size| ("write.target-file-size-bytes".to_owned(), size.to_owned()))
+        .into_iter()
+        .collect();
+    let (catalog, identifier, schema) =
+        table_with_properties(None, PrimitiveType::Long, properties).await;
     let batch = batch(schema.clone());
     let mut writer = IcebergTableSink::new(catalog.clone())
         .open(
