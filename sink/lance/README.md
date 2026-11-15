@@ -110,3 +110,9 @@ A runnable index construction example (destination must not exist):
 ```sh
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
+
+## Compression
+
+Compression options are currently unsupported: the sink advertises empty global
+and per-column codec lists and rejects explicit requests before creating a dataset.
+Empty compression options retain Lance defaults.
