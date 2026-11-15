@@ -56,7 +56,19 @@ impl Writer for ParquetDirectoryWriter {
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
         writer.write(&batch).await.map_err(backend)?;
-        writer.flush().await.map_err(backend)?;
+        // Let Parquet coalesce small batches into its bounded row groups.
+        // Only force an early group boundary when buffered encoded data could
+        // reach the file target; rolling still uses actual flushed bytes.
+        if writer.in_progress_rows() > 0
+            && self.options.target_file_size.is_some_and(|size| {
+                writer
+                    .bytes_written()
+                    .saturating_add(writer.in_progress_size())
+                    >= size
+            })
+        {
+            writer.flush().await.map_err(backend)?;
+        }
         self.rows_written += batch.num_rows() as u64;
         self.active = true;
         Ok(())
