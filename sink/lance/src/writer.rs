@@ -2,9 +2,13 @@ use std::{io, path::PathBuf};
 
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
-use lance::{Dataset, dataset::WriteParams};
+use lance::{
+    Dataset,
+    dataset::{WriteMode as LanceWriteMode, WriteParams},
+};
 use open_arrow_sink_core::{
-    IndexSpec, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait, validation,
+    IndexSpec, RecordBatch, Result, SchemaRef, WriteMode, WriteOptions, WriteSummary, Writer,
+    async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -55,7 +59,8 @@ impl RecordBatchReader for ChannelReader {
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    path: PathBuf,
+    path: Option<PathBuf>,
+    cleanup_on_error: bool,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
@@ -109,7 +114,12 @@ impl Writer for LanceWriter {
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
-        tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
+        if self.cleanup_on_error
+            && let Some(path) = &self.path
+        {
+            tokio::fs::remove_dir_all(path).await.map_err(backend)?;
+        }
+        Ok(())
     }
 }
 
@@ -117,10 +127,9 @@ impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        path: PathBuf,
+        path: Option<PathBuf>,
         uri: String,
-        target_file_size: Option<usize>,
-        indexes: Vec<IndexSpec>,
+        options: WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -129,7 +138,12 @@ impl LanceWriter {
             finished: false,
         };
         let mut params = WriteParams::default();
-        if let Some(size) = target_file_size {
+        params.mode = match options.mode.unwrap_or(WriteMode::Create) {
+            WriteMode::Create => LanceWriteMode::Create,
+            WriteMode::Append => LanceWriteMode::Append,
+            WriteMode::Overwrite => LanceWriteMode::Overwrite,
+        };
+        if let Some(size) = options.target_file_size {
             params.max_bytes_per_file = size;
         }
         let task =
@@ -138,11 +152,12 @@ impl LanceWriter {
             schema,
             encoding_schema,
             path,
+            cleanup_on_error: options.cleanup_on_error,
             sender: Some(sender),
             task,
             rows: 0,
             failed: false,
-            indexes,
+            indexes: options.indexes,
         }
     }
 }

@@ -312,3 +312,234 @@ async fn compression_survives_rolling_and_round_trips() {
     }
     assert_eq!(occurrences, vec![2; count]);
 }
+
+#[tokio::test]
+async fn explicit_modes_create_append_and_overwrite_versions() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    for (mode, rows) in [
+        (WriteMode::Create, 4),
+        (WriteMode::Append, 8),
+        (WriteMode::Overwrite, 4),
+    ] {
+        let mut writer = LanceDatasetSink
+            .open(
+                path.clone(),
+                batch().schema(),
+                WriteOptions {
+                    mode: Some(mode),
+                    ..options()
+                },
+            )
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        assert_eq!(writer.commit().await.unwrap().rows_written, 4);
+        assert_eq!(
+            Dataset::open(path.to_str().unwrap())
+                .await
+                .unwrap()
+                .count_rows(None)
+                .await
+                .unwrap(),
+            rows
+        );
+    }
+    assert!(
+        LanceDatasetSink
+            .open(
+                path,
+                batch().schema(),
+                WriteOptions {
+                    mode: Some(WriteMode::Create),
+                    ..options()
+                }
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn abort_append_and_overwrite_preserves_committed_version() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let version = Dataset::open(path.to_str().unwrap())
+        .await
+        .unwrap()
+        .version()
+        .version;
+    for mode in [WriteMode::Append, WriteMode::Overwrite] {
+        let mut writer = LanceDatasetSink
+            .open(
+                path.clone(),
+                batch().schema(),
+                WriteOptions {
+                    mode: Some(mode),
+                    ..options()
+                },
+            )
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.abort().await.unwrap();
+        let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(dataset.version().version, version);
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 4);
+    }
+}
+
+#[tokio::test]
+async fn append_requires_existing_compatible_dataset() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let append = WriteOptions {
+        mode: Some(WriteMode::Append),
+        ..options()
+    };
+    assert!(
+        LanceDatasetSink
+            .open(path.clone(), batch().schema(), append.clone())
+            .await
+            .is_err()
+    );
+    let writer = LanceDatasetSink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    let wrong =
+        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
+            .unwrap();
+    assert!(matches!(
+        LanceDatasetSink.open(path, wrong.schema(), append).await,
+        Err(open_arrow_sink_core::Error::SchemaMismatch)
+    ));
+}
+
+#[tokio::test]
+async fn empty_overwrite_creates_or_clears_dataset() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let overwrite = WriteOptions {
+        mode: Some(WriteMode::Overwrite),
+        ..options()
+    };
+    LanceDatasetSink
+        .open(path.clone(), batch().schema(), overwrite.clone())
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let mut writer = LanceDatasetSink
+        .open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: Some(WriteMode::Append),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    LanceDatasetSink
+        .open(path.clone(), batch().schema(), overwrite)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(
+        Dataset::open(path.to_str().unwrap())
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn append_reuses_compression_schema() {
+    use open_arrow_sink_core::{Compression, CompressionOptions, WriteMode};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let compressed = WriteOptions {
+        compression: CompressionOptions {
+            global: Some(Compression::Zstd { level: Some(3) }),
+            ..Default::default()
+        },
+        ..options()
+    };
+    for mode in [WriteMode::Create, WriteMode::Append] {
+        let mut writer = LanceDatasetSink
+            .open(
+                path.clone(),
+                batch().schema(),
+                WriteOptions {
+                    mode: Some(mode),
+                    ..compressed.clone()
+                },
+            )
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    assert_eq!(
+        Dataset::open(path.to_str().unwrap())
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        8
+    );
+}
+
+#[tokio::test]
+async fn overwrite_can_replace_schema_without_changing_previous_version() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = LanceDatasetSink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let previous = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let replacement =
+        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![99])) as ArrayRef)])
+            .unwrap();
+    let mut writer = LanceDatasetSink
+        .open(
+            path.clone(),
+            replacement.schema(),
+            WriteOptions {
+                mode: Some(WriteMode::Overwrite),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(replacement.clone()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap(), replacement);
+    assert_eq!(previous.count_rows(None).await.unwrap(), 4);
+}
