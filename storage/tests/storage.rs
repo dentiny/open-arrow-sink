@@ -57,12 +57,20 @@ async fn namespace_boundaries_and_conditional_creation() {
     );
     assert!(storage.url("../outside").is_err());
     assert!(storage.remove_all(storage.base_url()).await.is_err());
+    assert!(storage.directory_url(storage.base_url()).is_err());
+    let prefix = storage.url("claim").unwrap();
+    assert_eq!(
+        storage.directory_url(&prefix).unwrap().path(),
+        "/warehouse/claim/"
+    );
+    assert!(!storage.prefix_exists(&prefix).await.unwrap());
     let url = storage.url("claim").unwrap();
     let (a, b) = tokio::join!(
         storage.create(&url, "a".into()),
         storage.create(&url, "b".into())
     );
     assert_ne!(a.is_ok(), b.is_ok());
+    assert!(storage.prefix_exists(&url).await.unwrap());
 }
 
 #[tokio::test]
