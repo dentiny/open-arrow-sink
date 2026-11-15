@@ -14,6 +14,31 @@ pub(crate) fn validate_options(
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
     parse_storage_version(options.storage_version.as_deref())?;
+    for field in schema.fields() {
+        let encoding = options
+            .compression
+            .column_encodings
+            .get(field.name())
+            .copied()
+            .or(options.compression.structural_encoding);
+        if encoding.is_some()
+            && (field
+                .metadata()
+                .get(open_arrow_sink_core::BLOB_METADATA_KEY)
+                .map(String::as_str)
+                == Some("true")
+                || field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2"))
+        {
+            return Err(open_arrow_sink_core::Error::Unsupported(format!(
+                "structural encoding on blob column {}",
+                field.name()
+            )));
+        }
+    }
     for compression in options
         .compression
         .global
