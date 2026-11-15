@@ -30,16 +30,15 @@ pub(crate) fn validate_options(
     validate_indexes(schema, &options.indexes)
 }
 
+use crate::error::{missing_index_column, unsupported_index};
+
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
     validation::validate_indexes(schema, indexes)?;
     for index in indexes {
-        let field = schema.field_with_name(&index.column).map_err(|_| {
-            open_arrow_sink_core::Error::Unsupported(format!(
-                "index column not found: {}",
-                index.column
-            ))
-        })?;
+        let field = schema
+            .field_with_name(&index.column)
+            .map_err(|_| missing_index_column(&index.column))?;
         let supported = match index.index_type {
             IndexType::Scalar => matches!(
                 field.data_type(),
@@ -92,12 +91,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
             ),
         };
         if !supported {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "cannot create {:?} index on column {} with type {}",
-                index.index_type,
-                index.column,
-                field.data_type()
-            )));
+            return Err(unsupported_index(index, field.data_type()));
         }
     }
     Ok(())
