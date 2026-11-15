@@ -1,14 +1,13 @@
 use std::{num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter,
-    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
-    validation,
+    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
+    SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
 use parquet::arrow::AsyncArrowWriter;
 use tokio::fs::{self, OpenOptions};
 
-use crate::{error::backend, writer::ParquetDirectoryWriter};
+use crate::{committer::ParquetCommitter, error::backend, writer::ParquetDirectoryWriter};
 
 /// Creates a new local directory containing `part-00000.parquet`, etc.
 /// The parent directory must already exist. Existing destinations are never replaced.
@@ -68,21 +67,6 @@ impl ParallelSink for ParquetDirectorySink {
                 .collect(),
             committer: Box::new(ParquetCommitter),
         })
-    }
-}
-
-struct ParquetCommitter;
-
-#[async_trait]
-impl SessionCommitter<u64> for ParquetCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
-        // Parquet has no metadata transaction; finish already closed each footer.
-        Ok(WriteSummary {
-            rows_written: outputs.into_iter().sum(),
-        })
-    }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        Ok(())
     }
 }
 
