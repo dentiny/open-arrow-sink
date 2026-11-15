@@ -1,21 +1,20 @@
-use std::{collections::HashSet, io, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{collections::HashSet, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use arrow_array::{
     Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
 };
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, Error, Layer, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, Layer, RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
+    WriteSummary, Writer, async_trait, validation,
 };
 
-fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::Backend(Box::new(error))
-}
-
-fn failure(message: impl Into<String>) -> Error {
-    backend(io::Error::other(message.into()))
-}
+use crate::{
+    error::{backend, failure},
+    validation::{
+        validate_blob_chunk, validate_blob_response, validate_blob_url, validate_download_config,
+    },
+};
 
 /// Download explicit top-level URL columns over HTTP(S), replacing each with a
 /// blob-marked LargeBinary column. Nulls and input row order are preserved.
@@ -89,49 +88,21 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     ) -> Result<Box<dyn Writer>> {
         // Inner layers may override options (for example OrderingLayer), so leave
         // shared option validation to the inner sink, as RebatchLayer does.
-        if self.config.timeout.is_zero() {
-            return Err(Error::Unsupported(
-                "download timeout must be positive".into(),
-            ));
-        }
-        let mut indices = Vec::new();
+        let indices = validate_download_config(&schema, &self.config.columns, self.config.timeout)?;
         let mut fields = schema.fields().to_vec();
-        for name in &self.config.columns {
-            let matches: Vec<_> = schema
-                .fields()
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.name() == name)
-                .collect();
-            if matches.len() != 1 {
-                return Err(Error::Unsupported(format!(
-                    "download column must exist and be unique: {name}"
-                )));
-            }
-            let (index, field) = matches[0];
-            if !matches!(
-                field.data_type(),
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-            ) {
-                return Err(Error::Unsupported(format!(
-                    "download column must be a string: {name}"
-                )));
-            }
+        for &index in &indices {
+            let field = schema.field(index);
             let mut metadata = field.metadata().clone();
             metadata.remove("ARROW:extension:name");
             metadata.remove("ARROW:extension:metadata");
             metadata.insert(BLOB_METADATA_KEY.into(), "true".into());
             fields[index] = Arc::new(
                 field
-                    .as_ref()
                     .clone()
                     .with_data_type(DataType::LargeBinary)
                     .with_metadata(metadata),
             );
-            indices.push(index);
         }
-        // HashSet iteration order must not change the order of downloads.
-        indices.sort_unstable();
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let client = reqwest::Client::builder()
             .timeout(self.config.timeout)
@@ -165,10 +136,7 @@ struct DownloadBlobWriter {
 
 impl DownloadBlobWriter {
     async fn download(client: &reqwest::Client, limit: usize, url: &str) -> Result<Vec<u8>> {
-        let url = reqwest::Url::parse(url).map_err(|_| failure("invalid blob URL"))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(failure("blob URL must use HTTP or HTTPS"));
-        }
+        let url = validate_blob_url(url)?;
         let mut response = client
             .get(url)
             .send()
@@ -176,24 +144,14 @@ impl DownloadBlobWriter {
             .map_err(|e| backend(e.without_url()))?
             .error_for_status()
             .map_err(|e| backend(e.without_url()))?;
-        if !response.status().is_success() {
-            return Err(failure(format!(
-                "unexpected HTTP status: {}",
-                response.status()
-            )));
-        }
-        if response.content_length().is_some_and(|n| n > limit as u64) {
-            return Err(failure("blob exceeds max_blob_bytes"));
-        }
+        validate_blob_response(&response, limit)?;
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
             .map_err(|e| backend(e.without_url()))?
         {
-            if chunk.len() > limit - bytes.len() {
-                return Err(failure("blob exceeds max_blob_bytes"));
-            }
+            validate_blob_chunk(bytes.len(), chunk.len(), limit)?;
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)

@@ -3,31 +3,26 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Schema};
 use lance::blob::blob_field;
-use open_arrow_sink_core::{BLOB_METADATA_KEY, Error, RecordBatch, Result, SchemaRef};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, RecordBatch, Result, SchemaRef};
 
-use crate::error::backend;
+use crate::{error::backend, validation::validate_blob_schema};
 
 /// Keep the public writer schema stable while giving Lance native blob v2 fields.
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
+    validate_blob_schema(schema)?;
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
             if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
-                return Ok(field.clone());
-            }
-            if field.data_type() != &DataType::LargeBinary {
-                return Err(Error::Unsupported(format!(
-                    "blob column must be LargeBinary: {}",
-                    field.name()
-                )));
+                return field.clone();
             }
             let mut metadata = field.metadata().clone();
             let native = blob_field(field.name(), field.is_nullable());
             metadata.extend(native.metadata().clone());
-            Ok(Arc::new(native.with_metadata(metadata)))
+            Arc::new(native.with_metadata(metadata))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     Ok(Arc::new(Schema::new_with_metadata(
         fields,
         schema.metadata().clone(),

@@ -10,4 +10,8 @@ pub use rebatch::{RebatchLayer, RebatchSink};
 #[cfg(feature = "download-blob")]
 mod download_blob;
 #[cfg(feature = "download-blob")]
+mod error;
+#[cfg(feature = "download-blob")]
+mod validation;
+#[cfg(feature = "download-blob")]
 pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};
