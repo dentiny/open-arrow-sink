@@ -8,10 +8,12 @@ description = "Composable layers for Arrow RecordBatch sinks"
 
 [features]
 default = []
-download-blob = ["dep:arrow-array", "dep:reqwest"]
+download-blob = ["dep:arrow-array", "dep:reqwest", "dep:futures", "dep:tokio"]
 rebatch = ["dep:arrow-select"]
 
 [dependencies]
+futures = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true

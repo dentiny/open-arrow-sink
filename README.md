@@ -87,14 +87,37 @@ maps these fields to native **Blob v2** columns and writes the downloaded bytes
 into Lance-owned storage. Other sinks receive ordinary `LargeBinary` values with
 the marker. Ordinary unmarked binary columns retain their existing behavior.
 
-Downloads run sequentially on a Tokio runtime, following HTTP redirects, with no
-retries or a request timeout. Defaults are a 16 MiB limit per blob
-and at most 16 rows per forwarded batch. Configure these with
+Downloads run concurrently on the caller's Tokio runtime, following HTTP redirects,
+with no retries or request timeout. By default, all layers and writers share a
+process-wide `DownloadPool` with at most 16 active downloads and a shared HTTP
+client. The limit covers the entire response body. Output retains input row and
+column order even when downloads finish out of order. Defaults are a 16 MiB limit
+per blob and at most 16 rows per forwarded batch. Configure these with
 `with_max_blob_bytes` and `with_rows_per_batch` (both take
 `NonZeroUsize`). The size limit is checked while reading, including responses
 without a content length. Buffering scales with output rows × selected columns ×
-maximum blob size, plus a response and Arrow allocation overhead; slices can retain
+maximum blob size, plus concurrent responses and Arrow allocation overhead; slices can retain
 input buffers. An inner rebatch layer can add its own buffering.
+
+To control concurrency or isolate workloads, provide a pool and share its `Arc`
+across the layers that should use the same budget:
+
+```rust,no_run
+use std::{num::NonZeroUsize, sync::Arc};
+use open_arrow_sink::layer::{DownloadBlobLayer, DownloadPool};
+
+# fn example() -> open_arrow_sink::Result<()> {
+let pool = Arc::new(DownloadPool::new(NonZeroUsize::new(8).unwrap())?);
+let layer = DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
+    .with_download_pool(pool.clone());
+# Ok(())
+# }
+```
+
+`DownloadPool::with_client` accepts a caller-configured `reqwest::Client` for
+custom TLS, proxy, or other HTTP settings. Pools use the caller's runtime without
+detached worker tasks. Cancelling a write drops its pending downloads and releases
+their permits; failures also cancel remaining downloads in the current chunk.
 
 A failed or cancelled write poisons the session: subsequent writes fail and
 `commit` aborts the inner writer. Earlier output chunks may already have been

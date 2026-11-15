@@ -334,3 +334,208 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
         assert!(capture.0.lock().unwrap().batches.is_empty());
     }
 }
+
+// Send headers immediately, then hold each response body until the test releases
+// it. This checks that pool permits cover bodies as well as request dispatch.
+async fn gated_server() -> (
+    Server,
+    tokio::sync::mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (events, received) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let mut handlers = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    let events = events.clone();
+                    handlers.spawn(async move {
+                        let mut request = Vec::new();
+                        let mut buffer = [0; 1024];
+                        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let n = socket.read(&mut buffer).await.unwrap();
+                            if n == 0 { return; }
+                            request.extend_from_slice(&buffer[..n]);
+                        }
+                        let request = String::from_utf8(request).unwrap();
+                        let path = request.split_whitespace().nth(1).unwrap();
+                        let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", path.len());
+                        if socket.write_all(headers.as_bytes()).await.is_err() { return; }
+                        let (release, ready) = tokio::sync::oneshot::channel();
+                        if events.send(release).is_err() { return; }
+                        let _ = ready.await;
+                        let _ = socket.write_all(path.as_bytes()).await;
+                    });
+                }
+                _ = handlers.join_next(), if !handlers.is_empty() => {}
+            }
+        }
+    });
+    (Server { url, task }, received)
+}
+
+async fn next_request(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
+) -> tokio::sync::oneshot::Sender<()> {
+    tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("download should start")
+        .expect("server should be running")
+}
+
+#[tokio::test]
+async fn shared_pool_bounds_active_bodies_and_preserves_order() {
+    use open_arrow_sink_layer::DownloadPool;
+
+    let (server, mut events) = gated_server().await;
+    let pool = Arc::new(DownloadPool::new(NonZeroUsize::new(2).unwrap()).unwrap());
+    let captures = [Capture::default(), Capture::default()];
+    let mut writes = tokio::task::JoinSet::new();
+    for (capture, paths) in captures.iter().zip([["/a", "/b"], ["/c", "/d"]]) {
+        let urls = paths.map(|path| format!("{}{path}", server.url));
+        let batch = batch(urls.iter().map(|url| Some(url.as_str())).collect());
+        let mut writer = capture
+            .clone()
+            .layer(
+                DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
+                    .with_download_pool(pool.clone()),
+            )
+            .open((), batch.schema(), WriteOptions::default())
+            .await
+            .unwrap();
+        writes.spawn(async move {
+            writer.write(batch).await.unwrap();
+            writer.commit().await.unwrap();
+        });
+    }
+    let first = next_request(&mut events).await;
+    let second = next_request(&mut events).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), events.recv())
+            .await
+            .is_err()
+    );
+    // Finish later requests before the first to exercise result reordering.
+    second.send(()).unwrap();
+    next_request(&mut events).await.send(()).unwrap();
+    next_request(&mut events).await.send(()).unwrap();
+    first.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(result) = writes.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    for (capture, expected) in captures.iter().zip([[b"/a", b"/b"], [b"/c", b"/d"]]) {
+        let state = capture.0.lock().unwrap();
+        let values = state.batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert_eq!(values.value(0), expected[0]);
+        assert_eq!(values.value(1), expected[1]);
+        assert!(state.committed);
+    }
+}
+
+#[tokio::test]
+async fn cancelling_download_releases_shared_pool_capacity() {
+    use open_arrow_sink_layer::DownloadPool;
+
+    let (server, mut events) = gated_server().await;
+    let pool = Arc::new(DownloadPool::new(NonZeroUsize::new(1).unwrap()).unwrap());
+    let input = batch(vec![Some(&server.url)]);
+    let capture = Capture::default();
+    let layer =
+        DownloadBlobLayer::new(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
+    let mut writer = capture
+        .clone()
+        .layer(layer.clone())
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let mut write = Box::pin(writer.write(input.clone()));
+    let held_body = tokio::select! {
+        _ = &mut write => panic!("body has not been released"),
+        request = next_request(&mut events) => request,
+    };
+    drop(write);
+    assert!(writer.commit().await.is_err());
+    assert!(capture.0.lock().unwrap().aborted);
+
+    let mut next_writer = Capture::default()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let mut write = Box::pin(next_writer.write(input));
+    let body = tokio::select! {
+        _ = &mut write => panic!("body has not been released"),
+        request = next_request(&mut events) => request,
+    };
+    body.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap();
+    next_writer.commit().await.unwrap();
+    drop(held_body);
+}
+
+#[tokio::test]
+async fn downloads_columns_concurrently_with_single_row_batches() {
+    use open_arrow_sink_layer::DownloadPool;
+
+    let (server, mut events) = gated_server().await;
+    let pool = Arc::new(DownloadPool::new(NonZeroUsize::new(2).unwrap()).unwrap());
+    let left = format!("{}/left", server.url);
+    let right = format!("{}/right", server.url);
+    let input = RecordBatch::try_from_iter([
+        ("left", Arc::new(StringArray::from(vec![left])) as ArrayRef),
+        (
+            "right",
+            Arc::new(StringArray::from(vec![right])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let capture = Capture::default();
+    let mut writer = capture
+        .clone()
+        .layer(
+            DownloadBlobLayer::new(
+                ["left".to_owned(), "right".to_owned()]
+                    .into_iter()
+                    .collect(),
+            )
+            .with_rows_per_batch(NonZeroUsize::new(1).unwrap())
+            .with_download_pool(pool),
+        )
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let write = tokio::spawn(async move {
+        writer.write(input).await.unwrap();
+        writer.commit().await.unwrap();
+    });
+    let first = next_request(&mut events).await;
+    let second = next_request(&mut events).await;
+    second.send(()).unwrap();
+    first.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = capture.0.lock().unwrap();
+    for (index, expected) in [b"/left".as_slice(), b"/right"].into_iter().enumerate() {
+        let values = state.batches[0]
+            .column(index)
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert_eq!(values.value(0), expected);
+    }
+}

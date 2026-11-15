@@ -4,26 +4,28 @@ use arrow_array::{
     Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
 };
 use arrow_schema::{DataType, Schema};
+use futures::{StreamExt, TryStreamExt, stream};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, Layer, RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
     WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::{
+    DownloadPool,
     error::{backend, failure},
-    validation::{
-        validate_blob_chunk, validate_blob_response, validate_blob_url, validate_download_config,
-    },
+    validation::validate_download_config,
 };
 
 /// Download explicit top-level URL columns over HTTP(S), replacing each with a
 /// blob-marked LargeBinary column. Nulls and input row order are preserved.
-/// Requires a Tokio runtime. Downloads run sequentially without retries.
+/// Requires a Tokio runtime. Downloads share a global pool by default, without
+/// retries or a request timeout. Use `with_download_pool` to supply another pool.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
     columns: HashSet<String>,
     max_blob_bytes: NonZeroUsize,
     rows_per_batch: NonZeroUsize,
+    download_pool: Option<Arc<DownloadPool>>,
 }
 
 impl DownloadBlobLayer {
@@ -33,7 +35,15 @@ impl DownloadBlobLayer {
             columns,
             max_blob_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
             rows_per_batch: NonZeroUsize::new(16).unwrap(),
+            download_pool: None,
         }
+    }
+
+    /// Share a caller-owned pool across any number of layers and writers.
+    /// Otherwise, all layers share a process-wide pool of 16 active downloads.
+    pub fn with_download_pool(mut self, pool: Arc<DownloadPool>) -> Self {
+        self.download_pool = Some(pool);
+        self
     }
 
     pub fn with_max_blob_bytes(mut self, bytes: NonZeroUsize) -> Self {
@@ -96,7 +106,10 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             );
         }
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
-        let client = reqwest::Client::builder().build().map_err(backend)?;
+        let pool = match &self.config.download_pool {
+            Some(pool) => pool.clone(),
+            None => DownloadPool::global()?,
+        };
         let inner = self
             .inner
             .open(request, output_schema.clone(), options)
@@ -106,7 +119,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             schema,
             output_schema,
             indices,
-            client,
+            pool,
             config: self.config.clone(),
             failed: false,
         }))
@@ -118,33 +131,9 @@ struct DownloadBlobWriter {
     schema: SchemaRef,
     output_schema: SchemaRef,
     indices: Vec<usize>,
-    client: reqwest::Client,
+    pool: Arc<DownloadPool>,
     config: DownloadBlobLayer,
     failed: bool,
-}
-
-impl DownloadBlobWriter {
-    async fn download(client: &reqwest::Client, limit: usize, url: &str) -> Result<Vec<u8>> {
-        let url = validate_blob_url(url)?;
-        let mut response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| backend(e.without_url()))?
-            .error_for_status()
-            .map_err(|e| backend(e.without_url()))?;
-        validate_blob_response(&response, limit)?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| backend(e.without_url()))?
-        {
-            validate_blob_chunk(bytes.len(), chunk.len(), limit)?;
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
-    }
 }
 
 #[async_trait]
@@ -168,43 +157,59 @@ impl Writer for DownloadBlobWriter {
                 let count = (batch.num_rows() - start).min(self.config.rows_per_batch.get());
                 let slice = batch.slice(start, count);
                 let mut columns = slice.columns().to_vec();
-                for &index in &self.indices {
+                let pool = &self.pool;
+                let schema = &self.schema;
+                let limit = self.config.max_blob_bytes.get();
+                let jobs: Vec<_> = self
+                    .indices
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(column, &index)| (0..count).map(move |row| (column, index, row)))
+                    .collect();
+                let jobs = jobs.into_iter().map(|(column, index, row)| {
                     let array = slice.column(index);
-                    let mut builder = LargeBinaryBuilder::new();
-                    for row in 0..count {
-                        if array.is_null(row) {
-                            builder.append_null();
-                            continue;
-                        }
-                        let url = match array.data_type() {
-                            DataType::Utf8 => array
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .unwrap()
-                                .value(row),
-                            DataType::LargeUtf8 => array
-                                .as_any()
-                                .downcast_ref::<LargeStringArray>()
-                                .unwrap()
-                                .value(row),
-                            DataType::Utf8View => array
-                                .as_any()
-                                .downcast_ref::<StringViewArray>()
-                                .unwrap()
-                                .value(row),
-                            _ => unreachable!("validated at open"),
+                    async move {
+                        let bytes = if array.is_null(row) {
+                            None
+                        } else {
+                            let url = match array.data_type() {
+                                DataType::Utf8 => array
+                                    .as_any()
+                                    .downcast_ref::<StringArray>()
+                                    .unwrap()
+                                    .value(row),
+                                DataType::LargeUtf8 => array
+                                    .as_any()
+                                    .downcast_ref::<LargeStringArray>()
+                                    .unwrap()
+                                    .value(row),
+                                DataType::Utf8View => array
+                                    .as_any()
+                                    .downcast_ref::<StringViewArray>()
+                                    .unwrap()
+                                    .value(row),
+                                _ => unreachable!("validated at open"),
+                            };
+                            Some(pool.download(url, limit).await.map_err(|e| {
+                                failure(format!(
+                                    "download column {} row {}: {e}",
+                                    schema.field(index).name(),
+                                    start + row
+                                ))
+                            })?)
                         };
-                        let bytes =
-                            Self::download(&self.client, self.config.max_blob_bytes.get(), url)
-                                .await
-                                .map_err(|e| {
-                                    failure(format!(
-                                        "download column {} row {}: {e}",
-                                        self.schema.field(index).name(),
-                                        start + row
-                                    ))
-                                })?;
-                        builder.append_value(bytes);
+                        Ok::<_, open_arrow_sink_core::Error>((column, row, bytes))
+                    }
+                });
+                let mut downloads = stream::iter(jobs).buffer_unordered(pool.concurrency());
+                let mut values = vec![vec![None; count]; self.indices.len()];
+                while let Some((column, row, bytes)) = downloads.try_next().await? {
+                    values[column][row] = bytes;
+                }
+                for (&index, values) in self.indices.iter().zip(values) {
+                    let mut builder = LargeBinaryBuilder::new();
+                    for value in values {
+                        builder.append_option(value);
                     }
                     columns[index] = Arc::new(builder.finish());
                 }
