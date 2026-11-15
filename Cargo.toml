@@ -37,6 +37,10 @@ sink-lance = ["dep:open-arrow-sink-lance"]
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
 layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
+parquet-snappy = ["sink-parquet", "open-arrow-sink-parquet/snappy"]
+parquet-gzip = ["sink-parquet", "open-arrow-sink-parquet/gzip"]
+parquet-zstd = ["sink-parquet", "open-arrow-sink-parquet/zstd"]
+parquet-lz4 = ["sink-parquet", "open-arrow-sink-parquet/lz4"]
 
 [dependencies]
 open-arrow-sink-core.workspace = true

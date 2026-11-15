@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec, Ordering, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, Writer, async_trait, validation,
+    CompressionCapability, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
+    async_trait, validation,
 };
 use parquet::arrow::AsyncArrowWriter;
 use tokio::fs::{self, OpenOptions};
@@ -25,20 +25,8 @@ impl Sink for ParquetDirectorySink {
         SinkCapability {
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
-                global: &[
-                    CompressionCodec::Uncompressed,
-                    CompressionCodec::Snappy,
-                    CompressionCodec::Gzip,
-                    CompressionCodec::Zstd,
-                    CompressionCodec::Lz4Raw,
-                ],
-                per_column: &[
-                    CompressionCodec::Uncompressed,
-                    CompressionCodec::Snappy,
-                    CompressionCodec::Gzip,
-                    CompressionCodec::Zstd,
-                    CompressionCodec::Lz4Raw,
-                ],
+                global: crate::compression::SUPPORTED_CODECS,
+                per_column: crate::compression::SUPPORTED_CODECS,
             },
             supported_partitions: vec![],
             supported_indexes: &[],

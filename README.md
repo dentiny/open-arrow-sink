@@ -60,6 +60,10 @@ scope is unsupported. Capabilities use `CompressionCodec` identifiers, independe
 of the requested level. The shared validator rejects unsupported scopes and codecs
 before destination I/O, including requests to disable compression.
 
+Parquet compression dependencies are opt-in: enable facade features
+`parquet-snappy`, `parquet-gzip`, `parquet-zstd`, or `parquet-lz4` for the codecs
+you need. `sink-parquet` alone supports uncompressed output.
+
 Backend support is declared by each sink; consult its README before selecting
 a scope or codec. The shared interface does not promise that every sink supports
 every codec.

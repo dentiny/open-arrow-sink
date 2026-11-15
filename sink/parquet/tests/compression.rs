@@ -27,54 +27,60 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 
-#[rstest::rstest]
-#[case(Codec::Uncompressed, Compression::UNCOMPRESSED)]
-#[case(Codec::Snappy, Compression::SNAPPY)]
-#[case(Codec::Gzip, Compression::GZIP(Default::default()))]
-#[case(Codec::Zstd { level: None }, Compression::ZSTD(Default::default()))]
-#[case(Codec::Lz4Raw, Compression::LZ4_RAW)]
 #[tokio::test]
-async fn compression_survives_rolling_and_round_trips(
-    #[case] codec: Codec,
-    #[case] expected_codec: Compression,
-) {
-    let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("output");
-    let batch = batch();
-    let sink = ParquetDirectorySink.layer(CompressionLayer::new(CompressionOptions {
-        global: Some(codec),
-        columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
-    }));
-    assert_eq!(sink.capability(), ParquetDirectorySink.capability());
-    let mut writer = sink
-        .open(
-            directory.clone(),
-            batch.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                target_file_size: Some(1),
-                // The layer replaces these session settings.
-                compression: CompressionOptions {
-                    global: None,
-                    columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
+async fn compression_survives_rolling_and_round_trips() {
+    for (codec, expected_codec) in [
+        (Codec::Uncompressed, Compression::UNCOMPRESSED),
+        #[cfg(feature = "snappy")]
+        (Codec::Snappy, Compression::SNAPPY),
+        #[cfg(feature = "gzip")]
+        (Codec::Gzip, Compression::GZIP(Default::default())),
+        #[cfg(feature = "zstd")]
+        (
+            Codec::Zstd { level: None },
+            Compression::ZSTD(Default::default()),
+        ),
+        #[cfg(feature = "lz4")]
+        (Codec::Lz4Raw, Compression::LZ4_RAW),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("output");
+        let batch = batch();
+        let sink = ParquetDirectorySink.layer(CompressionLayer::new(CompressionOptions {
+            global: Some(codec),
+            columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
+        }));
+        assert_eq!(sink.capability(), ParquetDirectorySink.capability());
+        let mut writer = sink
+            .open(
+                directory.clone(),
+                batch.schema(),
+                WriteOptions {
+                    ordering: Ordering::Unordered,
+                    target_file_size: Some(1),
+                    // The layer replaces these session settings.
+                    compression: CompressionOptions {
+                        global: None,
+                        columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    writer.write(batch.clone()).await.unwrap();
-    writer.write(batch.clone()).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 6);
-    for index in 0..2 {
-        let file = tokio::fs::File::open(directory.join(format!("part-{index:05}.parquet")))
+            )
             .await
             .unwrap();
-        let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
-        let group = builder.metadata().row_group(0);
-        assert_eq!(group.column(0).compression(), expected_codec);
-        assert_eq!(group.column(1).compression(), Compression::UNCOMPRESSED);
-        let actual: Vec<_> = builder.build().unwrap().try_collect().await.unwrap();
-        assert_eq!(actual, vec![batch.clone()]);
+        writer.write(batch.clone()).await.unwrap();
+        writer.write(batch.clone()).await.unwrap();
+        assert_eq!(writer.commit().await.unwrap().rows_written, 6);
+        for index in 0..2 {
+            let file = tokio::fs::File::open(directory.join(format!("part-{index:05}.parquet")))
+                .await
+                .unwrap();
+            let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
+            let group = builder.metadata().row_group(0);
+            assert_eq!(group.column(0).compression(), expected_codec);
+            assert_eq!(group.column(1).compression(), Compression::UNCOMPRESSED);
+            let actual: Vec<_> = builder.build().unwrap().try_collect().await.unwrap();
+            assert_eq!(actual, vec![batch.clone()]);
+        }
     }
 }

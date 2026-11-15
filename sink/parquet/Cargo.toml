@@ -6,16 +6,16 @@ license.workspace = true
 repository.workspace = true
 description = "Minimal local Parquet directory sink"
 
+[features]
+default = []
+snappy = ["parquet/snap"]
+gzip = ["parquet/flate2-zlib-rs"]
+zstd = ["parquet/zstd"]
+lz4 = ["parquet/lz4"]
+
 [dependencies]
 open-arrow-sink-core.workspace = true
-parquet = { workspace = true, features = [
-  "arrow",
-  "async",
-  "snap",
-  "flate2-zlib-rs",
-  "zstd",
-  "lz4",
-] }
+parquet = { workspace = true, features = ["arrow", "async"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
