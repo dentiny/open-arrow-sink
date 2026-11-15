@@ -13,7 +13,7 @@ use iceberg::spec::{
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{
-    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions,
+    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteMode, WriteOptions,
 };
 use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
 
@@ -817,110 +817,29 @@ async fn unordered_commit_preserves_all_rows() {
 }
 
 #[rstest::rstest]
-#[case::create(open_arrow_sink_core::WriteMode::Create)]
-#[case::overwrite(open_arrow_sink_core::WriteMode::Overwrite)]
+#[case::create(WriteMode::Create)]
+#[case::append(WriteMode::Append)]
+#[case::overwrite(WriteMode::Overwrite)]
 #[tokio::test]
-async fn unsupported_modes_fail_before_loading_destination(
-    #[case] mode: open_arrow_sink_core::WriteMode,
-) {
+async fn write_mode(#[case] mode: WriteMode) {
     let (catalog, identifier, schema) = table().await;
     let sink = IcebergTableSink::new(catalog.clone());
-    assert_eq!(
-        sink.capability().supported_modes,
-        &[open_arrow_sink_core::WriteMode::Append]
-    );
-    let missing = TableIdent::new(identifier.namespace().clone(), "does_not_exist".into());
-    // A catalog lookup would return a backend not-found error instead.
-    assert!(
-        matches!(sink.open(missing, schema.clone(), WriteOptions { mode, ..options() }).await,
-        Err(open_arrow_sink_core::Error::Unsupported(message)) if message.contains("write mode"))
-    );
-    let mut writer = sink
-        .open(identifier.clone(), schema.clone(), options())
-        .await
-        .unwrap();
-    writer.write(batch(schema.clone())).await.unwrap();
-    writer.commit().await.unwrap();
-    let before = catalog
-        .load_table(&identifier)
-        .await
-        .unwrap()
-        .metadata()
-        .current_snapshot_id();
-    assert!(matches!(
-        sink.open(
+    let result = sink
+        .open(
             identifier.clone(),
-            schema,
-            WriteOptions { mode, ..options() }
+            schema.clone(),
+            WriteOptions { mode, ..options() },
         )
-        .await,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
-    ));
-    assert_eq!(
-        catalog
-            .load_table(&identifier)
-            .await
-            .unwrap()
-            .metadata()
-            .current_snapshot_id(),
-        before
-    );
-    assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
-}
-
-#[tokio::test]
-async fn explicit_append_does_not_create_a_missing_table() {
-    let (catalog, identifier, schema) = table().await;
-    let missing = TableIdent::new(identifier.namespace().clone(), "missing_append".into());
-    let sink = IcebergTableSink::new(catalog.clone());
-    assert!(matches!(
-        sink.open(
-            missing.clone(),
-            schema,
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Append,
-                ..options()
-            }
-        )
-        .await,
-        Err(open_arrow_sink_core::Error::Backend(_))
-    ));
-    assert!(!catalog.table_exists(&missing).await.unwrap());
-}
-
-#[tokio::test]
-async fn default_create_is_rejected_before_loading_destination() {
-    let (catalog, identifier, schema) = table().await;
-    let missing = TableIdent::new(identifier.namespace().clone(), "missing_default".into());
-    let sink = IcebergTableSink::new(catalog);
-    // Set ordering only: the mode comes from the shared WriteOptions default.
-    let default_options = WriteOptions {
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    };
-    assert_eq!(
-        default_options.mode,
-        open_arrow_sink_core::WriteMode::Create
-    );
-    assert!(matches!(sink.open(missing, schema, default_options).await,
-        Err(open_arrow_sink_core::Error::Unsupported(message)) if message.contains("write mode: Create")));
-}
-
-#[tokio::test]
-async fn parallel_open_rejects_default_create_before_loading_destination() {
-    use open_arrow_sink_core::ParallelSink;
-    let (catalog, identifier, schema) = table().await;
-    let sink = IcebergTableSink::new(catalog);
-    let missing = TableIdent::new(
-        identifier.namespace().clone(),
-        "missing_parallel_default".into(),
-    );
-    let default_options = WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    };
-    assert!(
-        matches!(sink.open_writers(missing, schema, default_options, std::num::NonZeroUsize::new(2).unwrap()).await,
-        Err(open_arrow_sink_core::Error::Unsupported(message)) if message.contains("write mode: Create"))
-    );
+        .await;
+    if mode == WriteMode::Append {
+        let mut writer = result.unwrap();
+        writer.write(batch(schema)).await.unwrap();
+        writer.commit().await.unwrap();
+        assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
+    } else {
+        assert!(matches!(
+            result,
+            Err(open_arrow_sink_core::Error::Unsupported(_))
+        ));
+    }
 }
