@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::{PartitionKey, Struct, TableProperties};
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
@@ -11,12 +10,14 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Compression, CompressionCapability, CompressionCodec, Error, Ordering, PartitionType, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
+    Compression, CompressionCapability, CompressionCodec, Ordering, PartitionType, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
 };
 
 use crate::{
-    error::backend, partition::PartitionWriterAdapter, validation::validate_table,
+    error::backend,
+    partition::PartitionWriterAdapter,
+    validation::{validate_options, validate_table},
     writer::IcebergTableWriter,
 };
 
@@ -68,22 +69,10 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&schema, &options, self.capability())?;
-        // The SDK writes Parquet, whose supported Zstandard levels are 1..=22.
-        if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
-            && !(1..=22).contains(&level)
-        {
-            return Err(Error::Unsupported(format!(
-                "Iceberg Zstd compression level must be between 1 and 22: {level}"
-            )));
-        }
+        validate_options(&schema, &options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
         let metadata = table.metadata();
-        validate_table(&table, options.partition)?;
-        let table_schema = schema_to_arrow_schema(metadata.current_schema()).map_err(backend)?;
-        if schema.as_ref() != &table_schema {
-            return Err(Error::SchemaMismatch);
-        }
+        validate_table(&table, &schema, options.partition)?;
         // A private session prefix lets abort remove only this writer's files.
         let id = uuid::Uuid::new_v4().to_string();
         let prefix = format!(
