@@ -1,11 +1,16 @@
-use std::{io, path::PathBuf};
+use std::{num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
-    async_trait, validation,
+    CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{error::backend, validation::validate_indexes, writer::LanceWriter};
+use crate::{
+    compression::writer_schema,
+    error::{backend, invalid_path},
+    validation::validate_options,
+    writer::LanceWriter,
+};
 
 /// Creates a new local dataset directory. Existing paths are always rejected.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -18,7 +23,12 @@ impl Sink for LanceDatasetSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
+            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
             ordering: Ordering::Unordered,
+            compression: CompressionCapability {
+                global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
+                per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
+            },
             supported_partitions: vec![],
             supported_indexes: &[
                 IndexType::Scalar,
@@ -35,30 +45,58 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
+        validate_options(&schema, &options, self.capability())?;
         let storage_schema = crate::blob::storage_schema(&schema)?;
-        validate_indexes(&schema, &options.indexes)?;
+        // Apply compression to logical fields before creating native blob descriptors.
+        // Lance rebuilds descriptor children internally and expects their native types.
+        let encoding_schema =
+            crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.
         // TODO: Use OpenDAL to support remote storage beyond local paths.
         let path = std::path::absolute(path).map_err(backend)?;
-        let uri = path
-            .to_str()
-            .ok_or_else(|| {
-                backend(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Lance requires a UTF-8 path",
-                ))
-            })?
-            .to_owned();
+        let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
         tokio::fs::create_dir(&path).await.map_err(backend)?;
         Ok(Box::new(LanceWriter::new(
             schema,
             storage_schema,
+            encoding_schema,
             path,
             uri,
             options.target_file_size,
             options.indexes,
         )))
+    }
+}
+
+#[async_trait]
+impl ParallelSink for LanceDatasetSink {
+    type Output = (u64, lance::dataset::transaction::Transaction);
+    async fn open_writers(
+        &self,
+        path: PathBuf,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<WriteSession<Self::Output>> {
+        validate_options(&schema, &options, self.capability())?;
+        let encoding_schema = writer_schema(&schema, &options.compression);
+        let path = std::path::absolute(path).map_err(backend)?;
+        let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
+        tokio::fs::create_dir(&path).await.map_err(backend)?;
+        let writers = (0..count.get())
+            .map(|_| {
+                Box::new(crate::parallel::FragmentWriter::new(
+                    schema.clone(),
+                    encoding_schema.clone(),
+                    uri.clone(),
+                    options.target_file_size,
+                )) as Box<dyn DataWriter<Output = Self::Output>>
+            })
+            .collect();
+        Ok(WriteSession {
+            writers,
+            committer: Box::new(crate::committer::LanceCommitter { path, uri, options }),
+        })
     }
 }

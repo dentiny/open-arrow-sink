@@ -1,17 +1,44 @@
-//! Index configuration validation before destination creation.
+//! Configuration validation before destination creation.
 use arrow_schema::{DataType, Schema};
-use open_arrow_sink_core::{IndexSpec, IndexType, Result, validation};
+use open_arrow_sink_core::{
+    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+};
+
+use crate::error;
+
+pub(crate) fn validate_options(
+    schema: &Schema,
+    options: &WriteOptions,
+    capability: SinkCapability,
+) -> Result<()> {
+    validation::validate_options(schema, options, capability)?;
+    for compression in options
+        .compression
+        .global
+        .iter()
+        .chain(options.compression.columns.values())
+    {
+        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
+        if let Compression::Zstd { level: Some(level) } = compression
+            && *level != 0
+            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
+        {
+            return Err(error::invalid_compression_level(*level));
+        }
+    }
+    validate_indexes(schema, &options.indexes)
+}
+
+use crate::error::{missing_index_column, unsupported_index};
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
     validation::validate_indexes(schema, indexes)?;
     for index in indexes {
-        let field = schema.field_with_name(&index.column).map_err(|_| {
-            open_arrow_sink_core::Error::Unsupported(format!(
-                "index column not found: {}",
-                index.column
-            ))
-        })?;
+        let field = schema
+            .field_with_name(&index.column)
+            .map_err(|_| missing_index_column(&index.column))?;
         let supported = match index.index_type {
             IndexType::Scalar => matches!(
                 field.data_type(),
@@ -64,12 +91,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
             ),
         };
         if !supported {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "cannot create {:?} index on column {} with type {}",
-                index.index_type,
-                index.column,
-                field.data_type()
-            )));
+            return Err(unsupported_index(index, field.data_type()));
         }
     }
     Ok(())

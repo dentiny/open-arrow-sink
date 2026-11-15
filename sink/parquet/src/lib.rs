@@ -1,5 +1,7 @@
 //! Create-only local directory sink with optional target-size Parquet file rolling.
 
+mod committer;
+mod compression;
 mod error;
 mod sink;
 mod writer;

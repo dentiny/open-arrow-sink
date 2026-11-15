@@ -13,17 +13,21 @@ use open_arrow_sink_core::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{error::backend, index::build_indexes};
+use crate::{
+    compression::writer_batch,
+    error::{aborted, backend, failed, worker_stopped},
+    index::build_indexes,
+};
 
-enum Message {
+pub(crate) enum Message {
     Batch(RecordBatch),
     Commit,
 }
 
-struct ChannelReader {
-    schema: SchemaRef,
-    receiver: mpsc::Receiver<Message>,
-    finished: bool,
+pub(crate) struct ChannelReader {
+    pub(crate) schema: SchemaRef,
+    pub(crate) receiver: mpsc::Receiver<Message>,
+    pub(crate) finished: bool,
 }
 
 impl Iterator for ChannelReader {
@@ -42,10 +46,7 @@ impl Iterator for ChannelReader {
             }
             None => {
                 self.finished = true;
-                Some(Err(ArrowError::ExternalError(Box::new(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Lance writer aborted or dropped",
-                )))))
+                Some(Err(aborted()))
             }
         }
     }
@@ -59,6 +60,7 @@ impl RecordBatchReader for ChannelReader {
 
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
+    encoding_schema: SchemaRef,
     path: PathBuf,
     storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
@@ -85,7 +87,7 @@ impl Writer for LanceWriter {
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         if self.failed || self.blob_session.failed.load(Ordering::Relaxed) {
-            return Err(backend(io::Error::other("writer failed; abort or drop it")));
+            return Err(failed());
         }
         self.failed = true;
         let blob = crate::blob::create_blob(&self.path, self.blob_session.clone()).await?;
@@ -99,19 +101,20 @@ impl Writer for LanceWriter {
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
         if self.failed || self.blob_session.failed.load(Ordering::Relaxed) {
-            return Err(backend(io::Error::other("writer failed; abort or drop it")));
+            return Err(failed());
         }
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch =
             crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
+        let batch = writer_batch(batch, &self.encoding_schema)?;
         self.sender
             .as_ref()
             .unwrap()
             .send(Message::Batch(batch))
             .await
-            .map_err(|_| backend(io::Error::other("Lance write worker stopped")))?;
+            .map_err(|_| worker_stopped())?;
         self.rows += rows;
         self.failed = false;
         Ok(())
@@ -153,6 +156,7 @@ impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         storage_schema: SchemaRef,
+        encoding_schema: SchemaRef,
         path: PathBuf,
         uri: String,
         target_file_size: Option<usize>,
@@ -160,7 +164,7 @@ impl LanceWriter {
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
-            schema: storage_schema.clone(),
+            schema: encoding_schema.clone(),
             receiver,
             finished: false,
         };
@@ -173,6 +177,7 @@ impl LanceWriter {
         Self {
             schema,
             storage_schema,
+            encoding_schema,
             blob_session: Arc::new(crate::blob::BlobSession::default()),
             path,
             sender: Some(sender),

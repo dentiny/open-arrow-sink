@@ -23,9 +23,10 @@ An empty session leaves the table unchanged.
 Enable identity partition routing with the shared write option:
 
 ```rust
-use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteOptions};
+use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions};
 
 let options = WriteOptions {
+    mode: WriteMode::Append,
     ordering: Ordering::Unordered,
     partition: Some(PartitionOptions {
         partition_type: PartitionType::Identity,
@@ -85,13 +86,13 @@ partition writers, and an empty session does not publish a snapshot.
 row-group buffering and file footers may make actual files larger.
 
 `abort` drops the file writer and attempts to delete only that session's unique
-data prefix. Drop and failed/cancelled commits can leave orphan files. Commit
+data prefix when `cleanup_on_error` is enabled. Drop and failed/cancelled commits can leave orphan files. Commit
 errors may have an unknown publication outcome: reload/reconcile the table before
 retrying; files are deliberately retained on failure to avoid deleting committed
 data. SDK catalog commit behavior (including its retry policy) applies.
 
 This sink has no table creation, mixed partition transform categories, schema evolution,
-overwrite, upsert, sorting or concurrency settings.
+overwrite, upsert or sorting.
 
 ```sh
 cargo run -p open-arrow-sink-iceberg --example append
@@ -105,3 +106,29 @@ rows, and reads them through the Iceberg scanner.
 This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
 `WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
 or accessing the destination. The default empty list keeps existing behavior.
+
+## Compression
+
+Supports global data-file compression through `WriteOptions.compression` or
+`CompressionLayer`: Uncompressed, Snappy, Gzip, Zstd, Lz4Raw. Overrides apply only
+to this session, retaining other table writer settings. Column overrides are
+unsupported and rejected before catalog access. Empty options retain table defaults.
+
+Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
+Levels 1 through 22 are supported; unsupported levels are rejected before catalog
+access. `level: None` uses the codec default instead of the table's previous level.
+
+## Concurrent writing
+
+Wrap `IcebergTableSink` in `UnorderedWriteLayer::new(concurrency)` and explicitly
+allow `Ordering::Unordered`. The sink loads and validates the table once and
+creates independent Parquet writers with disjoint private prefixes. Each writer
+honors the target file size and destination partition spec. A writer can produce
+multiple files and, when partitioned, multiple partition writers.
+
+Finishing a data writer returns its `DataFile` metadata without modifying the
+catalog. The session committer combines all files in one fast-append transaction,
+so there is no per-worker table commit. An empty session publishes no snapshot.
+Before publication, failures abort every writer according to the cleanup policy.
+After publication starts, errors retain files because the catalog may already
+reference them. Per-writer encoding/fanout buffers multiply with concurrency.

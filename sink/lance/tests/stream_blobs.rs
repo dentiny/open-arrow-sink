@@ -4,7 +4,7 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Ordering, Sink, WriteOptions,
+    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Compression, Ordering, Sink, WriteOptions,
 };
 use open_arrow_sink_lance::LanceDatasetSink;
 
@@ -28,13 +28,20 @@ fn options() -> WriteOptions {
     }
 }
 
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(Compression::Zstd { level: Some(3) }))]
 #[tokio::test]
-async fn streams_native_blobs_and_preserves_empty_and_null() {
+async fn streams_native_blobs_and_preserves_empty_and_null(
+    #[case] compression: Option<Compression>,
+) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let input = input();
+    let mut options = options();
+    options.compression.global = compression;
     let mut writer = LanceDatasetSink
-        .open(path.clone(), input.schema(), options())
+        .open(path.clone(), input.schema(), options)
         .await
         .unwrap();
     assert!(writer.supports_blob_streams());
