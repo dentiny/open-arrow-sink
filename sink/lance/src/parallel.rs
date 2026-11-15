@@ -1,19 +1,10 @@
-use std::path::PathBuf;
-
-use lance::dataset::{
-    CommitBuilder, InsertBuilder, WriteParams,
-    transaction::{Operation, Transaction},
-};
-use open_arrow_sink_core::{
-    DataWriter, Error, IndexSpec, RecordBatch, Result, SchemaRef, SessionCommitter, WriteSummary,
-    async_trait, validation,
-};
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
+use open_arrow_sink_core::{DataWriter, RecordBatch, Result, SchemaRef, async_trait, validation};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
     error::{backend, failed, worker_stopped},
-    index::build_indexes,
     writer::{ChannelReader, Message},
 };
 
@@ -112,62 +103,6 @@ impl DataWriter for FragmentWriter {
             let _ = task.await;
         }
         // Session cleanup runs only after every worker has stopped.
-        Ok(())
-    }
-}
-
-pub(crate) struct LanceCommitter {
-    pub path: PathBuf,
-    pub uri: String,
-    pub indexes: Vec<IndexSpec>,
-    pub cleanup_on_error: bool,
-}
-
-#[async_trait]
-impl SessionCommitter<Output> for LanceCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<Output>) -> Result<WriteSummary> {
-        let mut rows_written = 0;
-        let mut combined: Option<Transaction> = None;
-        for (rows, transaction) in outputs {
-            rows_written += rows;
-            if let Some(target) = &mut combined {
-                match (&mut target.operation, transaction.operation) {
-                    (
-                        Operation::Overwrite { fragments, .. },
-                        Operation::Overwrite {
-                            fragments: incoming,
-                            ..
-                        },
-                    ) => fragments.extend(incoming),
-                    _ => {
-                        return Err(Error::Unsupported(
-                            "expected uncommitted Lance create fragments".into(),
-                        ));
-                    }
-                }
-            } else {
-                combined = Some(transaction);
-            }
-        }
-        let transaction =
-            combined.ok_or_else(|| Error::Unsupported("empty Lance writer session".into()))?;
-        // One manifest publication assigns fragment IDs across all workers.
-        // Retain files on failure: publication may already have succeeded.
-        let mut dataset = CommitBuilder::new(self.uri.as_str())
-            .execute(transaction)
-            .await
-            .map_err(backend)?;
-        build_indexes(&mut dataset, &self.indexes)
-            .await
-            .map_err(backend)?;
-        Ok(WriteSummary { rows_written })
-    }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        if self.cleanup_on_error {
-            tokio::fs::remove_dir_all(&self.path)
-                .await
-                .map_err(backend)?;
-        }
         Ok(())
     }
 }

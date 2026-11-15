@@ -1,5 +1,6 @@
 //! Create-only local Lance datasets. Requires a Tokio runtime.
 
+mod committer;
 mod compression;
 mod error;
 mod sink;

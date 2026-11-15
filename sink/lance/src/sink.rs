@@ -90,7 +90,7 @@ impl ParallelSink for LanceDatasetSink {
             .collect();
         Ok(WriteSession {
             writers,
-            committer: Box::new(crate::parallel::LanceCommitter {
+            committer: Box::new(crate::committer::LanceCommitter {
                 path,
                 uri,
                 indexes: options.indexes,
