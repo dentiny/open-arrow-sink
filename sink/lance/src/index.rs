@@ -11,6 +11,8 @@ use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
 use tokio::task::JoinSet;
 
+use crate::error::{index_creation, index_refresh, index_task};
+
 const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 const MAX_VECTOR_PARTITIONS: usize = 4096;
 
@@ -28,12 +30,7 @@ pub(crate) async fn build_indexes(
         tasks.spawn(async move {
             create_index(&mut dataset, &spec)
                 .await
-                .map_err(|error| IndexCommitError {
-                    message: format!(
-                        "creating {:?} index on '{}': {error}",
-                        spec.index_type, spec.column
-                    ),
-                })
+                .map_err(|error| index_creation(&spec, error))
         });
     }
 
@@ -41,11 +38,7 @@ pub(crate) async fn build_indexes(
     // index commits that could keep modifying the dataset in the background.
     let mut first_error = None;
     while let Some(result) = tasks.join_next().await {
-        let result = result.unwrap_or_else(|error| {
-            Err(IndexCommitError {
-                message: format!("index construction task failed: {error}"),
-            })
-        });
+        let result = result.unwrap_or_else(|error| Err(index_task(error)));
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -53,9 +46,7 @@ pub(crate) async fn build_indexes(
     // Each task commits through its own handle. Refresh the caller's snapshot
     // after all tasks finish, including when only some indexes succeeded.
     if let Err(error) = dataset.checkout_latest().await {
-        first_error.get_or_insert_with(|| IndexCommitError {
-            message: format!("refreshing dataset after index construction: {error}"),
-        });
+        first_error.get_or_insert_with(|| index_refresh(error));
     }
     match first_error {
         Some(error) => Err(error),
