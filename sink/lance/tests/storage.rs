@@ -151,3 +151,60 @@ async fn shared_operator_abort_honors_cleanup(
     );
     assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
 }
+
+#[rstest::rstest]
+#[case::single_append(1, open_arrow_sink_core::WriteMode::Append, 6)]
+#[case::parallel_append(3, open_arrow_sink_core::WriteMode::Append, 6)]
+#[case::single_overwrite(1, open_arrow_sink_core::WriteMode::Overwrite, 3)]
+#[case::parallel_overwrite(3, open_arrow_sink_core::WriteMode::Overwrite, 3)]
+#[tokio::test]
+async fn remote_write_modes_preserve_native_commits(
+    #[case] count: usize,
+    #[case] mode: open_arrow_sink_core::WriteMode,
+    #[case] expected_rows: usize,
+) {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("modes/").unwrap();
+    let mut seed = sink
+        .open(url.clone(), batch().schema(), write_options())
+        .await
+        .unwrap();
+    seed.write(batch()).await.unwrap();
+    seed.commit().await.unwrap();
+    let snapshot = sink
+        .dataset_builder(url.clone())
+        .unwrap()
+        .load()
+        .await
+        .unwrap();
+    let options = WriteOptions {
+        mode,
+        ..write_options()
+    };
+    let mut writer = if count == 1 {
+        sink.open(url.clone(), batch().schema(), options)
+            .await
+            .unwrap()
+    } else {
+        sink.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(count).unwrap()))
+            .open(url.clone(), batch().schema(), options)
+            .await
+            .unwrap()
+    };
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    assert_eq!(
+        sink.dataset_builder(url)
+            .unwrap()
+            .load()
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        expected_rows
+    );
+    assert_eq!(snapshot.count_rows(None).await.unwrap(), 3);
+}
