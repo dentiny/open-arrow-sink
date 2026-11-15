@@ -130,6 +130,15 @@ session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session. Abort or a rejected commit removes a freshly reserved dataset
 when `cleanup_on_error` is enabled; existing datasets are preserved.
 
+## External blob ingestion
+
+Native logical blob fields may contain source URIs. Set
+`LanceDatasetSink::with_external_blob_mode(ExternalBlobMode::Ingest)` to copy
+those values into destination-owned storage, matching the conversion service.
+The default remains `ExternalBlobMode::Reference`, which retains external URIs.
+This setting applies to native logical blob inputs in single and parallel writes;
+`DownloadBlobLayer` already creates destination-owned managed streams directly.
+
 ## Compression
 
 Supports global and per-column `Compression::Zstd { level }` and
@@ -219,12 +228,3 @@ existing manifest's format for an existing dataset. An explicit version is passe
 to Lance for create, append, and overwrite, including parallel and blob writers.
 Appending with an explicit version affects the new files and preserves the manifest's
 default version. This selects the file format, independently of the dataset's commit version.
-
-## External blob ingestion
-
-Native logical blob fields may contain source URIs. Set
-`LanceDatasetSink::with_external_blob_mode(ExternalBlobMode::Ingest)` to copy
-those values into destination-owned storage, matching the conversion service.
-The default remains `ExternalBlobMode::Reference`, which retains external URIs.
-This setting applies to native logical blob inputs in single and parallel writes;
-`DownloadBlobLayer` already creates destination-owned managed streams directly.
