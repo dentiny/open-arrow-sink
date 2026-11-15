@@ -40,3 +40,25 @@ Filesystem operators must leave OpenDAL's `atomic_write_dir` unset. In OpenDAL
 The default filesystem resolver therefore uses non-staged writes. Abort drops
 those file handles; the owning sink removes its already-visible files. This
 keeps local reservation and concurrent manifest publication safe.
+
+## Alignment with open-arrow-access
+
+The shared policy implementation is ported from
+[open-arrow-access/storage](https://github.com/dentiny/open-arrow-access/tree/bbd6284585dbf60f802bab1cbe13acfbb37ce8ae/storage).
+`config.rs` and `http_limit.rs` are copied with only the core-crate namespace
+changed. `StorageConfig::validate` and its policy error messages follow the same
+implementation, kept in `validation.rs` and `error.rs`. `backend.rs` uses the
+same configured-operator and transport-budget pattern as `OpenDalAccessor`.
+
+Each storage instance defaults to 64 ongoing HTTP requests, shared by its clones.
+Use `with_http_concurrency_limit(limit.clone())` to share a total budget across
+separately constructed storage instances. `operator()` returns a cloned operator
+wrapped with that same budget, including when a native sink SDK uses it.
+`Storage::try_new` applies the copied retry/timeout configuration before creating
+the storage binding. Errors retain operation/object context and their original
+OpenDAL source through the sink core's existing backend-error contract.
+
+The remaining additions support this repository's write contract: a URL-scoped
+namespace, streaming close/abort, conditional creation, and owned-output cleanup.
+The access repository's read-only `ByteReader` and `NamedFileAccessor` contracts
+are not exposed as write APIs here. No dependency on open-arrow-access is added.
