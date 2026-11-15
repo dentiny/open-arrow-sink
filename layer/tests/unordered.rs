@@ -24,6 +24,8 @@ struct State {
     fail_finish: bool,
     fail_abort: bool,
     wrong_count: bool,
+    unordered: bool,
+    requested_ordering: Option<Ordering>,
     wrong_schema: bool,
     prepared: usize,
     commit_attempts: usize,
@@ -48,7 +50,11 @@ impl Sink for TestSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            ordering: Ordering::PreserveInput,
+            ordering: if self.0.lock().unwrap().unordered {
+                Ordering::Unordered
+            } else {
+                Ordering::PreserveInput
+            },
             compression: Default::default(),
             supported_partitions: vec![],
             supports_blob_handle: false,
@@ -68,9 +74,10 @@ impl ParallelSink for TestSink {
         &self,
         _: (),
         schema: SchemaRef,
-        _: WriteOptions,
+        options: WriteOptions,
         writers: NonZeroUsize,
     ) -> Result<WriteSession<u64>> {
+        self.0.lock().unwrap().requested_ordering = Some(options.ordering);
         let mut result = Vec::new();
         let count = if self.0.lock().unwrap().wrong_count {
             0
@@ -430,4 +437,43 @@ async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
     assert!(writer.abort().await.is_err());
     let state = state.lock().unwrap();
     assert_eq!((state.aborted, state.session_aborted), (2, 1));
+}
+
+#[tokio::test]
+async fn ordering_layer_parallel_open_respects_inner_ordering_capability() {
+    for unordered in [false, true] {
+        for requested in [Ordering::PreserveInput, Ordering::Unordered] {
+            let state = Arc::new(Mutex::new(State {
+                unordered,
+                ..State::default()
+            }));
+            let sink =
+                TestSink(state.clone()).layer(open_arrow_sink_layer::OrderingLayer::new(requested));
+            let result = sink
+                .open_writers(
+                    (),
+                    Arc::new(arrow_schema::Schema::empty()),
+                    WriteOptions {
+                        ordering: if requested == Ordering::PreserveInput {
+                            Ordering::Unordered
+                        } else {
+                            Ordering::PreserveInput
+                        },
+                        ..WriteOptions::default()
+                    },
+                    NonZeroUsize::MIN,
+                )
+                .await;
+            let supported = !unordered || requested == Ordering::Unordered;
+            assert_eq!(result.is_ok(), supported, "{unordered:?}, {requested:?}");
+            assert_eq!(state.lock().unwrap().opened, usize::from(supported));
+            if let Ok(session) = result {
+                assert_eq!(state.lock().unwrap().requested_ordering, Some(requested));
+                for writer in session.writers {
+                    writer.abort().await.unwrap();
+                }
+                session.committer.abort().await.unwrap();
+            }
+        }
+    }
 }
