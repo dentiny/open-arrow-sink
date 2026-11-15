@@ -14,7 +14,10 @@ pub(crate) struct Destination {
     storage: Storage,
     directory: Url,
     prefix: String,
-    remove_directory: bool,
+    // Create owns the destination; overwrite owns its staging directory.
+    // Append shares an existing directory and must preserve its reservation.
+    // Only owners create/remove the reservation and clean up the empty directory.
+    owns_directory: bool,
     target: Option<Url>,
     cleanup_on_error: bool,
 }
@@ -27,7 +30,7 @@ impl Destination {
         cleanup_on_error: bool,
     ) -> Result<Self> {
         let directory = storage.directory_url(&directory)?;
-        let (directory, prefix, target, remove_directory) = match mode {
+        let (directory, prefix, target, owns_directory) = match mode {
             WriteMode::Create => (directory, "part-".into(), None, true),
             WriteMode::Append => {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
@@ -51,10 +54,10 @@ impl Destination {
             directory,
             prefix,
             target,
-            remove_directory,
+            owns_directory,
             cleanup_on_error,
         };
-        if destination.remove_directory {
+        if destination.owns_directory {
             destination.reserve().await?;
         }
         Ok(destination)
@@ -92,7 +95,7 @@ impl Destination {
         result
     }
     pub(crate) async fn complete_reservation(&self) -> Result<()> {
-        if self.remove_directory {
+        if self.owns_directory {
             self.storage.delete(&self.child(RESERVATION)).await?;
         }
         Ok(())
@@ -101,7 +104,7 @@ impl Destination {
         self.storage.delete(&self.file(index)).await
     }
     pub(crate) async fn remove_reservation(&self) -> Result<()> {
-        if !self.remove_directory {
+        if !self.owns_directory {
             return Ok(());
         }
         let marker = self.child(RESERVATION);
