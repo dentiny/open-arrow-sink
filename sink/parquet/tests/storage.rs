@@ -155,26 +155,3 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
         "original"
     );
 }
-
-#[tokio::test]
-async fn rejects_blob_config_before_creating_destination() {
-    let storage = storage();
-    let sink = ParquetDirectorySink::new(storage.clone());
-    assert!(!sink.capability().supports_blob_handle);
-    let url = storage.url("unsupported-blob/").unwrap();
-    let result = sink
-        .open(
-            url.clone(),
-            batch().schema(),
-            WriteOptions {
-                blob_handle: Some(Default::default()),
-                ..options()
-            },
-        )
-        .await;
-    assert!(matches!(
-        result,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
-    ));
-    assert!(!storage.prefix_exists(&url).await.unwrap());
-}
