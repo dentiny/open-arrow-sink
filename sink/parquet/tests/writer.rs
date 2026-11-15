@@ -27,8 +27,11 @@ fn options() -> WriteOptions {
     }
 }
 
+#[rstest::rstest]
+#[case::default(None)]
+#[case::large_target(Some(256 * 1024 * 1024))]
 #[tokio::test]
-async fn commit_round_trips_multiple_batches() {
+async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<usize>) {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
@@ -36,7 +39,10 @@ async fn commit_round_trips_multiple_batches() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            options(),
+            WriteOptions {
+                target_file_size,
+                ..options()
+            },
         )
         .await
         .unwrap();
@@ -48,11 +54,10 @@ async fn commit_round_trips_multiple_batches() {
     let file = tokio::fs::File::open(directory.join("part-00000.parquet"))
         .await
         .unwrap();
-    let mut reader = ParquetRecordBatchStreamBuilder::new(file)
-        .await
-        .unwrap()
-        .build()
-        .unwrap();
+    let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
+    // Small input batches share a row group, including nulls and strings.
+    assert_eq!(builder.metadata().num_row_groups(), 1);
+    let mut reader = builder.build().unwrap();
     let mut offset = 0;
     while let Some(actual) = reader.try_next().await.unwrap() {
         assert_eq!(actual, expected.slice(offset, actual.num_rows()));
