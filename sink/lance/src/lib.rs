@@ -3,6 +3,7 @@
 mod committer;
 mod compression;
 mod error;
+mod provider;
 mod sink;
 mod validation;
 mod writer;
