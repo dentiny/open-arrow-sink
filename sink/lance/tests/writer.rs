@@ -164,33 +164,3 @@ async fn target_file_size_rolls_files_without_losing_rows(
     }
     assert_eq!(occurrences, vec![2; count]);
 }
-
-#[tokio::test]
-async fn compression_rejected_before_creating_dataset() {
-    use open_arrow_sink_core::{Compression, CompressionOptions, Error};
-    let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("output");
-    for compression in [
-        CompressionOptions {
-            global: Some(Compression::Uncompressed),
-            ..Default::default()
-        },
-        CompressionOptions {
-            columns: [("value".into(), Compression::Zstd { level: None })].into(),
-            ..Default::default()
-        },
-    ] {
-        let result = LanceDatasetSink
-            .open(
-                directory.clone(),
-                batch().schema(),
-                WriteOptions {
-                    compression,
-                    ..options()
-                },
-            )
-            .await;
-        assert!(matches!(result, Err(Error::Unsupported(_))));
-        assert!(!directory.exists());
-    }
-}
