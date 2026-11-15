@@ -16,6 +16,9 @@ use crate::{
     validation::validate_download_config,
 };
 
+const DEFAULT_MAX_BLOB_BYTES: NonZeroUsize = NonZeroUsize::new(16 * 1024 * 1024).unwrap();
+const DEFAULT_ROWS_PER_BATCH: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+
 /// Download explicit top-level URL columns over HTTP(S), replacing each with a
 /// blob-marked LargeBinary column. Nulls and input row order are preserved.
 /// Requires a Tokio runtime. Downloads share a global pool by default, without
@@ -33,8 +36,8 @@ impl DownloadBlobLayer {
     pub fn new(columns: HashSet<String>) -> Self {
         Self {
             columns,
-            max_blob_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
-            rows_per_batch: NonZeroUsize::new(16).unwrap(),
+            max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
+            rows_per_batch: DEFAULT_ROWS_PER_BATCH,
             download_pool: None,
         }
     }
@@ -51,7 +54,9 @@ impl DownloadBlobLayer {
         self
     }
 
-    /// Bounds output buffering by rows, independently of the caller's batch size.
+    /// Maximum rows per batch forwarded to the inner sink (default: 16).
+    /// Bounds output buffering independently of the caller's batch size;
+    /// download concurrency is controlled separately by the download pool.
     pub fn with_rows_per_batch(mut self, rows: NonZeroUsize) -> Self {
         self.rows_per_batch = rows;
         self
