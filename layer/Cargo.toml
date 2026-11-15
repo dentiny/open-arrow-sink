@@ -16,3 +16,4 @@ futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "net", "io-util", "time"] }
+rstest.workspace = true
