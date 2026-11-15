@@ -79,3 +79,9 @@ A `DownloadPool` can reuse a caller-provided `opendal::HttpTransporter` via
 in-memory test fixtures without installing a process-global default transport.
 The pool preserves its existing concurrency, timeout, and retry layers when the
 transport is replaced. Returned chunks retain the same buffer accounting.
+
+## Related documentation
+
+[Usage](../docs/usage.md) · [Architecture](../docs/architecture.md) ·
+[Support matrix](../docs/support.md) · [Write layers](../layer/README.md) ·
+[Extend a sink](../docs/extending-sinks.md)

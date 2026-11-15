@@ -1,5 +1,16 @@
 # Sinks
 
-- [Parquet directory](parquet/README.md): local or remote URL directory over shared OpenDAL storage with create, append, staged overwrite, and optional target-size file rolling.
-- [Iceberg table](iceberg/README.md): append to existing unpartitioned tables.
-- [Lance dataset](lance/README.md): local or remote datasets with create, append, and versioned overwrite through shared OpenDAL storage.
+A sink maps Arrow batches to a typed destination and owns encoding, publication,
+and cleanup. Start with [usage](../docs/usage.md) and the
+[capability matrix](../docs/support.md), then choose a backend:
+
+| Sink | Destination | Supported modes | Guide |
+| --- | --- | --- | --- |
+| `ParquetDirectorySink` | Local/cloud URL directory | Create, Append, filesystem staged Overwrite | [Parquet](parquet/README.md) |
+| `IcebergTableSink` | Existing catalog table | Append; existing partition specs supported | [Iceberg](iceberg/README.md) |
+| `LanceDatasetSink` | Local/cloud dataset URL | Create, Append, versioned Overwrite | [Lance](lance/README.md) |
+
+All three require explicit `Ordering::Unordered` and implement `ParallelSink`.
+Iceberg additionally requires `WriteMode::Append`; the shared default Create is
+unsupported. [Write layers](../layer/README.md) add reusable policy and execution.
+To add another destination, follow [extend a sink](../docs/extending-sinks.md).
