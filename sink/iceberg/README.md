@@ -116,3 +116,15 @@ unsupported and rejected before catalog access. Empty options retain table defau
 Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
 Levels 1 through 22 are supported; unsupported levels are rejected before catalog
 access. `level: None` uses the codec default instead of the table's previous level.
+
+### Supported write modes
+
+`IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
+`WriteOptions { mode: Some(WriteMode::Append), ..options }` explicitly appends to
+an existing table; `mode: None` keeps the same default. A missing table is an error.
+
+Create and Overwrite return `Error::Unsupported` before catalog access, leaving
+existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes
+fast append but no public full-overwrite transaction, and `TableIdent` does not
+carry table creation settings. This sink never drops/recreates a table to emulate
+overwrite. Callers can inspect capabilities to choose an appropriate sink or mode.

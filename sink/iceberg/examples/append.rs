@@ -6,7 +6,7 @@ use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
-use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
 
 #[tokio::main]
@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             identifier.clone(),
             schema,
             WriteOptions {
+                mode: Some(WriteMode::Append),
                 ordering: Ordering::Unordered,
                 ..WriteOptions::default()
             },

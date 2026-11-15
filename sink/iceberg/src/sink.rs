@@ -11,7 +11,7 @@ use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
     Compression, CompressionCapability, CompressionCodec, Ordering, PartitionType, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait,
+    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, Writer, async_trait,
 };
 
 use crate::{
@@ -21,7 +21,11 @@ use crate::{
     writer::IcebergTableWriter,
 };
 
-/// Uses a caller-configured catalog; the table must already exist.
+/// Appends to an existing table in a caller-configured catalog.
+/// Append is the default and the only advertised write mode. Explicit Create
+/// and Overwrite are rejected before catalog access: iceberg-rust 0.11 exposes
+/// no public full-overwrite transaction, and this request carries no table
+/// creation configuration. Tables are never dropped/recreated to emulate overwrite.
 pub struct IcebergTableSink {
     catalog: Arc<dyn Catalog>,
 }
@@ -38,7 +42,7 @@ impl Sink for IcebergTableSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Append],
+            supported_modes: &[WriteMode::Append],
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: &[
