@@ -722,6 +722,7 @@ async fn assert_numeric_partition_round_trip(
 )]
 #[tokio::test]
 async fn compression_survives_rolling_and_round_trips(
+    #[values(false, true)] parallel: bool,
     #[case] codec: open_arrow_sink_core::Compression,
     #[case] expected: parquet::basic::Compression,
 ) {
@@ -729,6 +730,14 @@ async fn compression_survives_rolling_and_round_trips(
     let (catalog, identifier, schema) = table().await;
     let before = catalog.load_table(&identifier).await.unwrap();
     let sink = IcebergTableSink::new(catalog.clone());
+    use open_arrow_sink_core::SinkExt;
+    let sink: Box<dyn Sink<Request = TableIdent>> = if parallel {
+        Box::new(sink.layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
+            std::num::NonZeroUsize::new(2).unwrap(),
+        )))
+    } else {
+        Box::new(sink)
+    };
     let mut options = options();
     options.compression.global = Some(codec);
     options.target_file_size = Some(1);
@@ -771,4 +780,160 @@ async fn compression_survives_rolling_and_round_trips(
         }
     }
     assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 6);
+}
+
+#[rstest::rstest]
+#[case::unpartitioned(false)]
+#[case::partitioned(true)]
+#[tokio::test]
+async fn parallel_data_writers_publish_all_files_in_one_snapshot(#[case] partitioned: bool) {
+    use open_arrow_sink_core::ParallelSink;
+    use std::num::NonZeroUsize;
+    let (catalog, identifier, schema) =
+        table_with_spec(partitioned.then(|| identity_spec(false))).await;
+    let mut opts = options();
+    if partitioned {
+        opts.partition = Some(PartitionOptions::default());
+    }
+    let sink = IcebergTableSink::new(catalog.clone());
+    let mut session = sink
+        .open_writers(
+            identifier.clone(),
+            schema.clone(),
+            opts,
+            NonZeroUsize::new(3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut session.writers {
+        writer.write(batch(schema.clone())).await.unwrap();
+        outputs.push(writer.finish().await.unwrap());
+    }
+    assert!(
+        catalog
+            .load_table(&identifier)
+            .await
+            .unwrap()
+            .metadata()
+            .current_snapshot_id()
+            .is_none()
+    );
+    assert_eq!(
+        session
+            .committer
+            .commit(outputs)
+            .await
+            .unwrap()
+            .rows_written,
+        9
+    );
+    let table = catalog.load_table(&identifier).await.unwrap();
+    assert_eq!(table.metadata().snapshots().len(), 1);
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(files.len() >= 3);
+    assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 9);
+}
+
+#[tokio::test]
+async fn unordered_layer_commits_iceberg_once_and_rejects_failed_sessions() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+    for fail in [false, true] {
+        let (catalog, identifier, schema) = table().await;
+        let sink = IcebergTableSink::new(catalog.clone())
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
+        let mut writer = sink
+            .open(identifier.clone(), schema.clone(), options())
+            .await
+            .unwrap();
+        for _ in 0..6 {
+            writer.write(batch(schema.clone())).await.unwrap();
+        }
+        if fail {
+            let bad = RecordBatch::try_from_iter([(
+                "wrong",
+                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            )])
+            .unwrap();
+            assert!(writer.write(bad).await.is_err());
+            assert!(writer.commit().await.is_err());
+            assert!(
+                catalog
+                    .load_table(&identifier)
+                    .await
+                    .unwrap()
+                    .metadata()
+                    .current_snapshot_id()
+                    .is_none()
+            );
+        } else {
+            assert_eq!(writer.commit().await.unwrap().rows_written, 18);
+            assert_eq!(
+                catalog
+                    .load_table(&identifier)
+                    .await
+                    .unwrap()
+                    .metadata()
+                    .snapshots()
+                    .len(),
+                1
+            );
+            assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 18);
+        }
+    }
+}
+
+#[tokio::test]
+async fn finished_iceberg_outputs_can_be_aborted_without_touching_committed_data() {
+    use open_arrow_sink_core::ParallelSink;
+    use std::num::NonZeroUsize;
+    for cleanup in [false, true] {
+        let (catalog, identifier, schema) = table().await;
+        let sink = IcebergTableSink::new(catalog.clone());
+        let mut existing = sink
+            .open(identifier.clone(), schema.clone(), options())
+            .await
+            .unwrap();
+        existing.write(batch(schema.clone())).await.unwrap();
+        existing.commit().await.unwrap();
+        let mut session = sink
+            .open_writers(
+                identifier.clone(),
+                schema.clone(),
+                WriteOptions {
+                    cleanup_on_error: cleanup,
+                    ..options()
+                },
+                NonZeroUsize::new(2).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut paths = Vec::new();
+        for writer in &mut session.writers {
+            writer.write(batch(schema.clone())).await.unwrap();
+            let (_, files) = writer.finish().await.unwrap();
+            paths.extend(files.into_iter().map(|f| f.file_path().to_owned()));
+        }
+        for writer in session.writers {
+            writer.abort().await.unwrap();
+        }
+        session.committer.abort().await.unwrap();
+        let table = catalog.load_table(&identifier).await.unwrap();
+        for path in paths {
+            assert_eq!(table.file_io().exists(path).await.unwrap(), !cleanup);
+        }
+        assert_eq!(table.metadata().snapshots().len(), 1);
+        assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
+    }
 }

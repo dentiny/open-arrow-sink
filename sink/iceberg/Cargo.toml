@@ -13,6 +13,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 parquet = { workspace = true, features = ["arrow"] }
+open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 arrow-array.workspace = true
 futures = "0.3"
