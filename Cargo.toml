@@ -35,7 +35,6 @@ description = "Composable, independent Arrow RecordBatch sinks"
 default = []
 sink-lance = ["dep:open-arrow-sink-lance"]
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
-layer-download-blob = ["open-arrow-sink-layer/download-blob"]
 layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
 

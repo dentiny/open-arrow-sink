@@ -1,5 +1,3 @@
-#![cfg(feature = "download-blob")]
-
 use futures::TryStreamExt;
 use open_arrow_sink_layer::DownloadPool;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};

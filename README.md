@@ -165,7 +165,7 @@ Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
 
 ## Streaming download pool
 
-Enable `layer-download-blob` to use `layer::DownloadPool`. Construct a pool with
+`layer::DownloadPool` is always available. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
 writers. Every pool shares one process-wide request limiter. The first pool reads
 `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to its `concurrency` argument

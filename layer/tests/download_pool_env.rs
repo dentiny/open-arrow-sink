@@ -1,5 +1,3 @@
-#![cfg(feature = "download-blob")]
-
 use std::{num::NonZeroUsize, process::Command};
 
 use open_arrow_sink_layer::DownloadPool;
