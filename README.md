@@ -167,12 +167,13 @@ Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
 
 Enable `layer-download-blob` to use `layer::DownloadPool`. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
-writers. `DownloadPool::global()` shares a process-wide pool with 64 request slots
-and a shared 8 GiB payload-buffer budget. Set
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` to override the concurrency when the global
-pool is first initialized. Unset, non-Unicode, invalid, or zero values fall back
-to 64; values above semaphore capacity return an error. Explicitly constructed
-pools use the limits passed to `DownloadPool::new` instead of the environment.
+writers. Every pool shares one process-wide request limiter. The first pool reads
+`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to its `concurrency` argument
+when unset, non-Unicode, invalid, or zero. Later pools reuse that limit, ignoring
+their `concurrency` arguments. Values above semaphore capacity return an error
+without initializing the limiter. `DownloadPool::global()` uses a fallback of 64
+and an 8 GiB transfer-buffer budget. Transfer-buffer budgets remain per pool;
+creating a new pool does not add independent request slots.
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.

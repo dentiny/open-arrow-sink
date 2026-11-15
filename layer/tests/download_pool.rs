@@ -9,6 +9,27 @@ use tokio::{
     task::JoinHandle,
 };
 
+// Each test needs a fresh process-wide request limiter.
+fn run_in_subprocess(name: &str) -> bool {
+    const CHILD: &str = "DOWNLOAD_POOL_TEST_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name])
+        .env(CHILD, name)
+        .env_remove("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    true
+}
+
 struct Server {
     url: String,
     task: JoinHandle<()>,
@@ -60,6 +81,9 @@ fn pool(requests: usize, bytes: usize) -> Arc<DownloadPool> {
 
 #[tokio::test]
 async fn all_streams_share_a_budget_until_consumers_drop_chunks() {
+    if run_in_subprocess("all_streams_share_a_budget_until_consumers_drop_chunks") {
+        return;
+    }
     let server = server(response(32)).await;
     let pool = pool(2, 8);
     let mut a = pool.stream(&server.url).await.unwrap();
@@ -91,6 +115,9 @@ async fn all_streams_share_a_budget_until_consumers_drop_chunks() {
 
 #[tokio::test]
 async fn dropping_stream_releases_request_slot_while_chunk_keeps_memory() {
+    if run_in_subprocess("dropping_stream_releases_request_slot_while_chunk_keeps_memory") {
+        return;
+    }
     let server = server(response(32)).await;
     let pool = pool(1, 8);
     let mut first = pool.stream(&server.url).await.unwrap();
@@ -117,6 +144,9 @@ async fn dropping_stream_releases_request_slot_while_chunk_keeps_memory() {
 
 #[tokio::test]
 async fn blob_larger_than_budget_streams_without_collecting_payload() {
+    if run_in_subprocess("blob_larger_than_budget_streams_without_collecting_payload") {
+        return;
+    }
     let size = 256 * 1024 + 7;
     let server = server(response(size)).await;
     let pool = pool(3, 1024);
@@ -134,6 +164,9 @@ async fn blob_larger_than_budget_streams_without_collecting_payload() {
 
 #[tokio::test]
 async fn errors_release_budget_and_url_validation_precedes_requests() {
+    if run_in_subprocess("errors_release_budget_and_url_validation_precedes_requests") {
+        return;
+    }
     let server = server(
         b"HTTP/1.1 404 Not Found\r\nContent-Length: 999999999\r\nConnection: close\r\n\r\n"
             .to_vec(),
@@ -155,6 +188,9 @@ async fn errors_release_budget_and_url_validation_precedes_requests() {
 
 #[tokio::test]
 async fn timeout_cancels_stalled_body_and_returns_reservation() {
+    if run_in_subprocess("timeout_cancels_stalled_body_and_returns_reservation") {
+        return;
+    }
     use opendal::layers::TimeoutLayer;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -190,6 +226,9 @@ async fn timeout_cancels_stalled_body_and_returns_reservation() {
 
 #[tokio::test]
 async fn opendal_retry_policy_is_explicit_and_preserves_signed_urls() {
+    if run_in_subprocess("opendal_retry_policy_is_explicit_and_preserves_signed_urls") {
+        return;
+    }
     use opendal::layers::{RetryLayer, TimeoutLayer};
     for retry in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -254,4 +293,35 @@ async fn opendal_retry_policy_is_explicit_and_preserves_signed_urls() {
         );
         assert_eq!(pool.buffered_bytes(), 0);
     }
+}
+
+#[tokio::test]
+async fn separate_pools_share_request_slots_but_not_buffer_budgets() {
+    if run_in_subprocess("separate_pools_share_request_slots_but_not_buffer_budgets") {
+        return;
+    }
+    let server = server(response(32)).await;
+    let first = pool(1, 8);
+    let second = pool(64, 16);
+    assert_eq!(second.concurrency(), 1);
+    let mut download = first.stream(&server.url).await.unwrap();
+    let chunk = download.try_next().await.unwrap().unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), second.stream(&server.url))
+            .await
+            .is_err()
+    );
+    drop(download);
+    let mut other = tokio::time::timeout(Duration::from_secs(5), second.stream(&server.url))
+        .await
+        .unwrap()
+        .unwrap();
+    let other_chunk = other.try_next().await.unwrap().unwrap();
+    assert_eq!(first.buffered_bytes(), 8);
+    assert_eq!(second.buffered_bytes(), 16);
+    drop(chunk);
+    drop(other_chunk);
+    drop(other);
+    assert_eq!(first.buffered_bytes(), 0);
+    assert_eq!(second.buffered_bytes(), 0);
 }

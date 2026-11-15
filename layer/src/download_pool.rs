@@ -1,6 +1,6 @@
 use std::{
     num::NonZeroUsize,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use futures::{
@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 use crate::{error::backend, validation};
 
 // These are tuning defaults, not benchmark-established optimal values.
-// Default maximum number of active download streams across the shared pool.
+// Default maximum number of active download streams across the process.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
@@ -28,7 +28,8 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Shared streaming downloads with concurrency and payload-buffer budgets.
 ///
-/// All streams from an `Arc<DownloadPool>` share both limits. Reservations are
+/// All pools share one process-wide request limit, initialized by the first pool.
+/// Transfer-buffer budgets are shared only by streams from the same pool. Reservations are
 /// acquired before allocating/reading a transfer buffer, travel with `BlobChunk`,
 /// and are released only when the consumer drops that chunk. The budget covers
 /// application-owned transfer buffers, including chunks retained by consumers;
@@ -37,23 +38,55 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug)]
 pub struct DownloadPool {
     operator: Operator,
-    requests: Arc<Semaphore>,
+    requests: Arc<RequestLimiter>,
     buffers: Arc<Semaphore>,
-    concurrency: NonZeroUsize,
     max_buffered_bytes: NonZeroUsize,
 }
 
+#[derive(Debug)]
+struct RequestLimiter {
+    semaphore: Arc<Semaphore>,
+    concurrency: NonZeroUsize,
+}
+
+// Serialize initialization so the environment is read only once after a valid
+// configuration is supplied. Failed validation leaves initialization retryable.
+fn request_limiter(
+    fallback: NonZeroUsize,
+    max_buffered_bytes: NonZeroUsize,
+) -> Result<Arc<RequestLimiter>> {
+    static LIMITER: Mutex<Option<Arc<RequestLimiter>>> = Mutex::new(None);
+    let mut limiter = LIMITER.lock().expect("request limiter lock poisoned");
+    let concurrency = limiter.as_ref().map_or_else(
+        || env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", fallback),
+        |limiter| limiter.concurrency,
+    );
+    validation::validate_download_pool_limits(concurrency, max_buffered_bytes)?;
+    Ok(limiter
+        .get_or_insert_with(|| {
+            Arc::new(RequestLimiter {
+                semaphore: Arc::new(Semaphore::new(concurrency.get())),
+                concurrency,
+            })
+        })
+        .clone())
+}
+
 impl DownloadPool {
+    /// Create a pool with its own transfer-buffer budget. All pools share the
+    /// process-wide request limiter. The first pool reads
+    /// `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to `concurrency` if
+    /// unset or invalid; subsequent pools reuse that limit regardless of their
+    /// `concurrency` argument.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
-        validation::validate_download_pool_limits(concurrency, max_buffered_bytes)?;
         opendal::install_default();
         let operator =
             Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
+        let requests = request_limiter(concurrency, max_buffered_bytes)?;
         Ok(Self {
             operator,
-            requests: Arc::new(Semaphore::new(concurrency.get())),
+            requests,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
-            concurrency,
             max_buffered_bytes,
         })
     }
@@ -66,7 +99,7 @@ impl DownloadPool {
     }
 
     pub fn concurrency(&self) -> usize {
-        self.concurrency.get()
+        self.requests.concurrency.get()
     }
     pub fn max_buffered_bytes(&self) -> usize {
         self.max_buffered_bytes.get()
@@ -75,16 +108,15 @@ impl DownloadPool {
         self.max_buffered_bytes.get() - self.buffers.available_permits()
     }
 
-    /// Return the process-wide pool. On first initialization, read
-    /// `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`; missing or invalid positive
-    /// integers fall back to 64. Limits above semaphore capacity return an error.
+    /// Return the process-wide default pool with an 8 GiB transfer-buffer budget.
+    /// If no pool has initialized the request limiter, use the environment
+    /// override or 64. Otherwise reuse the already initialized process limit.
     pub fn global() -> Result<Arc<Self>> {
         static POOL: OnceLock<Arc<DownloadPool>> = OnceLock::new();
         if let Some(pool) = POOL.get() {
             return Ok(pool.clone());
         }
-        let concurrency = env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", DEFAULT_CONCURRENCY);
-        let pool = Arc::new(Self::new(concurrency, DEFAULT_BUFFERED_BYTES)?);
+        let pool = Arc::new(Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES)?);
         Ok(POOL.get_or_init(|| pool).clone())
     }
 
@@ -97,6 +129,7 @@ impl DownloadPool {
         let uri = validation::validate_download_url(source)?;
         let request = self
             .requests
+            .semaphore
             .clone()
             .acquire_owned()
             .await
