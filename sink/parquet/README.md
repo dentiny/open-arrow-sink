@@ -26,6 +26,18 @@ recursively deletes other files. Drop leaves incomplete output and never commits
 
 No append, overwrite, partitioning, cloud storage or retries.
 
+For concurrent files, wrap the sink in
+`UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
+`ParallelSink::open_writers` to reserve the directory once and pre-open four
+files. Each writer rolls independently using disjoint indices (writer 0 owns
+0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+Empty sessions produce one readable empty file per pre-opened writer. Batch
+distribution and directory scan order are unspecified. Data writers finish all
+footers before the session committer returns the combined row count. A finish
+failure aborts every writer according to the cleanup policy. Files remain visible
+before commit; there is no atomic directory transaction. See the root README for
+buffering, cancellation, partial commit, and layer composition semantics.
+
 ```sh
 cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parquet-directory
 ```
