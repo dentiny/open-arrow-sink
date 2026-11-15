@@ -29,9 +29,7 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if !self.active {
-            return Err(closed());
-        }
+        crate::validation::validate_writer_active(self.active)?;
         // A failed or cancelled write is terminal, but retain the upload for abort.
         self.active = false;
         validation::validate_batch(&self.schema, &batch)?;
@@ -65,9 +63,9 @@ impl Writer for ParquetDirectoryWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if !self.active {
+        if let Err(error) = crate::validation::validate_writer_active(self.active) {
             let _ = self.cleanup().await;
-            return Err(closed());
+            return Err(error);
         }
         self.active = false;
         if let Err(error) = self.writer.as_mut().ok_or_else(closed)?.finish().await {
@@ -164,9 +162,7 @@ impl DataWriter for ParquetDirectoryWriter {
         Writer::write(self, batch).await
     }
     async fn finish(&mut self) -> Result<u64> {
-        if !self.active {
-            return Err(closed());
-        }
+        crate::validation::validate_writer_active(self.active)?;
         self.active = false;
         self.writer
             .as_mut()

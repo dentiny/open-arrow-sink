@@ -2,7 +2,7 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use open_arrow_sink_core::Result;
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
-use parquet::{arrow::async_writer::AsyncFileWriter, errors::ParquetError};
+use parquet::arrow::async_writer::AsyncFileWriter;
 
 const RESERVATION: &str = ".open-arrow-sink";
 
@@ -14,11 +14,7 @@ pub(crate) struct Destination {
 
 impl Destination {
     pub(crate) fn new(storage: Storage, mut directory: Url) -> Result<Self> {
-        if storage.path(&directory)?.trim_matches('/').is_empty() {
-            return Err(crate::error::backend(std::io::Error::other(
-                "destination must have a nonempty path",
-            )));
-        }
+        crate::validation::validate_destination_path(&storage, &directory)?;
         if !directory.path().ends_with('/') {
             directory.path_segments_mut().unwrap().push("");
         }
@@ -28,17 +24,7 @@ impl Destination {
         self.directory.join(name).unwrap()
     }
     pub(crate) async fn reserve(&self) -> Result<()> {
-        let mut exact = self.directory.clone();
-        exact.path_segments_mut().unwrap().pop_if_empty();
-        if self.storage.exists(&exact).await?
-            || self.storage.exists(&self.directory).await?
-            || !self.storage.list(&self.directory).await?.is_empty()
-        {
-            return Err(crate::error::backend(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "destination exists",
-            )));
-        }
+        crate::validation::validate_fresh_destination(&self.storage, &self.directory).await?;
         self.storage
             .create(&self.child(RESERVATION), Bytes::new())
             .await
@@ -96,7 +82,7 @@ impl AsyncFileWriter for FileWriter {
             self.0
                 .write(bytes)
                 .await
-                .map_err(|e| ParquetError::External(Box::new(e)))
+                .map_err(crate::error::parquet_backend)
         })
     }
     fn complete(&mut self) -> BoxFuture<'_, parquet::errors::Result<()>> {
@@ -105,7 +91,7 @@ impl AsyncFileWriter for FileWriter {
                 .close()
                 .await
                 .map(|_| ())
-                .map_err(|e| ParquetError::External(Box::new(e)))
+                .map_err(crate::error::parquet_backend)
         })
     }
 }
