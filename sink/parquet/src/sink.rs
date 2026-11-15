@@ -91,15 +91,7 @@ impl ParquetDirectorySink {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let destination = Arc::new(
-            Destination::open(
-                directory,
-                &schema,
-                options
-                    .mode
-                    .unwrap_or(open_arrow_sink_core::WriteMode::Create),
-                options.cleanup_on_error,
-            )
-            .await?,
+            Destination::open(directory, &schema, options.mode, options.cleanup_on_error).await?,
         );
         let directory = &destination.directory;
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();

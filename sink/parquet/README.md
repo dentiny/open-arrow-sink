@@ -76,8 +76,8 @@ creating the destination. `level: None` uses the Parquet default.
 
 ### Write modes
 
-Set `WriteOptions.mode` to `Some(WriteMode::Create)` (the default when omitted),
-`Some(WriteMode::Append)`, or `Some(WriteMode::Overwrite)`.
+Set `WriteOptions.mode` to `WriteMode::Create` (the default when omitted),
+`WriteMode::Append`, or `WriteMode::Overwrite`.
 Append requires an existing directory, checks the schema of its `.parquet` files,
 and adds uniquely named files; abort removes only the session's files. Overwrite
 writes a sibling staging directory and replaces the complete destination on commit,

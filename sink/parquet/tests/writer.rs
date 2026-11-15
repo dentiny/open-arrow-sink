@@ -194,10 +194,7 @@ async fn modes_preserve_append_and_replace_rows() {
             .open(
                 path.clone(),
                 batch().schema(),
-                WriteOptions {
-                    mode: Some(mode),
-                    ..options()
-                },
+                WriteOptions { mode, ..options() },
             )
             .await
             .unwrap();
@@ -211,7 +208,7 @@ async fn modes_preserve_append_and_replace_rows() {
                 path,
                 batch().schema(),
                 WriteOptions {
-                    mode: Some(WriteMode::Create),
+                    mode: WriteMode::Create,
                     ..options()
                 }
             )
@@ -237,7 +234,7 @@ async fn abort_keeps_original_for_append_and_overwrite() {
                 path.clone(),
                 batch().schema(),
                 WriteOptions {
-                    mode: Some(mode),
+                    mode,
                     target_file_size: Some(1),
                     ..options()
                 },
@@ -257,7 +254,7 @@ async fn append_validates_destination_and_schema_before_writing() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let append = WriteOptions {
-        mode: Some(WriteMode::Append),
+        mode: WriteMode::Append,
         ..options()
     };
     assert!(
@@ -297,7 +294,7 @@ async fn parallel_overwrite_publishes_all_shards_once() {
             path.clone(),
             batch().schema(),
             WriteOptions {
-                mode: Some(WriteMode::Overwrite),
+                mode: WriteMode::Overwrite,
                 ..options()
             },
             std::num::NonZeroUsize::new(2).unwrap(),
@@ -329,7 +326,7 @@ async fn empty_overwrite_creates_or_clears_directory() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let overwrite = WriteOptions {
-        mode: Some(WriteMode::Overwrite),
+        mode: WriteMode::Overwrite,
         ..options()
     };
     ParquetDirectorySink
@@ -345,7 +342,7 @@ async fn empty_overwrite_creates_or_clears_directory() {
             path.clone(),
             batch().schema(),
             WriteOptions {
-                mode: Some(WriteMode::Append),
+                mode: WriteMode::Append,
                 ..options()
             },
         )
@@ -379,7 +376,7 @@ async fn failed_overwrite_publication_restores_previous_directory() {
             path.clone(),
             batch().schema(),
             WriteOptions {
-                mode: Some(WriteMode::Overwrite),
+                mode: WriteMode::Overwrite,
                 ..options()
             },
         )
@@ -417,7 +414,7 @@ async fn parallel_append_abort_keeps_preexisting_rows() {
             path.clone(),
             batch().schema(),
             WriteOptions {
-                mode: Some(WriteMode::Append),
+                mode: WriteMode::Append,
                 target_file_size: Some(1),
                 ..options()
             },
