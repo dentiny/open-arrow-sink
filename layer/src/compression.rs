@@ -51,3 +51,24 @@ impl<S: Sink> Sink for CompressionSink<S> {
         self.inner.open(request, schema, options).await
     }
 }
+
+#[async_trait]
+impl<S: open_arrow_sink_core::ParallelSink> open_arrow_sink_core::ParallelSink
+    for CompressionSink<S>
+{
+    type Output = S::Output;
+
+    async fn open_writers(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        mut options: WriteOptions,
+        writers: std::num::NonZeroUsize,
+    ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
+        options.compression = self.compression.clone();
+        validation::validate_options(&schema, &options, self.inner.capability())?;
+        self.inner
+            .open_writers(request, schema, options, writers)
+            .await
+    }
+}

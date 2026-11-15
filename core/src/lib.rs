@@ -6,6 +6,7 @@ mod index;
 mod layer;
 mod request;
 mod result;
+mod session;
 mod sink;
 pub mod validation;
 mod writer;
@@ -23,5 +24,7 @@ pub use index::{IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, WriteOptions};
 pub use result::WriteSummary;
-pub use sink::Sink;
+pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;
+
+pub use session::{DataWriter, SessionCommitter, WriteSession};
