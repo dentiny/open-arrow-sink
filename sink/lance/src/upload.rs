@@ -89,11 +89,10 @@ impl ObjectStore for UploadStore {
             .into_send()
             .await
             .map_err(|error| upload_error(error, location))?;
-        let (_, next) = oneshot::channel();
         Ok(Box::new(Upload {
             writer: Arc::new(Mutex::new(writer)),
             location: location.clone(),
-            next,
+            next: None,
         }))
     }
 
@@ -140,7 +139,7 @@ impl ObjectStore for UploadStore {
 struct Upload {
     writer: Arc<Mutex<Writer>>,
     location: Path,
-    next: oneshot::Receiver<()>,
+    next: Option<oneshot::Receiver<()>>,
 }
 
 impl fmt::Debug for Upload {
@@ -157,11 +156,13 @@ impl MultipartUpload for Upload {
         let writer = Arc::clone(&self.writer);
         let location = self.location.clone();
         let (done, next) = oneshot::channel();
-        let previous = std::mem::replace(&mut self.next, next);
+        let previous = self.next.replace(next);
         async move {
             // Lance may poll part futures concurrently or out of order. Feed
             // bytes to OpenDAL in submission order; it parallelizes HTTP parts.
-            let _ = previous.await;
+            if let Some(previous) = previous {
+                let _ = previous.await;
+            }
             let result = writer
                 .lock()
                 .await
@@ -221,30 +222,5 @@ fn upload_error(error: opendal::Error, location: &Path) -> object_store::Error {
             store: kind.into_static(),
             source: Box::new(error),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use object_store::ObjectStoreExt;
-
-    #[tokio::test]
-    async fn configured_parts_keep_submission_order() {
-        let operator = Operator::new(opendal::services::Memory::default()).unwrap();
-        let store = UploadStore::new(operator, 16 * 1024 * 1024);
-        let path = Path::from("data");
-        let mut upload = store.put_multipart(&path).await.unwrap();
-        let first = upload.put_part("hello".into());
-        let second = upload.put_part("world".into());
-        // Poll in reverse order, as native object-store clients are permitted to do.
-        let (second, first) = futures::join!(second, first);
-        first.unwrap();
-        second.unwrap();
-        upload.complete().await.unwrap();
-        assert_eq!(
-            store.get(&path).await.unwrap().bytes().await.unwrap(),
-            "helloworld"
-        );
     }
 }

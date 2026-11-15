@@ -214,12 +214,12 @@ impl Storage {
     pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
         let path = self.nonroot_path(url)?;
         let operator = self.operator();
+        let part_size = self
+            .upload_part_size
+            .map_or(5 * 1024 * 1024, NonZeroUsize::get);
         let writer = operator
             .writer_with(&path)
-            .chunk(
-                self.upload_part_size
-                    .map_or(5 * 1024 * 1024, NonZeroUsize::get),
-            )
+            .chunk(part_size)
             .concurrent(1)
             .await
             .map_err(|error| map_error("open", &path, error))?;
