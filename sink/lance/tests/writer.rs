@@ -167,16 +167,16 @@ async fn target_file_size_rolls_files_without_losing_rows(
 
 #[tokio::test]
 async fn compression_rejected_before_creating_dataset() {
-    use open_arrow_sink_core::{CompressionCodec, CompressionOptions, Error};
+    use open_arrow_sink_core::{Compression, CompressionOptions, Error};
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     for compression in [
         CompressionOptions {
-            global: Some(CompressionCodec::Uncompressed),
+            global: Some(Compression::Uncompressed),
             ..Default::default()
         },
         CompressionOptions {
-            columns: [("value".into(), CompressionCodec::Zstd)].into(),
+            columns: [("value".into(), Compression::Zstd { level: None })].into(),
             ..Default::default()
         },
     ] {
