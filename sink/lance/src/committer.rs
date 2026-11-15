@@ -18,8 +18,9 @@ impl SessionCommitter<Output> for LanceCommitter {
         for (rows, mut transaction) in outputs {
             rows_written += rows;
             if let Some(target) = &mut combined {
-                let fragments = crate::validation::create_fragments(&mut target.operation)?;
-                let incoming = crate::validation::create_fragments(&mut transaction.operation)?;
+                crate::validation::validate_transaction_compatibility(target, &transaction)?;
+                let fragments = crate::validation::write_fragments(&mut target.operation)?;
+                let incoming = crate::validation::write_fragments(&mut transaction.operation)?;
                 fragments.append(incoming);
             } else {
                 combined = Some(transaction);

@@ -1,8 +1,8 @@
 # Lance dataset sink
 
-`LanceDatasetSink` creates a new Lance dataset from Arrow batches at a local or
+`LanceDatasetSink` writes a Lance dataset from Arrow batches at a local or
 remote URL. It requires a Tokio runtime. Missing parents are created.
-Existing paths are rejected. Keep exclusive ownership of the destination until the
+Create rejects existing destinations; Append and Overwrite use existing native datasets. Keep exclusive ownership of the destination until the
 session ends, including index construction.
 
 ```rust,ignore
@@ -33,8 +33,8 @@ reserved destination when `cleanup_on_error` is enabled. Dropping closes the str
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
-This sink supports create-only local or remote datasets and unordered input.
-No append, overwrite, schema evolution, or ordering guarantee.
+This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
 
@@ -167,7 +167,7 @@ because the dataset may already have been committed. Drop never publishes.
 
 ## Shared OpenDAL storage
 
-Both single and parallel sessions now accept `Url`. Convert existing paths with
+Both single and parallel sessions accept `Url`. Convert existing paths with
 `Url::from_directory_path(std::path::absolute(path)?)` and construct a sink with
 `LanceDatasetSink::default()`. Missing parent directories are created.
 For a shared operator, including custom credentials, endpoints, and layers, use
@@ -198,9 +198,9 @@ retains ownership of encoding and manifest publication. Conditional manifest
 creation protects publication; no unsafe commit handler is installed.
 
 A hidden `.open-arrow-sink` marker reserves each fresh destination and remains
-inside it. Existing directories or objects beneath the prefix are rejected;
+inside it. In Create mode, existing directories or objects beneath the prefix are rejected;
 backends without conditional-create support fail. External writers must not
 modify the reserved namespace. Abort waits for workers to stop and removes only
-that namespace when `cleanup_on_error` is true, for single and parallel sessions.
+that namespace when it was newly reserved and `cleanup_on_error` is true, for single and parallel sessions. Existing datasets are retained on abort for Append and Overwrite.
 With cleanup disabled, output is retained. Drop performs no async cleanup;
 incomplete backend uploads or atomic staging files may need external cleanup.

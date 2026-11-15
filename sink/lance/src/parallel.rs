@@ -1,5 +1,7 @@
 use lance::dataset::{InsertBuilder, transaction::Transaction};
-use open_arrow_sink_core::{DataWriter, RecordBatch, Result, SchemaRef, async_trait, validation};
+use open_arrow_sink_core::{
+    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
@@ -26,7 +28,7 @@ impl FragmentWriter {
         schema: SchemaRef,
         encoding_schema: SchemaRef,
         destination: NativeStorage,
-        target_file_size: Option<usize>,
+        options: &WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -34,7 +36,7 @@ impl FragmentWriter {
             receiver,
             finished: false,
         };
-        let params = destination.write_params(target_file_size);
+        let params = destination.write_params(options);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())

@@ -7,7 +7,7 @@ use lance_io::object_store::{ObjectStore, ObjectStoreParams, providers::ObjectSt
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use object_store::path::Path;
 use object_store_opendal::OpendalStore;
-use open_arrow_sink_core::{Result, async_trait};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode, WriteOptions, async_trait};
 use open_arrow_sink_storage::{Storage, Url};
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ pub(crate) struct NativeStorage {
     storage: Storage,
     pub url: Url,
     session: Arc<Session>,
+    reserved: bool,
 }
 impl NativeStorage {
     pub fn new(storage: Storage, mut url: Url) -> Result<Self> {
@@ -31,22 +32,53 @@ impl NativeStorage {
             storage,
             url,
             session,
+            reserved: false,
         })
     }
-    pub async fn reserve(&self) -> Result<()> {
+    pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
+        match mode {
+            WriteMode::Create => self.reserve().await?,
+            WriteMode::Append => {
+                crate::validation::validate_existing_dataset(self.dataset_builder(), Some(schema))
+                    .await?
+            }
+            WriteMode::Overwrite => {
+                if crate::validation::destination_exists(&self.storage, &self.url).await? {
+                    crate::validation::validate_existing_dataset(self.dataset_builder(), None)
+                        .await?;
+                } else {
+                    self.reserve().await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn reserve(&mut self) -> Result<()> {
         crate::validation::validate_fresh_destination(&self.storage, &self.url).await?;
         self.storage
             .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
-            .await
+            .await?;
+        self.reserved = true;
+        Ok(())
     }
     pub async fn cleanup(&self) -> Result<()> {
-        self.storage.remove_all(&self.url).await
+        if self.reserved {
+            self.storage.remove_all(&self.url).await?;
+        }
+        Ok(())
     }
-    pub fn write_params(&self, size: Option<usize>) -> WriteParams {
+    pub fn write_params(&self, options: &WriteOptions) -> WriteParams {
         WriteParams {
             session: Some(self.session.clone()),
             commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),
-            max_bytes_per_file: size.unwrap_or(WriteParams::default().max_bytes_per_file),
+            mode: match options.mode {
+                WriteMode::Create => lance::dataset::WriteMode::Create,
+                WriteMode::Append => lance::dataset::WriteMode::Append,
+                WriteMode::Overwrite => lance::dataset::WriteMode::Overwrite,
+            },
+            max_bytes_per_file: options
+                .target_file_size
+                .unwrap_or(WriteParams::default().max_bytes_per_file),
             ..Default::default()
         }
     }

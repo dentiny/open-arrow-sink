@@ -108,17 +108,54 @@ pub(crate) fn validate_destination_path(
 }
 
 /// Preflight only; conditional marker creation still arbitrates concurrent opens.
+pub(crate) async fn destination_exists(
+    storage: &open_arrow_sink_storage::Storage,
+    url: &open_arrow_sink_storage::Url,
+) -> Result<bool> {
+    let mut exact = url.clone();
+    exact.path_segments_mut().unwrap().pop_if_empty();
+    Ok(storage.exists(&exact).await?
+        || storage.exists(url).await?
+        || !storage.list(url).await?.is_empty())
+}
+
 pub(crate) async fn validate_fresh_destination(
     storage: &open_arrow_sink_storage::Storage,
     url: &open_arrow_sink_storage::Url,
 ) -> Result<()> {
-    let mut exact = url.clone();
-    exact.path_segments_mut().unwrap().pop_if_empty();
-    if storage.exists(&exact).await?
-        || storage.exists(url).await?
-        || !storage.list(url).await?.is_empty()
-    {
+    if destination_exists(storage, url).await? {
         return Err(error::destination_exists());
+    }
+    Ok(())
+}
+
+pub(crate) async fn validate_existing_dataset(
+    builder: lance::dataset::builder::DatasetBuilder,
+    schema: Option<&Schema>,
+) -> Result<()> {
+    let dataset = builder.load().await.map_err(error::backend)?;
+    if let Some(schema) = schema
+        && &Schema::from(dataset.schema()) != schema
+    {
+        return Err(error::schema_mismatch());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_transaction_compatibility(
+    target: &lance::dataset::transaction::Transaction,
+    incoming: &lance::dataset::transaction::Transaction,
+) -> Result<()> {
+    use lance::dataset::transaction::Operation;
+    if target.read_version != incoming.read_version {
+        return Err(error::different_dataset_versions());
+    }
+    if !matches!(
+        (&target.operation, &incoming.operation),
+        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
+            | (Operation::Append { .. }, Operation::Append { .. })
+    ) {
+        return Err(error::invalid_create_fragments());
     }
     Ok(())
 }
@@ -137,11 +174,12 @@ pub(crate) fn validate_fragment_write_state(failed: bool, sender_open: bool) -> 
     Ok(())
 }
 
-pub(crate) fn create_fragments(
+pub(crate) fn write_fragments(
     operation: &mut lance::dataset::transaction::Operation,
 ) -> Result<&mut Vec<lance_table::format::Fragment>> {
     match operation {
-        lance::dataset::transaction::Operation::Overwrite { fragments, .. } => Ok(fragments),
+        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
+        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
         _ => Err(error::invalid_create_fragments()),
     }
 }

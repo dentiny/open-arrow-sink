@@ -86,9 +86,16 @@ pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
 }
 
 pub(crate) fn invalid_create_fragments() -> Error {
-    Error::Unsupported("expected uncommitted Lance create fragments".into())
+    Error::Unsupported("expected compatible uncommitted Lance write fragments".into())
 }
 
 pub(crate) fn empty_writer_session() -> Error {
     Error::Unsupported("empty Lance writer session".into())
+}
+
+pub(crate) fn different_dataset_versions() -> Error {
+    Error::Unsupported("Lance writers observed different dataset versions".into())
+}
+pub(crate) fn schema_mismatch() -> Error {
+    Error::SchemaMismatch
 }

@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
     CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
+    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     writer::LanceWriter,
 };
 
-/// Creates a new URL dataset. Existing destinations are always rejected.
+/// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
@@ -43,7 +43,7 @@ impl Sink for LanceDatasetSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
+            supported_modes: &[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite],
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
@@ -67,8 +67,8 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         validate_options(&schema, &options, self.capability())?;
         let encoding_schema = writer_schema(&schema, &options.compression);
-        let destination = self.resolve(url)?;
-        destination.reserve().await?;
+        let mut destination = self.resolve(url)?;
+        destination.prepare(&encoding_schema, options.mode).await?;
         Ok(Box::new(LanceWriter::new(
             schema,
             encoding_schema,
@@ -90,15 +90,15 @@ impl ParallelSink for LanceDatasetSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         let encoding_schema = writer_schema(&schema, &options.compression);
-        let destination = self.resolve(url)?;
-        destination.reserve().await?;
+        let mut destination = self.resolve(url)?;
+        destination.prepare(&encoding_schema, options.mode).await?;
         let writers = (0..count.get())
             .map(|_| {
                 Box::new(crate::parallel::FragmentWriter::new(
                     schema.clone(),
                     encoding_schema.clone(),
                     destination.clone(),
-                    options.target_file_size,
+                    &options,
                 )) as Box<dyn DataWriter<Output = Self::Output>>
             })
             .collect();

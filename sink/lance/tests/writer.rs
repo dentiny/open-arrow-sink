@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
-use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn batch() -> RecordBatch {
@@ -373,4 +373,39 @@ async fn unordered_commit_preserves_all_rows() {
     actual.sort_unstable();
     expected.sort_unstable();
     assert_eq!(actual, expected);
+}
+
+#[rstest::rstest]
+#[case::create(WriteMode::Create, 4)]
+#[case::append(WriteMode::Append, 5)]
+#[case::overwrite(WriteMode::Overwrite, 4)]
+#[tokio::test]
+async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let batch = batch();
+    if mode != WriteMode::Create {
+        let mut writer = LanceDatasetSink::default()
+            .open(
+                Url::from_directory_path(&path).unwrap(),
+                batch.schema(),
+                options(),
+            )
+            .await
+            .unwrap();
+        writer.write(batch.slice(0, 1)).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            WriteOptions { mode, ..options() },
+        )
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), expected_rows);
 }

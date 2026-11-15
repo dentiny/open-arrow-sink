@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_parquet::ParquetDirectorySink;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -159,4 +159,53 @@ async fn target_file_size_rolls_files_without_losing_rows(
         }
     }
     assert_eq!(offset, 9);
+}
+
+async fn row_count(directory: &std::path::Path) -> usize {
+    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+    let mut rows = 0;
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        if entry.path().extension().is_some_and(|ext| ext == "parquet") {
+            let file = tokio::fs::File::open(entry.path()).await.unwrap();
+            let mut reader = ParquetRecordBatchStreamBuilder::new(file)
+                .await
+                .unwrap()
+                .build()
+                .unwrap();
+            while let Some(batch) = reader.try_next().await.unwrap() {
+                rows += batch.num_rows();
+            }
+        }
+    }
+    rows
+}
+
+#[rstest::rstest]
+#[case::create(WriteMode::Create, 3)]
+#[case::append(WriteMode::Append, 4)]
+#[case::overwrite(WriteMode::Overwrite, 3)]
+#[tokio::test]
+async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("output");
+    let batch = batch();
+    if mode != WriteMode::Create {
+        let mut writer = ParquetDirectorySink
+            .open(path.clone(), batch.schema(), options())
+            .await
+            .unwrap();
+        writer.write(batch.slice(0, 1)).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    let mut writer = ParquetDirectorySink
+        .open(
+            path.clone(),
+            batch.schema(),
+            WriteOptions { mode, ..options() },
+        )
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    assert_eq!(row_count(&path).await, expected_rows);
 }

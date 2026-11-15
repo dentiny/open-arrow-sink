@@ -125,7 +125,7 @@ impl LanceWriter {
             receiver,
             finished: false,
         };
-        let params = destination.write_params(options.target_file_size);
+        let params = destination.write_params(&options);
         let uri = destination.url.to_string();
         let task =
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
