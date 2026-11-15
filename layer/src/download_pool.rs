@@ -1,14 +1,12 @@
-use std::{
-    num::NonZeroUsize,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use futures::{
     TryStreamExt,
     stream::{self, BoxStream},
 };
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Result};
+use once_cell::sync::OnceCell;
+use open_arrow_sink_core::{BlobChunk, Error, Result};
 use opendal::{
     Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, raw::Layer, services::Http,
 };
@@ -16,60 +14,24 @@ use tokio::sync::Semaphore;
 
 use crate::{error::backend, validation};
 
-// These are tuning defaults, not benchmark-established optimal values.
 // Default maximum number of active download streams across the process.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
 const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 * 1024).unwrap();
 // Maximum buffer allocated for each read: 2 MiB, capped by the pool budget.
-// Smaller chunks trade more read/allocation overhead for finer buffering granularity.
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
-/// Shared streaming downloads with concurrency and payload-buffer budgets.
-///
-/// All pools share one process-wide request limit, initialized by the first pool.
-/// Transfer-buffer budgets are shared only by streams from the same pool. Reservations are
-/// acquired before allocating/reading a transfer buffer, travel with `BlobChunk`,
-/// and are released only when the consumer drops that chunk. The budget covers
-/// application-owned transfer buffers, including chunks retained by consumers;
-/// OpenDAL/HTTP/TLS read buffers and the destination's internal buffers are separate.
-/// A blob may exceed the budget because no complete payload is collected here.
+/// Streaming downloads with a process-wide request limit and per-pool byte budget.
+/// Yielded chunks hold their budget until dropped, even after stream cancellation.
+/// OpenDAL/HTTP/TLS and destination buffers are outside this transfer-buffer budget.
 #[derive(Debug)]
 pub struct DownloadPool {
     operator: Operator,
-    requests: Arc<RequestLimiter>,
+    requests: Arc<Semaphore>,
+    concurrency: NonZeroUsize,
     buffers: Arc<Semaphore>,
     max_buffered_bytes: NonZeroUsize,
-}
-
-#[derive(Debug)]
-struct RequestLimiter {
-    semaphore: Arc<Semaphore>,
-    concurrency: NonZeroUsize,
-}
-
-// Serialize initialization so the environment is read only once after a valid
-// configuration is supplied. Failed validation leaves initialization retryable.
-fn request_limiter(
-    fallback: NonZeroUsize,
-    max_buffered_bytes: NonZeroUsize,
-) -> Result<Arc<RequestLimiter>> {
-    static LIMITER: Mutex<Option<Arc<RequestLimiter>>> = Mutex::new(None);
-    let mut limiter = LIMITER.lock().expect("request limiter lock poisoned");
-    let concurrency = limiter.as_ref().map_or_else(
-        || env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", fallback),
-        |limiter| limiter.concurrency,
-    );
-    validation::validate_download_pool_limits(concurrency, max_buffered_bytes)?;
-    Ok(limiter
-        .get_or_insert_with(|| {
-            Arc::new(RequestLimiter {
-                semaphore: Arc::new(Semaphore::new(concurrency.get())),
-                concurrency,
-            })
-        })
-        .clone())
 }
 
 impl DownloadPool {
@@ -79,13 +41,20 @@ impl DownloadPool {
     /// unset or invalid; subsequent pools reuse that limit regardless of their
     /// `concurrency` argument.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
+        static REQUESTS: OnceCell<(NonZeroUsize, Arc<Semaphore>)> = OnceCell::new();
+        validation::validate_download_limit(max_buffered_bytes)?;
+        let (concurrency, requests) = REQUESTS.get_or_try_init(|| {
+            let limit = env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", concurrency);
+            validation::validate_download_limit(limit)?;
+            Ok::<_, Error>((limit, Arc::new(Semaphore::new(limit.get()))))
+        })?;
         opendal::install_default();
         let operator =
             Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
-        let requests = request_limiter(concurrency, max_buffered_bytes)?;
         Ok(Self {
             operator,
-            requests,
+            requests: requests.clone(),
+            concurrency: *concurrency,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
             max_buffered_bytes,
         })
@@ -99,7 +68,7 @@ impl DownloadPool {
     }
 
     pub fn concurrency(&self) -> usize {
-        self.requests.concurrency.get()
+        self.concurrency.get()
     }
     pub fn max_buffered_bytes(&self) -> usize {
         self.max_buffered_bytes.get()
@@ -112,24 +81,19 @@ impl DownloadPool {
     /// If no pool has initialized the request limiter, use the environment
     /// override or 64. Otherwise reuse the already initialized process limit.
     pub fn global() -> Result<Arc<Self>> {
-        static POOL: OnceLock<Arc<DownloadPool>> = OnceLock::new();
-        if let Some(pool) = POOL.get() {
-            return Ok(pool.clone());
-        }
-        let pool = Arc::new(Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES)?);
-        Ok(POOL.get_or_init(|| pool).clone())
+        static POOL: OnceCell<Arc<DownloadPool>> = OnceCell::new();
+        POOL.get_or_try_init(|| {
+            Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES).map(Arc::new)
+        })
+        .cloned()
     }
 
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its request slot; already yielded chunks retain their reservations.
-    pub async fn stream(
-        self: &Arc<Self>,
-        source: &str,
-    ) -> Result<BoxStream<'static, Result<BlobChunk>>> {
+    pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
         let uri = validation::validate_download_url(source)?;
         let request = self
             .requests
-            .semaphore
             .clone()
             .acquire_owned()
             .await
@@ -151,30 +115,24 @@ impl DownloadPool {
             .into_stream(..)
             .await
             .map_err(backend)?;
-        let pool = self.clone();
-        Ok(Box::pin(stream::try_unfold(
-            (reader, Buffer::new(), pool, request),
-            |(mut reader, mut pending, pool, request)| async move {
-                let capacity = CHUNK_BYTES.min(pool.max_buffered_bytes.get());
-                let reservation = pool
-                    .buffers
-                    .clone()
-                    .acquire_many_owned(capacity as u32)
-                    .await
-                    .expect("pool is never closed");
+        let buffers = self.buffers.clone();
+        let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
+        Ok(Box::pin(async_stream::try_stream! {
+            let _request = request;
+            let mut reader = reader;
+            let mut pending = Buffer::new();
+            loop {
+                let reservation = buffers.clone().acquire_many_owned(capacity as u32)
+                    .await.expect("pool is never closed");
                 if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(backend)? else {
-                        return Ok(None);
-                    };
+                    let Some(buffer) = reader.try_next().await.map_err(backend)? else { break };
                     pending = buffer;
                 }
-                // Copy only the reserved slice so a small chunk cannot retain a
-                // larger OpenDAL backing allocation beyond its accounted budget.
+                // A bounded copy avoids retaining a larger OpenDAL backing allocation.
                 let size = capacity.min(pending.len());
-                let chunk = BlobChunk::with_guard(pending.split_to(size).to_vec(), reservation);
-                Ok(Some((chunk, (reader, pending, pool, request))))
-            },
-        )))
+                yield BlobChunk::with_guard(pending.split_to(size).to_vec(), reservation);
+            }
+        }))
     }
 }
 

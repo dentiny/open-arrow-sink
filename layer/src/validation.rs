@@ -7,13 +7,8 @@ use tokio::sync::Semaphore;
 
 use crate::error::failure;
 
-pub(crate) fn validate_download_pool_limits(
-    concurrency: NonZeroUsize,
-    max_buffered_bytes: NonZeroUsize,
-) -> Result<()> {
-    if concurrency.get() > Semaphore::MAX_PERMITS
-        || max_buffered_bytes.get() > Semaphore::MAX_PERMITS
-    {
+pub(crate) fn validate_download_limit(limit: NonZeroUsize) -> Result<()> {
+    if limit.get() > Semaphore::MAX_PERMITS {
         return Err(Error::Unsupported(
             "download pool limits exceed semaphore capacity".into(),
         ));
