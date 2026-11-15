@@ -8,7 +8,7 @@ use open_arrow_sink_core::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{error::backend, index::build_indexes};
+use crate::{compression::writer_batch, error::backend, index::build_indexes};
 
 enum Message {
     Batch(RecordBatch),
@@ -54,6 +54,7 @@ impl RecordBatchReader for ChannelReader {
 
 pub(crate) struct LanceWriter {
     schema: SchemaRef,
+    encoding_schema: SchemaRef,
     path: PathBuf,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
@@ -75,6 +76,7 @@ impl Writer for LanceWriter {
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
+        let batch = writer_batch(batch, &self.encoding_schema)?;
         self.sender
             .as_ref()
             .unwrap()
@@ -114,6 +116,7 @@ impl Writer for LanceWriter {
 impl LanceWriter {
     pub(crate) fn new(
         schema: SchemaRef,
+        encoding_schema: SchemaRef,
         path: PathBuf,
         uri: String,
         target_file_size: Option<usize>,
@@ -121,7 +124,7 @@ impl LanceWriter {
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
-            schema: schema.clone(),
+            schema: encoding_schema.clone(),
             receiver,
             finished: false,
         };
@@ -133,6 +136,7 @@ impl LanceWriter {
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
             schema,
+            encoding_schema,
             path,
             sender: Some(sender),
             task,

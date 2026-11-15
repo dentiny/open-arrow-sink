@@ -113,6 +113,36 @@ cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 
 ## Compression
 
-Compression options are currently unsupported: the sink advertises empty global
-and per-column codec lists and rejects explicit requests before creating a dataset.
-Empty compression options retain Lance defaults.
+Supports global and per-column `Compression::Zstd { level }` and
+`Compression::Uncompressed`, directly in `WriteOptions.compression` or through
+`CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
+Lance's codec default. Unsupported codecs and levels fail before destination
+creation. Empty compression options preserve existing field metadata and native
+defaults.
+
+Column keys are exact top-level field names accepted by Lance. A column override
+replaces the entire global setting, including its level, and applies recursively
+to nested descendants. Explicit settings replace existing compression metadata
+and clear old levels when no level is requested. Unrelated schema and field
+metadata are retained.
+
+The adapter sets `lance-encoding:compression` and
+`lance-encoding:compression-level` in an internal Arrow schema, including the
+separate dictionary-value compression settings. `Uncompressed` disables native
+general-purpose compression; Lance still chooses its structural encodings.
+`writer.schema()` and input batch validation use the caller's original schema.
+Batches reuse their existing value buffers with the internal schema, and readback
+includes the persisted encoding metadata. These settings survive file rolling.
+
+Snappy and Gzip are unsupported by Lance. `Lz4Raw` is not advertised: Lance's
+stable format can substitute Zstd for LZ4 on per-value paths, so it cannot honor
+that shared codec request consistently.
+
+```rust
+use open_arrow_sink_core::{Compression, CompressionOptions};
+
+let compression = CompressionOptions {
+    global: Some(Compression::Zstd { level: Some(9) }),
+    columns: [("raw_payload".into(), Compression::Uncompressed)].into(),
+};
+```
