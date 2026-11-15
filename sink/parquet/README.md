@@ -39,14 +39,18 @@ unrelated files. Drop performs no async cleanup. These rules apply to local and
 remote destinations alike.
 
 Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
-sink does not promise directory scan order. Each write validates its schema and flushes its rows; it
-does not retain all input batches. Parquet still keeps row-group metadata and
-needs memory proportional to the incoming batch and encoding buffers.
+sink does not promise directory scan order. Each write validates its schema. Small
+batches share Parquet row groups instead of forcing one row group per write.
+Parquet buffers the current row group up to its default row limit (1,048,576 rows)
+and keeps metadata for completed groups. Memory depends on row width, dictionaries,
+the incoming batch and encoding buffers; this is not a fixed byte budget.
 
 Set `WriteOptions.target_file_size` to a positive byte count to roll files between
 nonempty batches once the current file's encoded bytes reach the target. A batch
 and the file footer can exceed the target; it is not a strict maximum. `None`
-keeps the single-file behavior. An empty session still creates one readable file.
+keeps the single-file behavior. Buffered encoded-size estimates trigger an early
+row-group flush near an explicit target; actual flushed bytes decide whether to
+roll at the next nonempty batch. An empty session still creates one readable file.
 
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.

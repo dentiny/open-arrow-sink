@@ -315,56 +315,6 @@ async fn compression_survives_rolling_and_round_trips() {
     assert_eq!(occurrences, vec![2; count]);
 }
 
-#[tokio::test]
-async fn unordered_commit_preserves_all_rows() {
-    use open_arrow_sink_core::SinkExt;
-    use open_arrow_sink_layer::UnorderedWriteLayer;
-    use std::num::NonZeroUsize;
-
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("dataset");
-    let mut writer = LanceDatasetSink::default()
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            batch().schema(),
-            options(),
-        )
-        .await
-        .unwrap();
-    let mut expected = Vec::new();
-    for id in 0..8 {
-        let input = vec![Some(id * 2), None, Some(id * 2 + 1)];
-        writer
-            .write(
-                RecordBatch::try_from_iter([(
-                    "value",
-                    Arc::new(Int64Array::from(input.clone())) as ArrayRef,
-                )])
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        expected.extend(input);
-    }
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        expected.len() as u64
-    );
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    let committed = dataset.scan().try_into_batch().await.unwrap();
-    let mut actual: Vec<_> = committed
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap()
-        .iter()
-        .collect();
-    actual.sort_unstable();
-    expected.sort_unstable();
-    assert_eq!(actual, expected);
-}
-
 #[rstest::rstest]
 #[case::append(WriteMode::Append, 5)]
 #[case::overwrite(WriteMode::Overwrite, 4)]

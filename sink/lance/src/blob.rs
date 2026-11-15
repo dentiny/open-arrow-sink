@@ -20,16 +20,27 @@ pub(crate) struct BlobSession {
     pub failed: AtomicBool,
     pub active: AtomicUsize,
     storage: Storage,
+    relative_prefix: String,
+    directory: Url,
     unattached: Mutex<HashSet<Url>>,
 }
 impl BlobSession {
-    pub fn new(storage: Storage) -> Self {
+    pub fn new(storage: Storage, dataset: &Url) -> Self {
+        let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
+        let directory = dataset.join(&relative_prefix).unwrap();
         Self {
             failed: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             storage,
+            relative_prefix,
+            directory,
             unattached: Mutex::default(),
         }
+    }
+    /// All native streams in this namespace belong to this session, including
+    /// handles already attached to batches that were never committed.
+    pub async fn abort(&self) -> Result<()> {
+        self.storage.remove_all(&self.directory).await
     }
     pub async fn cleanup(&self) -> Result<()> {
         let files: Vec<_> = self.unattached.lock().unwrap().drain().collect();
@@ -100,7 +111,7 @@ pub(crate) async fn create_blob(
     directory: &Url,
     session: Arc<BlobSession>,
 ) -> Result<Box<dyn BlobWriter>> {
-    let relative = format!("_blobs/{}.blob", uuid::Uuid::new_v4());
+    let relative = format!("{}{}.blob", session.relative_prefix, uuid::Uuid::new_v4());
     let url = directory.join(&relative).unwrap();
     // Retain ownership before opening: cancellation can leave an object behind.
     session.unattached.lock().unwrap().insert(url.clone());
@@ -194,4 +205,26 @@ pub(crate) fn storage_batch(
         session.unattached.lock().unwrap().remove(&native.url);
     }
     Ok(output)
+}
+
+/// Lance persists logical blob fields, rather than the prepared descriptor shape.
+pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+                Arc::new(
+                    field.as_ref().clone().with_data_type(
+                        lance::blob::blob_field(field.name(), field.is_nullable())
+                            .data_type()
+                            .clone(),
+                    ),
+                )
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }

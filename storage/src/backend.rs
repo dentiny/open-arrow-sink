@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, ops::Range};
 use bytes::Bytes;
 use futures::TryStreamExt;
 use open_arrow_sink_core::Result;
-use opendal::Operator;
+use opendal::{HttpTransporter, Operator};
 use url::Url;
 
 use crate::{
@@ -17,8 +17,9 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
+    // Budget changes wrap this original transport, never an existing limiter.
+    base_http_transport: HttpTransporter,
     base_url: Url,
-    http_concurrency_limit: HttpConcurrencyLimitLayer,
     upload_part_size: Option<NonZeroUsize>,
 }
 
@@ -32,10 +33,14 @@ impl Storage {
             base_url.set_path(&path);
         }
         validation::decoded_path(&base_url)?;
+        let base_http_transport = operator.base_context().http_transport().clone();
+        let context = operator.base_context().with_http_transport(
+            HttpConcurrencyLimitLayer::default().wrap(base_http_transport.clone()),
+        );
         Ok(Self {
-            operator,
+            operator: operator.with_context(context),
+            base_http_transport,
             base_url,
-            http_concurrency_limit: HttpConcurrencyLimitLayer::default(),
             upload_part_size: None,
         })
     }
@@ -86,9 +91,14 @@ impl Storage {
         Self::new(config.apply(operator)?, base_url)
     }
 
-    /// Replace the request budget shared by this storage and its clones.
+    /// Configure the request budget shared by subsequent clones and operators.
+    /// Existing clones and operators retain their previous budget.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
-        self.http_concurrency_limit = limit;
+        let context = self
+            .operator
+            .base_context()
+            .with_http_transport(limit.wrap(self.base_http_transport.clone()));
+        self.operator = self.operator.with_context(context);
         self
     }
 
@@ -109,9 +119,7 @@ impl Storage {
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
     pub fn operator(&self) -> Operator {
-        self.operator
-            .clone()
-            .layer(self.http_concurrency_limit.clone())
+        self.operator.clone()
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.

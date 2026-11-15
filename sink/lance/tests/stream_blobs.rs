@@ -4,7 +4,7 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Ordering, Sink, WriteOptions,
+    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Ordering, Sink, WriteMode, WriteOptions,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_storage::opendal;
@@ -94,6 +94,53 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
 }
 
 #[tokio::test]
+async fn overwrite_abort_removes_attached_session_blobs() {
+    let storage = storage();
+    let url = storage.url("existing/").unwrap();
+    let sink = LanceDatasetSink::new(storage.clone());
+    sink.open(url.clone(), input().schema(), options())
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let mut writer = sink
+        .open(
+            url.clone(),
+            input().schema(),
+            WriteOptions {
+                mode: open_arrow_sink_core::WriteMode::Overwrite,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new("payload")).await.unwrap();
+    writer
+        .write_with_blobs(
+            input(),
+            vec![BlobPlacement {
+                column: 0,
+                row: 0,
+                blob: blob.finish().await.unwrap(),
+            }],
+        )
+        .await
+        .unwrap();
+    writer.abort().await.unwrap();
+    assert!(
+        storage
+            .list(&url.join("_blobs/").unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
     for drop_partial in [true, false] {
         let storage = storage();
@@ -119,4 +166,34 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
             assert!(blob.finish().await.is_err());
         }
     }
+}
+
+#[rstest::rstest]
+#[case::create(WriteMode::Create)]
+#[case::append(WriteMode::Append)]
+#[tokio::test]
+async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
+    let storage = storage();
+    let url = storage.url("existing/").unwrap();
+    let sink = LanceDatasetSink::new(storage);
+    if mode == WriteMode::Append {
+        sink.open(url.clone(), input().schema(), options())
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+    }
+    let mut writer = sink
+        .open(
+            url.clone(),
+            input().schema(),
+            WriteOptions { mode, ..options() },
+        )
+        .await
+        .unwrap();
+    writer.write(input()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
 }
