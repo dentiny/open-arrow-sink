@@ -1,13 +1,7 @@
-//! Configuration, destination, writer-state, and transaction validation.
-use std::path::Path;
-
+//! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
-use lance::{
-    Dataset,
-    dataset::transaction::{Operation, Transaction},
-};
 use open_arrow_sink_core::{
-    Compression, Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
     ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
@@ -103,54 +97,56 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
     Ok(())
 }
 
-pub(crate) fn validate_path(path: &Path) -> Result<&str> {
-    path.to_str().ok_or_else(error::invalid_path)
-}
-
-pub(crate) async fn validate_existing_dataset(uri: &str, schema: Option<&Schema>) -> Result<()> {
-    let dataset = Dataset::open(uri).await.map_err(error::backend)?;
+pub(crate) async fn validate_existing_dataset(
+    builder: lance::dataset::builder::DatasetBuilder,
+    schema: Option<&Schema>,
+) -> Result<()> {
+    let dataset = builder.load().await.map_err(error::backend)?;
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(Error::SchemaMismatch);
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_writer_state(failed: bool, active: bool) -> Result<()> {
-    if failed || !active {
-        return Err(error::failed());
+        return Err(open_arrow_sink_core::Error::SchemaMismatch);
     }
     Ok(())
 }
 
 pub(crate) fn validate_transaction_compatibility(
-    target: &Transaction,
-    incoming: &Transaction,
+    target: &lance::dataset::transaction::Transaction,
+    incoming: &lance::dataset::transaction::Transaction,
 ) -> Result<()> {
+    use lance::dataset::transaction::Operation;
     if target.read_version != incoming.read_version {
-        return Err(Error::Unsupported(
-            "Lance writers observed different dataset versions".into(),
-        ));
+        return Err(error::different_dataset_versions());
     }
     if !matches!(
         (&target.operation, &incoming.operation),
         (Operation::Overwrite { .. }, Operation::Overwrite { .. })
             | (Operation::Append { .. }, Operation::Append { .. })
     ) {
-        return Err(Error::Unsupported(
-            "expected compatible uncommitted Lance write fragments".into(),
-        ));
+        return Err(error::invalid_create_fragments());
     }
     Ok(())
 }
 
-pub(crate) fn validate_session_transaction(
-    transaction: Option<Transaction>,
-) -> Result<Transaction> {
-    transaction.ok_or_else(|| Error::Unsupported("empty Lance writer session".into()))
+pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
+    if failed {
+        return Err(error::failed());
+    }
+    Ok(())
 }
 
-pub(crate) fn validate_writer_resource<T>(resource: Option<T>) -> Result<T> {
-    resource.ok_or_else(error::failed)
+pub(crate) fn write_fragments(
+    operation: &mut lance::dataset::transaction::Operation,
+) -> Result<&mut Vec<lance_table::format::Fragment>> {
+    match operation {
+        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
+        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
+        _ => Err(error::invalid_create_fragments()),
+    }
+}
+
+pub(crate) fn validate_session_transaction(
+    transaction: Option<lance::dataset::transaction::Transaction>,
+) -> Result<lance::dataset::transaction::Transaction> {
+    transaction.ok_or_else(error::empty_writer_session)
 }

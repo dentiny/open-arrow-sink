@@ -1,4 +1,6 @@
-use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
+use arrow_array::RecordBatchReader;
+use arrow_schema::ArrowError;
+use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
 };
@@ -6,12 +8,50 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, worker_stopped},
-    validation::{validate_writer_resource, validate_writer_state},
-    writer::{ChannelReader, Message, native_mode},
+    error::{aborted, backend, failed, worker_stopped},
+    storage::NativeStorage,
 };
 
 type Output = (u64, Transaction);
+
+enum Message {
+    Batch(RecordBatch),
+    Commit,
+}
+
+struct ChannelReader {
+    schema: SchemaRef,
+    receiver: mpsc::Receiver<Message>,
+    finished: bool,
+}
+
+impl Iterator for ChannelReader {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        // Lance polls RecordBatchReader on its blocking background iterator.
+        match self.receiver.blocking_recv() {
+            Some(Message::Batch(batch)) => Some(Ok(batch)),
+            Some(Message::Commit) => {
+                self.finished = true;
+                None
+            }
+            None => {
+                self.finished = true;
+                Some(Err(aborted()))
+            }
+        }
+    }
+}
+
+impl RecordBatchReader for ChannelReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
@@ -27,7 +67,7 @@ impl FragmentWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        uri: String,
+        destination: NativeStorage,
         options: &WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
@@ -36,11 +76,8 @@ impl FragmentWriter {
             receiver,
             finished: false,
         };
-        let mut params = WriteParams::default();
-        params.mode = native_mode(options.mode);
-        if let Some(size) = options.target_file_size {
-            params.max_bytes_per_file = size;
-        }
+        let params = destination.write_params(options);
+        let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
@@ -67,12 +104,14 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        validate_writer_state(self.failed, self.sender.is_some())?;
+        crate::validation::validate_write_state(self.failed || self.sender.is_none())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
-        validate_writer_resource(self.sender.as_ref())?
+        self.sender
+            .as_ref()
+            .unwrap()
             .send(Message::Batch(batch))
             .await
             .map_err(|_| worker_stopped())?;
@@ -81,12 +120,15 @@ impl DataWriter for FragmentWriter {
         Ok(())
     }
     async fn finish(&mut self) -> Result<Output> {
-        validate_writer_state(self.failed, self.sender.is_some() && self.task.is_some())?;
+        crate::validation::validate_write_state(self.failed)?;
         self.failed = true;
-        let sender = validate_writer_resource(self.sender.take())?;
+        let sender = self.sender.take().ok_or_else(failed)?;
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let transaction = validate_writer_resource(self.task.take())?
+        let transaction = self
+            .task
+            .take()
+            .ok_or_else(failed)?
             .await
             .map_err(backend)?
             .map_err(backend)?;

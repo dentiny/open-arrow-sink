@@ -1,18 +1,12 @@
-use std::path::PathBuf;
-
-use lance::dataset::{
-    CommitBuilder,
-    transaction::{Operation, Transaction},
-};
+use lance::dataset::transaction::Transaction;
 use open_arrow_sink_core::{Result, SessionCommitter, WriteOptions, WriteSummary, async_trait};
 
-use crate::{error::backend, index::build_indexes, validation};
+use crate::{error::backend, index::build_indexes, storage::NativeStorage};
 
 type Output = (u64, Transaction);
 
 pub(crate) struct LanceCommitter {
-    pub path: Option<PathBuf>,
-    pub uri: String,
+    pub destination: NativeStorage,
     pub options: WriteOptions,
 }
 
@@ -21,34 +15,23 @@ impl SessionCommitter<Output> for LanceCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<Output>) -> Result<WriteSummary> {
         let mut rows_written = 0;
         let mut combined: Option<Transaction> = None;
-        for (rows, transaction) in outputs {
+        for (rows, mut transaction) in outputs {
             rows_written += rows;
             if let Some(target) = &mut combined {
-                validation::validate_transaction_compatibility(target, &transaction)?;
-                match (&mut target.operation, transaction.operation) {
-                    (
-                        Operation::Overwrite { fragments, .. },
-                        Operation::Overwrite {
-                            fragments: incoming,
-                            ..
-                        },
-                    ) => fragments.extend(incoming),
-                    (
-                        Operation::Append { fragments },
-                        Operation::Append {
-                            fragments: incoming,
-                        },
-                    ) => fragments.extend(incoming),
-                    _ => unreachable!("transaction compatibility was validated"),
-                }
+                crate::validation::validate_transaction_compatibility(target, &transaction)?;
+                let fragments = crate::validation::write_fragments(&mut target.operation)?;
+                let incoming = crate::validation::write_fragments(&mut transaction.operation)?;
+                fragments.append(incoming);
             } else {
                 combined = Some(transaction);
             }
         }
-        let transaction = validation::validate_session_transaction(combined)?;
+        let transaction = crate::validation::validate_session_transaction(combined)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
-        let mut dataset = CommitBuilder::new(self.uri.as_str())
+        let mut dataset = self
+            .destination
+            .commit_builder()
             .execute(transaction)
             .await
             .map_err(backend)?;
@@ -58,10 +41,8 @@ impl SessionCommitter<Output> for LanceCommitter {
         Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        if self.options.cleanup_on_error
-            && let Some(path) = &self.path
-        {
-            tokio::fs::remove_dir_all(path).await.map_err(backend)?;
+        if self.options.cleanup_on_error {
+            self.destination.cleanup().await?;
         }
         Ok(())
     }

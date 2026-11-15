@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
 use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
-use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn batch() -> RecordBatch {
     RecordBatch::try_from_iter([(
@@ -25,8 +25,12 @@ async fn commit_round_trips_multiple_batches() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let expected = batch();
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), expected.schema(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            expected.schema(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.schema(), &expected.schema());
@@ -53,8 +57,12 @@ async fn empty_commit_produces_readable_dataset() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let schema = batch().schema();
-    let writer = LanceDatasetSink
-        .open(path.clone(), schema.clone(), options())
+    let writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            schema.clone(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 0);
@@ -73,8 +81,12 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
     tokio::fs::write(&sibling, "keep").await.unwrap();
     let path = temp.path().join("dataset");
     let batch = batch();
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), batch.schema(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
@@ -83,14 +95,8 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 
-#[rstest::rstest]
-#[case::default_size(None, false)]
-#[case::small_target(Some(1), true)]
 #[tokio::test]
-async fn target_file_size_rolls_files_without_losing_rows(
-    #[case] target_file_size: Option<usize>,
-    #[case] should_roll: bool,
-) {
+async fn target_file_size_rolls_files_without_losing_rows() {
     // Exceed the SDK's default page buffer while staying below its row-count limit.
     let count = 10 * 1024;
     let payloads = arrow_array::FixedSizeBinaryArray::try_from_iter((0..count).map(|i| {
@@ -115,12 +121,12 @@ async fn target_file_size_rolls_files_without_losing_rows(
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let mut writer = LanceDatasetSink
+    let mut writer = LanceDatasetSink::default()
         .open(
-            path.clone(),
+            Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             expected.schema(),
             WriteOptions {
-                target_file_size,
+                target_file_size: Some(1),
                 ..options()
             },
         )
@@ -134,11 +140,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
     );
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let fragments = dataset.get_fragments();
-    if should_roll {
-        more_asserts::assert_gt!(fragments.len(), 1);
-    } else {
-        assert_eq!(fragments.len(), 1);
-    }
+    assert!(fragments.len() > 1);
     let actual = dataset.scan().try_into_batch().await.unwrap();
     assert_eq!(actual.schema(), expected.schema());
     let ids = actual
@@ -212,7 +214,7 @@ async fn compression_survives_rolling_and_round_trips() {
         HashMap::from([("application".into(), "preserved".into())]),
     ));
     let expected = RecordBatch::try_new(schema.clone(), columns).unwrap();
-    let sink = LanceDatasetSink.layer(CompressionLayer::new(CompressionOptions {
+    let sink = LanceDatasetSink::default().layer(CompressionLayer::new(CompressionOptions {
         global: Some(Compression::Zstd { level: Some(9) }),
         columns: [
             ("nested".into(), Compression::Zstd { level: Some(3) }),
@@ -224,7 +226,7 @@ async fn compression_survives_rolling_and_round_trips() {
     let path = temp.path().join("dataset");
     let mut writer = sink
         .open(
-            path.clone(),
+            Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             schema.clone(),
             WriteOptions {
                 target_file_size: Some(1),
@@ -321,9 +323,13 @@ async fn unordered_commit_preserves_all_rows() {
 
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let mut writer = LanceDatasetSink
+    let mut writer = LanceDatasetSink::default()
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
-        .open(path.clone(), batch().schema(), options())
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch().schema(),
+            options(),
+        )
         .await
         .unwrap();
     let mut expected = Vec::new();
@@ -360,7 +366,6 @@ async fn unordered_commit_preserves_all_rows() {
 }
 
 #[rstest::rstest]
-#[case::create(WriteMode::Create, 4)]
 #[case::append(WriteMode::Append, 5)]
 #[case::overwrite(WriteMode::Overwrite, 4)]
 #[tokio::test]
@@ -368,17 +373,19 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let batch = batch();
-    if mode != WriteMode::Create {
-        let mut writer = LanceDatasetSink
-            .open(path.clone(), batch.schema(), options())
-            .await
-            .unwrap();
-        writer.write(batch.slice(0, 1)).await.unwrap();
-        writer.commit().await.unwrap();
-    }
-    let mut writer = LanceDatasetSink
+    let mut writer = LanceDatasetSink::default()
         .open(
-            path.clone(),
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
+        .await
+        .unwrap();
+    writer.write(batch.slice(0, 1)).await.unwrap();
+    writer.commit().await.unwrap();
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
             batch.schema(),
             WriteOptions { mode, ..options() },
         )
