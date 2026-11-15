@@ -3854,6 +3854,7 @@ dependencies = [
  "futures",
  "iceberg",
  "open-arrow-sink-core",
+ "open-arrow-sink-layer",
  "parquet",
  "rstest",
  "tokio",

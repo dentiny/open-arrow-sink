@@ -1,12 +1,15 @@
-use std::{io, path::PathBuf};
+use std::{num::NonZeroUsize, path::PathBuf};
 
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec, IndexType, Ordering, Result, SchemaRef, Sink,
-    SinkCapability, WriteOptions, Writer, async_trait,
+    CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{
-    compression::writer_schema, error::backend, validation::validate_options, writer::LanceWriter,
+    compression::writer_schema,
+    error::{backend, invalid_path},
+    validation::validate_options,
+    writer::LanceWriter,
 };
 
 /// Creates a new local dataset directory. Existing paths are always rejected.
@@ -48,15 +51,7 @@ impl Sink for LanceDatasetSink {
         // this directory until commit/abort; no existing dataset is overwritten.
         // TODO: Use OpenDAL to support remote storage beyond local paths.
         let path = std::path::absolute(path).map_err(backend)?;
-        let uri = path
-            .to_str()
-            .ok_or_else(|| {
-                backend(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Lance requires a UTF-8 path",
-                ))
-            })?
-            .to_owned();
+        let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
         tokio::fs::create_dir(&path).await.map_err(backend)?;
         Ok(Box::new(LanceWriter::new(
             schema,
@@ -66,5 +61,37 @@ impl Sink for LanceDatasetSink {
             options.target_file_size,
             options.indexes,
         )))
+    }
+}
+
+#[async_trait]
+impl ParallelSink for LanceDatasetSink {
+    type Output = (u64, lance::dataset::transaction::Transaction);
+    async fn open_writers(
+        &self,
+        path: PathBuf,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<WriteSession<Self::Output>> {
+        validate_options(&schema, &options, self.capability())?;
+        let encoding_schema = writer_schema(&schema, &options.compression);
+        let path = std::path::absolute(path).map_err(backend)?;
+        let uri = path.to_str().ok_or_else(invalid_path)?.to_owned();
+        tokio::fs::create_dir(&path).await.map_err(backend)?;
+        let writers = (0..count.get())
+            .map(|_| {
+                Box::new(crate::parallel::FragmentWriter::new(
+                    schema.clone(),
+                    encoding_schema.clone(),
+                    uri.clone(),
+                    options.target_file_size,
+                )) as Box<dyn DataWriter<Output = Self::Output>>
+            })
+            .collect();
+        Ok(WriteSession {
+            writers,
+            committer: Box::new(crate::committer::LanceCommitter { path, uri, options }),
+        })
     }
 }
