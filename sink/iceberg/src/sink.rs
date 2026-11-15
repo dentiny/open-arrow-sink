@@ -161,16 +161,19 @@ impl IcebergTableSink {
                 );
             }
         }
+        let properties = TableProperties::new(&properties);
         let parquet = ParquetWriterBuilder::from_table_properties(
-            &TableProperties::new(&properties),
+            &properties,
             metadata.current_schema().clone(),
         )
         .map_err(backend)?;
+        let target_file_size = match options.target_file_size {
+            Some(size) => size,
+            None => properties.write_target_file_size_bytes().map_err(backend)?,
+        };
         let rolling = RollingFileWriterBuilder::new(
             parquet,
-            options
-                .target_file_size
-                .unwrap_or(TableProperties::PROPERTY_WRITE_TARGET_FILE_SIZE_BYTES_DEFAULT),
+            target_file_size,
             table.file_io().clone(),
             DefaultLocationGenerator::with_data_location(prefix.trim_end_matches('/').to_owned()),
             DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
