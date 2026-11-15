@@ -49,6 +49,7 @@ impl Sink for LanceDatasetSink {
                 per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
             },
             supported_partitions: vec![],
+            supports_storage_version: true,
             supported_indexes: &[
                 IndexType::Scalar,
                 IndexType::Vector,
@@ -78,7 +79,7 @@ impl Sink for LanceDatasetSink {
                 encoding_schema,
                 destination,
                 options,
-            )));
+            )?));
         }
         // Use the same fragment writing and publication path for every session.
         self.clone()
@@ -105,14 +106,15 @@ impl ParallelSink for LanceDatasetSink {
         destination.prepare(&encoding_schema, options.mode).await?;
         let writers = (0..count.get())
             .map(|_| {
-                Box::new(crate::parallel::FragmentWriter::new(
+                Ok(Box::new(crate::parallel::FragmentWriter::new(
                     schema.clone(),
                     encoding_schema.clone(),
                     destination.clone(),
                     &options,
-                )) as Box<dyn DataWriter<Output = Self::Output>>
+                )?)
+                    as Box<dyn DataWriter<Output = Self::Output>>)
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(WriteSession {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {

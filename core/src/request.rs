@@ -58,6 +58,9 @@ pub struct WriteOptions {
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
+    /// Backend data-file format version. None preserves the backend default.
+    /// Currently supported only by Lance; values use the backend version syntax.
+    pub storage_version: Option<String>,
     /// Best-effort removal of session-created output on abort or failed open/commit.
     /// Enabled by default. Drop never performs asynchronous cleanup.
     pub cleanup_on_error: bool,
@@ -72,6 +75,7 @@ impl Default for WriteOptions {
             partition: None,
             indexes: Vec::new(),
             target_file_size: None,
+            storage_version: None,
             cleanup_on_error: true,
         }
     }

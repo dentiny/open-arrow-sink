@@ -16,6 +16,7 @@ azure = ["open-arrow-sink-storage/azure"]
 open-arrow-sink-layer.workspace = true
 open-arrow-sink-storage.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+lance-file = { version = "14.0.1", default-features = false }
 lance-table = { version = "14.0.1", default-features = false }
 lance-io = { version = "14.0.1", default-features = false }
 object_store = { version = "0.14.2", default-features = false }

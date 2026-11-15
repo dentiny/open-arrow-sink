@@ -57,8 +57,11 @@ impl NativeStorage {
         }
         Ok(())
     }
-    pub fn write_params(&self, options: &WriteOptions) -> WriteParams {
-        WriteParams {
+    pub fn write_params(&self, options: &WriteOptions) -> Result<WriteParams> {
+        Ok(WriteParams {
+            data_storage_version: crate::validation::parse_storage_version(
+                options.storage_version.as_deref(),
+            )?,
             session: Some(self.session.clone()),
             commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),
             mode: match options.mode {
@@ -70,7 +73,7 @@ impl NativeStorage {
                 .target_file_size
                 .unwrap_or(WriteParams::default().max_bytes_per_file),
             ..Default::default()
-        }
+        })
     }
     pub fn commit_builder(&self) -> CommitBuilder<'_> {
         CommitBuilder::new(self.url.as_str())

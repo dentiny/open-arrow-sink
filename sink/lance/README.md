@@ -207,3 +207,15 @@ A blob larger than the download pool's buffer budget is supported. The shared
 budget applies to application-owned download chunks; Lance's internal I/O and
 encoding buffers are separate. HTTP errors or cancellation poison the layer and
 native session, and a rejected commit aborts the reserved dataset directory.
+
+## Storage version
+
+Set `WriteOptions.storage_version` to `Some("2.1".into())` to select Lance's native
+data-file format version. `SinkCapability.supports_storage_version` is `true`.
+Accepted values follow Lance 14: `legacy` / `0.1`, `2.0` / `0.3`, `2.1`, `2.2`,
+`2.3`, `stable`, and `next`. Invalid values fail before destination I/O.
+`None` keeps Lance's default: the latest stable format for a new dataset, or the
+existing manifest's format for an existing dataset. An explicit version is passed
+to Lance for create, append, and overwrite, including parallel and blob writers.
+Appending with an explicit version affects the new files and preserves the manifest's
+default version. This selects the file format, independently of the dataset's commit version.

@@ -29,12 +29,15 @@ impl SessionCommitter<Output> for LanceCommitter {
         let transaction = crate::validation::validate_session_transaction(combined)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
-        let mut dataset = self
-            .destination
-            .commit_builder()
-            .execute(transaction)
-            .await
-            .map_err(backend)?;
+        let mut builder = self.destination.commit_builder();
+        if let Some(version) =
+            crate::validation::parse_storage_version(self.options.storage_version.as_deref())?
+        {
+            // Fragment writes and manifest publication must use the same format.
+            // Lance preserves the existing manifest default for append operations.
+            builder = builder.with_storage_format(version);
+        }
+        let mut dataset = builder.execute(transaction).await.map_err(backend)?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;

@@ -101,3 +101,29 @@ async fn shared_operator_abort_honors_cleanup() {
         assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
     }
 }
+
+#[tokio::test]
+async fn explicit_storage_version() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    assert!(sink.capability().supports_storage_version);
+    let url = storage.url("versioned/").unwrap();
+    let mut writer = sink
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                storage_version: Some("2.1".into()),
+                ..write_options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(
+        dataset.manifest().data_storage_format.version.to_string(),
+        "2.1"
+    );
+}

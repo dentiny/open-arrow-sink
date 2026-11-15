@@ -19,6 +19,10 @@ pub fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validate_mode_options(options.mode, capability.supported_modes)?;
+    validate_storage_version_options(
+        options.storage_version.as_deref(),
+        capability.supports_storage_version,
+    )?;
     validate_compression_options(schema, &options.compression, capability.compression)?;
     validate_partition_options(options.partition, &capability.supported_partitions)?;
     validate_index_options(&options.indexes, capability.supported_indexes)?;
@@ -137,6 +141,18 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
         schema
             .field_with_name(&index.column)
             .map_err(|_| missing_index_column(&index.column))?;
+    }
+    Ok(())
+}
+
+/// Reject explicit storage versions when the backend does not support them.
+/// Supporting backends additionally validate their version syntax.
+pub fn validate_storage_version_options(
+    storage_version: Option<&str>,
+    supports_storage_version: bool,
+) -> Result<()> {
+    if storage_version.is_some() && !supports_storage_version {
+        return Err(Error::Unsupported("storage version".into()));
     }
     Ok(())
 }

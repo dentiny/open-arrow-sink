@@ -23,7 +23,7 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[], compression: Default::default() }`
+A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[], compression: Default::default(), supports_storage_version: false }`
 or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
@@ -156,6 +156,11 @@ The Iceberg adapter uses the SDK's fanout writer behavior. See the
 [Iceberg sink](sink/iceberg/README.md) for configuration and commit semantics.
 
 ## File size
+
+`WriteOptions.storage_version: Option<String>` selects the backend data-file format
+version. `None` preserves the backend default. `SinkCapability.supports_storage_version`
+advertises support: currently only Lance returns `true`. Parquet and Iceberg reject
+explicit versions with `Error::Unsupported` before destination I/O.
 
 The shared `WriteOptions.target_file_size` option specifies a positive byte count:
 
