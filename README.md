@@ -178,7 +178,7 @@ budget charged even if the source stream is cancelled. Exhausting the shared
 budget pauses readers, including readers from other writers. Whole blobs are
 never collected by the pool and may exceed its budget.
 
-The budget covers application-owned transfer buffers. HTTP/TLS transport buffers,
+The budget covers application-owned transfer buffers. OpenDAL/HTTP/TLS read buffers,
 Lance encoding/output buffers, input batches, and descriptor metadata are separate;
 it is not a process RSS limit. Error response bodies are discarded before OpenDAL
 classifies the status to avoid collecting unbounded diagnostic payloads.

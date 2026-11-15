@@ -26,7 +26,7 @@ const CHUNK_BYTES: usize = 64 * 1024;
 /// acquired before allocating/reading a transfer buffer, travel with `BlobChunk`,
 /// and are released only when the consumer drops that chunk. The budget covers
 /// application-owned transfer buffers, including chunks retained by consumers;
-/// HTTP/TLS transport buffers and the destination's internal buffers are separate.
+/// OpenDAL/HTTP/TLS read buffers and the destination's internal buffers are separate.
 /// A blob may exceed the budget because no complete payload is collected here.
 #[derive(Debug)]
 pub struct DownloadPool {
