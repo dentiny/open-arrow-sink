@@ -23,9 +23,10 @@ An empty session leaves the table unchanged.
 Enable identity partition routing with the shared write option:
 
 ```rust
-use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteOptions};
+use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions};
 
 let options = WriteOptions {
+    mode: WriteMode::Append,
     ordering: Ordering::Unordered,
     partition: Some(PartitionOptions {
         partition_type: PartitionType::Identity,
@@ -120,8 +121,9 @@ access. `level: None` uses the codec default instead of the table's previous lev
 ### Supported write modes
 
 `IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
-`WriteOptions { mode: Some(WriteMode::Append), ..options }` explicitly appends to
-an existing table; `mode: None` keeps the same default. A missing table is an error.
+`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+table. A missing table is an error. The shared default is `WriteMode::Create`,
+which this sink rejects; callers must explicitly select Append.
 
 Create and Overwrite return `Error::Unsupported` before catalog access, leaving
 existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes

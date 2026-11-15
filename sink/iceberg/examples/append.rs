@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             identifier.clone(),
             schema,
             WriteOptions {
-                mode: Some(WriteMode::Append),
+                mode: WriteMode::Append,
                 ordering: Ordering::Unordered,
                 ..WriteOptions::default()
             },

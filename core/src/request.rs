@@ -1,9 +1,10 @@
 use crate::{CompressionOptions, IndexSpec, PartitionType};
 
 /// How a session treats its destination. Support is declared by each sink.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WriteMode {
     /// Create a new destination; fail if it already exists.
+    #[default]
     Create,
     /// Add rows to an existing destination; fail if it does not exist.
     Append,
@@ -43,9 +44,9 @@ impl Default for PartitionOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
-    /// None preserves the sink's historical default: Create for Parquet/Lance,
-    /// Append for Iceberg. Explicit unsupported modes fail before destination I/O.
-    pub mode: Option<WriteMode>,
+    /// Destination policy. Defaults to Create for every sink. Unsupported modes,
+    /// including the default, fail before destination I/O.
+    pub mode: WriteMode,
     pub ordering: Ordering,
     /// Global default and top-level column overrides; empty preserves backend defaults.
     pub compression: CompressionOptions,
@@ -65,7 +66,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
-            mode: None,
+            mode: WriteMode::default(),
             ordering: Ordering::default(),
             compression: CompressionOptions::default(),
             partition: None,
