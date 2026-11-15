@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use open_arrow_sink_core::Result;
 use percent_encoding::percent_decode_str;
@@ -24,26 +24,24 @@ pub(crate) fn validate_file_url(url: &Url) -> Result<()> {
         .map_err(|_| error::invalid_file_url())
 }
 
-pub(crate) fn decoded_path(url: &Url) -> Result<String> {
+pub(crate) fn decoded_path(url: &Url) -> Result<Cow<'_, str>> {
     let decoded = percent_decode_str(url.path())
         .decode_utf8()
-        .map_err(|_| error::invalid_utf8_path())?
-        .into_owned();
+        .map_err(|_| error::invalid_utf8_path())?;
     validate_path(decoded.trim_start_matches('/'))?;
     Ok(decoded)
 }
 
-pub(crate) fn relative_path(base_url: &Url, url: &Url) -> Result<String> {
+pub(crate) fn relative_path(base_url: &Url, base: &str, url: &Url) -> Result<String> {
     validate_url(url)?;
     if url[..Position::BeforePath] != base_url[..Position::BeforePath] {
         return Err(error::endpoint_mismatch());
     }
     let path = decoded_path(url)?;
-    let base = decoded_path(base_url)?;
     if path.trim_end_matches('/') == base.trim_end_matches('/') {
         return Ok(String::new());
     }
-    path.strip_prefix(&base)
+    path.strip_prefix(base)
         .map(str::to_owned)
         .ok_or_else(error::outside_root)
 }
