@@ -67,6 +67,15 @@ impl DownloadPool {
         })
     }
 
+    /// Use a caller-provided HTTP transport for authentication, instrumentation,
+    /// or deterministic tests. Existing concurrency and policy layers are replayed
+    /// around this transport; the process-wide request budget remains shared.
+    pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
+        let context = self.operator.base_context().with_http_transport(transport);
+        self.operator = self.operator.with_context(context);
+        self
+    }
+
     /// Configure OpenDAL policies. Add TimeoutLayer before RetryLayer so every
     /// retry attempt receives its own I/O deadline. Neither is added by default.
     pub fn with_layer(mut self, layer: impl Layer) -> Self {

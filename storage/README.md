@@ -71,3 +71,11 @@ For example, use `NonZeroUsize::new(16 * 1024 * 1024).unwrap()` for 16 MiB parts
 OpenDAL enforces service-specific part-size limits. Without an explicit setting,
 shared storage writers retain their 5 MiB buffer and native Lance retains its
 adapter defaults. All clones of the configured storage carry the setting.
+
+## Download transports
+
+A `DownloadPool` can reuse a caller-provided `opendal::HttpTransporter` via
+`with_http_transport`. This supports shared authentication or instrumentation and
+in-memory test fixtures without installing a process-global default transport.
+The pool preserves its existing concurrency, timeout, and retry layers when the
+transport is replaced. Returned chunks retain the same buffer accounting.
