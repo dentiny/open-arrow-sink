@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 
 use open_arrow_sink_core::{
     DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
@@ -7,10 +7,13 @@ use open_arrow_sink_core::{
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use tokio::fs::{self, File, OpenOptions};
 
-use crate::error::{backend, closed};
+use crate::{
+    destination::Destination,
+    error::{backend, closed},
+};
 
 pub(crate) struct ParquetDirectoryWriter {
-    directory: PathBuf,
+    pub(crate) destination: Arc<Destination>,
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<File>>,
     options: WriteOptions,
@@ -61,6 +64,7 @@ impl Writer for ParquetDirectoryWriter {
             let _ = self.cleanup().await;
             return Err(backend(error));
         }
+        self.destination.publish().await?;
         Ok(WriteSummary {
             rows_written: self.rows_written,
         })
@@ -74,7 +78,7 @@ impl Writer for ParquetDirectoryWriter {
 
 impl ParquetDirectoryWriter {
     pub(crate) fn new(
-        directory: PathBuf,
+        destination: Arc<Destination>,
         schema: SchemaRef,
         writer: AsyncArrowWriter<File>,
         options: WriteOptions,
@@ -83,7 +87,7 @@ impl ParquetDirectoryWriter {
         file_stride: usize,
     ) -> Self {
         Self {
-            directory,
+            destination,
             schema,
             writer: Some(writer),
             options,
@@ -106,7 +110,9 @@ impl ParquetDirectoryWriter {
 
     fn file_path(&self, index: usize) -> PathBuf {
         let index = self.first_file + index * self.file_stride;
-        self.directory.join(format!("part-{index:05}.parquet"))
+        self.destination
+            .directory
+            .join(format!("{}{index:05}.parquet", self.destination.prefix))
     }
 
     async fn cleanup(&mut self) -> io::Result<()> {
@@ -120,8 +126,11 @@ impl ParquetDirectoryWriter {
                 Err(error) => return Err(error),
             }
         }
+        if !self.destination.remove_directory {
+            return Ok(());
+        }
         // Never recursively delete a directory: other files may have been added.
-        match fs::remove_dir(&self.directory).await {
+        match fs::remove_dir(&self.destination.directory).await {
             // Other shards or unrelated files can still own this directory.
             Err(error)
                 if self.file_stride > 1

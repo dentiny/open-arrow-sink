@@ -73,3 +73,19 @@ Overrides and global settings persist across file rolling.
 Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
 Parquet accepts levels 1 through 22; unsupported levels are rejected before
 creating the destination. `level: None` uses the Parquet default.
+
+### Write modes
+
+Set `WriteOptions.mode` to `Some(WriteMode::Create)` (the default when omitted),
+`Some(WriteMode::Append)`, or `Some(WriteMode::Overwrite)`.
+Append requires an existing directory, checks the schema of its `.parquet` files,
+and adds uniquely named files; abort removes only the session's files. Overwrite
+writes a sibling staging directory and replaces the complete destination on commit,
+including unrelated files in that destination. Abort preserves the old directory.
+An empty overwrite publishes an empty, readable Parquet file.
+
+The parent directory must exist. Callers must exclude concurrent replacement of
+the destination for the session lifetime. Directory replacement uses two renames
+with rollback on a failed second rename; readers can observe a brief missing path,
+so it is not an atomic directory transaction. Create and append files are visible
+before commit. `cleanup_on_error = false` retains unfinished session output.
