@@ -187,7 +187,14 @@ metadata are retained.
 The adapter sets `lance-encoding:compression` and
 `lance-encoding:compression-level` in an internal Arrow schema, including the
 separate dictionary-value compression settings. `Uncompressed` disables native
-general-purpose compression; Lance still chooses its structural encodings.
+general-purpose compression. Structural encoding is independently controlled by
+`CompressionOptions.structural_encoding` and `.column_encodings`: `Miniblock`
+uses a block-oriented layout, while `Fullzip` uses a per-value layout. Neither
+setting changes the codec. Column overrides replace only the corresponding
+structural default, and both policies propagate to nested descendants.
+Unspecified structural settings preserve native/schema defaults. Native blob
+fields own their layout and reject explicit structural settings before I/O.
+Append compares the effective metadata, so use the same policies as at creation.
 `writer.schema()` and input batch validation use the caller's original schema.
 Batches reuse their existing value buffers with the internal schema, and readback
 includes the persisted encoding metadata. These settings survive file rolling.
@@ -197,11 +204,13 @@ stable format can substitute Zstd for LZ4 on per-value paths, so it cannot honor
 that shared codec request consistently.
 
 ```rust
-use open_arrow_sink_core::{Compression, CompressionOptions};
+use open_arrow_sink_core::{Compression, CompressionOptions, StructuralEncoding};
 
 let compression = CompressionOptions {
     global: Some(Compression::Zstd { level: Some(9) }),
     columns: [("raw_payload".into(), Compression::Uncompressed)].into(),
+    structural_encoding: Some(StructuralEncoding::Fullzip),
+    column_encodings: [("id".into(), StructuralEncoding::Miniblock)].into(),
 };
 ```
 

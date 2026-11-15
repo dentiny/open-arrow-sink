@@ -78,6 +78,7 @@ use open_arrow_sink::{Compression, CompressionOptions, SinkExt, layer::Compressi
 let sink = backend.layer(CompressionLayer::new(CompressionOptions {
     global: Some(Compression::Zstd { level: Some(9) }),
     columns: [("embedding".into(), Compression::Uncompressed)].into(),
+    ..Default::default()
 }));
 ```
 
@@ -88,6 +89,20 @@ Column keys are exact, unique top-level Arrow field names: dots are literal,
 and a nested field override applies to all its descendant physical columns.
 Unknown or ambiguous names are rejected before opening the destination.
 Backends retain the session policy across any file rolling.
+
+`CompressionOptions` also contains structural encoding policy, independently of
+its codec policy. `structural_encoding` selects a global `Miniblock` or `Fullzip`
+layout; `column_encodings` overrides that choice for exact, unique top-level
+columns. Column codec overrides do not reset structural policy, and structural
+overrides do not reset codecs or their levels. Both policies apply recursively to
+nested descendants. Empty policies preserve existing schema metadata and backend
+defaults. `CompressionLayer` replaces all four fields together.
+
+`CompressionCapability.structural_encodings` advertises supported layouts for
+both scopes. Lance supports both; Parquet and Iceberg reject nonempty structural
+policy before destination I/O. Lance rejects structural overrides on native blob
+columns, which use their own storage layout. Matching effective structural schema
+metadata is required when appending to an existing dataset.
 
 ## Unordered concurrent writes
 

@@ -55,7 +55,15 @@ impl From<CompressionCodec> for Compression {
     }
 }
 
-/// Session compression policy. Empty options preserve backend defaults.
+/// Physical organization of encoded column values, independent of the codec.
+/// Backend support is advertised separately from compression codecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuralEncoding {
+    Miniblock,
+    Fullzip,
+}
+
+/// Session codec and structural encoding policy. Empty options preserve backend defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompressionOptions {
     /// Default compression for every column; None preserves the backend default.
@@ -63,13 +71,22 @@ pub struct CompressionOptions {
     /// Overrides keyed by exact top-level Arrow field name (dots are literal).
     /// For nested fields, applies to all descendant physical columns.
     pub columns: BTreeMap<String, Compression>,
+    /// Default structural encoding. None preserves backend/schema defaults.
+    /// Independent of the global codec and per-column codec overrides.
+    pub structural_encoding: Option<StructuralEncoding>,
+    /// Structural overrides for exact, unique top-level column names.
+    /// Each override replaces only the structural default, not the codec.
+    /// Both policies apply recursively to nested fields.
+    pub column_encodings: BTreeMap<String, StructuralEncoding>,
 }
 
-/// Independently supported codecs for global defaults and column overrides.
+/// Supported codec scopes and structural encodings.
 /// An empty list means that scope is unsupported, including Uncompressed.
 /// Codec support does not imply support for every level; backends validate levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CompressionCapability {
     pub global: &'static [CompressionCodec],
     pub per_column: &'static [CompressionCodec],
+    /// Supported global and per-column structural encodings. Empty means unsupported.
+    pub structural_encodings: &'static [StructuralEncoding],
 }
