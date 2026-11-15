@@ -253,13 +253,13 @@ Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
 
 ### Destination write modes
 
-`WriteOptions.mode` accepts `Some(WriteMode::Create)`, `Some(WriteMode::Append)`,
-or `Some(WriteMode::Overwrite)`. Create requires a new destination; append requires
+`WriteOptions.mode` accepts `WriteMode::Create`, `WriteMode::Append`,
+or `WriteMode::Overwrite`. Create requires a new destination; append requires
 an existing one; overwrite replaces all rows (not just affected partitions) and
 may create a missing destination. Consult the backend documentation for publication
 and cleanup guarantees. `SinkCapability.supported_modes` lists implemented modes;
-unsupported explicit modes are rejected before destination I/O.
+unsupported modes (including the default) are rejected before destination I/O.
 
-The default `None` preserves existing behavior: Parquet and Lance create a new
-directory, while Iceberg appends to an existing catalog table. Ordering and other
-options remain independent of mode.
+The default is `WriteMode::Create` for every sink. Iceberg supports only Append,
+so callers must explicitly set `mode: WriteMode::Append`; the default is rejected
+before catalog access. Ordering and other options remain independent of mode.

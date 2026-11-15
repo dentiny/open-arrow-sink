@@ -27,15 +27,12 @@ pub fn validate_options(
     Ok(())
 }
 
-/// Reject unsupported explicit modes before opening or modifying a destination.
-/// None delegates default selection to the backend.
+/// Reject unsupported modes, including the default, before destination I/O.
 pub fn validate_mode_options(
-    mode: Option<crate::WriteMode>,
+    mode: crate::WriteMode,
     supported_modes: &[crate::WriteMode],
 ) -> Result<()> {
-    if let Some(mode) = mode
-        && !supported_modes.contains(&mode)
-    {
+    if !supported_modes.contains(&mode) {
         return Err(Error::Unsupported(format!("write mode: {mode:?}")));
     }
     Ok(())
