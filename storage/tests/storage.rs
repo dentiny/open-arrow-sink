@@ -58,6 +58,11 @@ async fn namespace_boundaries_and_conditional_creation() {
     assert!(storage.url("../outside").is_err());
     assert!(storage.remove_all(storage.base_url()).await.is_err());
     assert!(storage.directory_url(storage.base_url()).is_err());
+    assert!(
+        storage
+            .directory_url(&"memory:///warehouse//".parse().unwrap())
+            .is_err()
+    );
     let prefix = storage.url("claim").unwrap();
     assert_eq!(
         storage.directory_url(&prefix).unwrap().path(),
