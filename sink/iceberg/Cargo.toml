@@ -7,6 +7,11 @@ repository.workspace = true
 description = "Minimal append-only Iceberg table sink"
 
 [dependencies]
+open-arrow-sink-storage.workspace = true
+bytes = "1"
+futures.workspace = true
+serde = "1"
+typetag = "0.2"
 open-arrow-sink-core.workspace = true
 iceberg = "0.11"
 uuid = { version = "1", features = ["v4"] }
@@ -16,5 +21,4 @@ parquet = { workspace = true, features = ["arrow"] }
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 arrow-array.workspace = true
-futures = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
