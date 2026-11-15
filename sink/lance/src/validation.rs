@@ -44,6 +44,7 @@ pub(crate) fn validate_options(
         .global
         .iter()
         .chain(options.compression.columns.values())
+        .chain(options.compression.nested_columns.values())
     {
         // Lance accepts 0 as the native Zstd default, in addition to positive levels.
         if let Compression::Zstd { level: Some(level) } = compression

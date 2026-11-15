@@ -327,3 +327,17 @@ or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
 `SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
 configuration before destination I/O. Native schema and parallel-session restrictions
 still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
+
+### Nested Lance compression overrides
+
+`CompressionOptions.nested_columns` uses literal path segments, for example
+`[(vec!["messages".into(), "text".into()], Compression::Zstd { level: Some(6) })].into()`.
+Struct children are named directly; list containers are transparent (omit `item`).
+Dots inside a segment are literal field names. Paths must uniquely identify a
+nested field and cannot enter native blob internals. Lance applies global policy,
+then top-level overrides, then nested overrides from ancestors to descendants.
+A nested codec override preserves independently selected structural encoding.
+Parquet and Iceberg reject this scope before opening the destination.
+
+`CompressionOptions` gains `nested_columns`; complete literals should use
+`..Default::default()`. `CompressionCapability.nested_columns` advertises support.
