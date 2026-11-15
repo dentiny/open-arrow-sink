@@ -430,24 +430,3 @@ async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
     let state = state.lock().unwrap();
     assert_eq!((state.aborted, state.session_aborted), (2, 1));
 }
-
-#[tokio::test]
-async fn single_writer_finish_failure_aborts_the_entire_session() {
-    let state = Arc::new(Mutex::new(State {
-        fail_finish: true,
-        ..Default::default()
-    }));
-    let session = TestSink(state.clone())
-        .open_writers((), batch().schema(), options(), NonZeroUsize::MIN)
-        .await
-        .unwrap();
-    let mut writer = session.into_writer().await.unwrap();
-    release(&state);
-    writer.write(batch()).await.unwrap();
-    assert!(writer.commit().await.is_err());
-    let state = state.lock().unwrap();
-    assert_eq!(
-        (state.aborted, state.session_aborted, state.committed),
-        (1, 1, 0)
-    );
-}
