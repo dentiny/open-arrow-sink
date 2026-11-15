@@ -59,6 +59,7 @@ impl Sink for Capture {
             },
             ordering: Ordering::PreserveInput,
             supported_partitions: vec![],
+            supports_storage_version: false,
             supported_indexes: &[],
         }
     }

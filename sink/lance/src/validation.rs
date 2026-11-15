@@ -13,6 +13,7 @@ pub(crate) fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
+    parse_storage_version(options.storage_version.as_deref())?;
     for compression in options
         .compression
         .global
@@ -235,4 +236,18 @@ pub(crate) fn validate_blob_placements(
         }
     }
     Ok(placements)
+}
+
+pub(crate) fn parse_storage_version(
+    version: Option<&str>,
+) -> Result<Option<lance_file::version::LanceFileVersion>> {
+    version
+        .map(|version| {
+            version.parse().map_err(|error| {
+                open_arrow_sink_core::Error::Unsupported(format!(
+                    "Lance storage version {version:?}: {error}"
+                ))
+            })
+        })
+        .transpose()
 }

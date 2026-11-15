@@ -31,6 +31,8 @@ pub struct SinkCapability {
     /// Partition transforms accepted by this sink. An empty list means
     /// `WriteOptions.partition` is unsupported.
     pub supported_partitions: Vec<PartitionType>,
+    /// Whether an explicit `WriteOptions.storage_version` is accepted.
+    pub supports_storage_version: bool,
     /// Logical index types this sink can construct. Empty means none.
     /// Backends additionally validate column-type compatibility before writing.
     pub supported_indexes: &'static [IndexType],

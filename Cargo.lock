@@ -4168,6 +4168,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "lance",
+ "lance-file",
  "lance-index",
  "lance-io",
  "lance-linalg",

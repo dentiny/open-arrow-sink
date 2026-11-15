@@ -36,13 +36,23 @@ fn options() -> WriteOptions {
     }
 }
 
+#[rstest::rstest]
+#[case::default(None)]
+#[case::explicit(Some("2.2"))]
 #[tokio::test]
-async fn shared_storage_streams_large_empty_and_null_blobs() {
+async fn shared_storage_streams_large_empty_and_null_blobs(#[case] version: Option<&str>) {
     let storage = storage();
     let url = storage.url("雪 output%20/").unwrap();
     let sink = LanceDatasetSink::new(storage);
     let mut writer = sink
-        .open(url.clone(), input().schema(), options())
+        .open(
+            url.clone(),
+            input().schema(),
+            WriteOptions {
+                storage_version: version.map(str::to_owned),
+                ..options()
+            },
+        )
         .await
         .unwrap();
     assert!(writer.supports_blob_streams());
@@ -75,6 +85,12 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    if let Some(version) = version {
+        assert_eq!(
+            dataset.manifest().data_storage_format.version.to_string(),
+            version
+        );
+    }
     let actual = dataset
         .scan()
         .blob_handling(BlobHandling::AllBinary)

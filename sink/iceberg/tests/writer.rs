@@ -851,3 +851,24 @@ async fn write_mode(#[case] mode: WriteMode) {
         ));
     }
 }
+
+#[tokio::test]
+async fn storage_version_is_rejected() {
+    let (catalog, identifier, schema) = table().await;
+    let sink = IcebergTableSink::new(catalog.clone());
+    assert!(!sink.capability().supports_storage_version);
+    let result = sink
+        .open(
+            identifier.clone(),
+            schema,
+            WriteOptions {
+                storage_version: Some("2.1".into()),
+                ..options()
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(open_arrow_sink_core::Error::Unsupported(message)) if message.contains("storage version"))
+    );
+    assert!(rows(catalog.as_ref(), &identifier).await.is_empty());
+}

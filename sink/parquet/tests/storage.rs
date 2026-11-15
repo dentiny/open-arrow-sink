@@ -155,3 +155,25 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
         "original"
     );
 }
+
+#[tokio::test]
+async fn storage_version_is_rejected_before_destination_io() {
+    let storage = storage();
+    let sink = ParquetDirectorySink::new(storage.clone());
+    assert!(!sink.capability().supports_storage_version);
+    let url = storage.url("unsupported-version/").unwrap();
+    let result = sink
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                storage_version: Some("2.1".into()),
+                ..options()
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(open_arrow_sink_core::Error::Unsupported(message)) if message.contains("storage version"))
+    );
+    assert!(storage.list(&url).await.unwrap().is_empty());
+}

@@ -69,14 +69,14 @@ impl FragmentWriter {
         encoding_schema: SchemaRef,
         destination: NativeStorage,
         options: &WriteOptions,
-    ) -> Self {
+    ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
         };
-        let params = destination.write_params(options);
+        let params = destination.write_params(options)?;
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -86,14 +86,14 @@ impl FragmentWriter {
                 )
                 .await
         });
-        Self {
+        Ok(Self {
             schema,
             encoding_schema,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
             failed: false,
-        }
+        })
     }
 }
 
