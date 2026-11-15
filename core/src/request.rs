@@ -44,7 +44,8 @@ impl Default for PartitionOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
-    /// Native blob options for this session. None preserves backend defaults.
+    /// Native blob options for this session. None uses BlobHandleConfig defaults
+    /// on supporting backends, including Ingest for external blob URIs.
     /// Explicit configuration requires `SinkCapability.supports_blob_handle`.
     pub blob_handle: Option<crate::BlobHandleConfig>,
     /// Destination policy. Defaults to Create for every sink. Unsupported modes,

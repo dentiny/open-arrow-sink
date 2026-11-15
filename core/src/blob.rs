@@ -6,9 +6,9 @@ use crate::{Result, async_trait};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExternalBlobMode {
     /// Keep the source URI as an external reference.
-    #[default]
     Reference,
     /// Copy the source bytes into destination-owned storage.
+    #[default]
     Ingest,
 }
 

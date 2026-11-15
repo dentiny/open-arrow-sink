@@ -151,7 +151,8 @@ let options = WriteOptions {
 Native logical blob source URIs are copied into destination-owned storage with
 `Ingest`. `allow_external_blob_outside_bases` applies only to `Reference` mode;
 `blob_pack_file_size_threshold` controls native blob pack size.
-The default remains `ExternalBlobMode::Reference`, which retains external URIs.
+The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
+or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
 `DownloadBlobLayer` already creates destination-owned managed streams directly.
 

@@ -76,12 +76,14 @@ async fn shared_operator_commit_indexes_and_read_back() {
 #[case(false)]
 #[case(true)]
 #[tokio::test]
-async fn ingested_blob_survives_source_removal(#[case] parallel: bool) {
+async fn ingested_blob_survives_source_removal(
+    #[case] parallel: bool,
+    #[values(false, true)] explicit_default_config: bool,
+) {
     use lance::{
         blob::{BlobArrayBuilder, blob_field},
         datatypes::BlobHandling,
     };
-    use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
     let storage = storage();
     let source = storage.url("source.bin").unwrap();
     storage.write(&source, "payload".into()).await.unwrap();
@@ -91,10 +93,7 @@ async fn ingested_blob_survives_source_removal(#[case] parallel: bool) {
     let batch = RecordBatch::try_new(schema.clone(), vec![values.finish().unwrap()]).unwrap();
     let sink = LanceDatasetSink::new(storage.clone());
     let options = WriteOptions {
-        blob_handle: Some(BlobHandleConfig {
-            external_blob_mode: ExternalBlobMode::Ingest,
-            ..Default::default()
-        }),
+        blob_handle: explicit_default_config.then(Default::default),
         ..write_options()
     };
     let url = storage.url("ingested/").unwrap();
