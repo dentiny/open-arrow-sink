@@ -23,6 +23,7 @@ impl Sink for ParquetDirectorySink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
+            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: crate::compression::SUPPORTED_CODECS,

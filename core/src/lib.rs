@@ -22,7 +22,7 @@ pub use compression::{
 pub use error::{Error, IndexCommitError, Result};
 pub use index::{IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
-pub use request::{Ordering, PartitionOptions, WriteOptions};
+pub use request::{Ordering, PartitionOptions, WriteMode, WriteOptions};
 pub use result::WriteSummary;
 pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;

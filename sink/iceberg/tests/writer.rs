@@ -99,6 +99,7 @@ fn batch(schema: SchemaRef) -> RecordBatch {
 
 fn options() -> WriteOptions {
     WriteOptions {
+        mode: open_arrow_sink_core::WriteMode::Append,
         ordering: Ordering::Unordered,
         ..WriteOptions::default()
     }

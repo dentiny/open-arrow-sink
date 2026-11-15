@@ -41,6 +41,7 @@ impl Sink for IcebergTableSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
+            supported_modes: &[open_arrow_sink_core::WriteMode::Append],
             ordering: Ordering::Unordered,
             compression: CompressionCapability {
                 global: &[
