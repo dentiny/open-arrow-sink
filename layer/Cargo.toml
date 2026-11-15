@@ -6,15 +6,13 @@ license.workspace = true
 repository.workspace = true
 description = "Composable layers for Arrow RecordBatch sinks"
 
-[features]
-default = []
-rebatch = ["dep:arrow-select"]
-
 [dependencies]
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
-arrow-select = { version = "58.4", optional = true }
+futures.workspace = true
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }
+arrow-array.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }

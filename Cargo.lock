@@ -3881,11 +3881,12 @@ dependencies = [
 name = "open-arrow-sink-layer"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
  "arrow-schema",
- "arrow-select",
  "async-trait",
  "futures",
  "open-arrow-sink-core",
+ "tokio",
 ]
 
 [[package]]

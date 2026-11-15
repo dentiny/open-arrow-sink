@@ -1,6 +1,10 @@
 //! Mandatory shared contracts, separate from optional business validation layers.
 use std::collections::HashSet;
 
+use crate::error::{
+    duplicate_index, invalid_target_file_size, missing_index_column, preserve_input_unsupported,
+    unsupported_index, unsupported_partition,
+};
 use crate::{
     CompressionCapability, CompressionOptions, Error, IndexSpec, IndexType, Ordering,
     PartitionOptions, PartitionType, RecordBatch, Result, SinkCapability, WriteOptions,
@@ -67,10 +71,7 @@ pub fn validate_partition_options(
     if let Some(partition) = options
         && !supported_partitions.contains(&partition.partition_type)
     {
-        return Err(Error::Unsupported(format!(
-            "partitioned writes with {:?}",
-            partition.partition_type
-        )));
+        return Err(unsupported_partition(partition.partition_type));
     }
     Ok(())
 }
@@ -82,10 +83,7 @@ pub fn validate_index_options(
 ) -> Result<()> {
     for index in indexes {
         if !supported_indexes.contains(&index.index_type) {
-            return Err(Error::Unsupported(format!(
-                "{:?} index construction on column {}",
-                index.index_type, index.column
-            )));
+            return Err(unsupported_index(index));
         }
     }
     Ok(())
@@ -94,9 +92,7 @@ pub fn validate_index_options(
 /// Check that an explicit target file size is positive.
 pub fn validate_target_file_size_options(target_file_size: Option<usize>) -> Result<()> {
     if target_file_size == Some(0) {
-        return Err(Error::Unsupported(
-            "target_file_size must be greater than zero".into(),
-        ));
+        return Err(invalid_target_file_size());
     }
     Ok(())
 }
@@ -104,7 +100,7 @@ pub fn validate_target_file_size_options(target_file_size: Option<usize>) -> Res
 /// Check that the sink can provide the requested input-order guarantee.
 pub fn validate_ordering_options(ordering: Ordering, supported_ordering: Ordering) -> Result<()> {
     if ordering == Ordering::PreserveInput && supported_ordering != Ordering::PreserveInput {
-        return Err(Error::Unsupported("preserving input row order".into()));
+        return Err(preserve_input_unsupported());
     }
     Ok(())
 }
@@ -124,14 +120,11 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     let mut columns = HashSet::new();
     for index in indexes {
         if !columns.insert(&index.column) {
-            return Err(Error::Unsupported(format!(
-                "multiple indexes requested for column {}",
-                index.column
-            )));
+            return Err(duplicate_index(&index.column));
         }
         schema
             .field_with_name(&index.column)
-            .map_err(|_| Error::Unsupported(format!("index column not found: {}", index.column)))?;
+            .map_err(|_| missing_index_column(&index.column))?;
     }
     Ok(())
 }

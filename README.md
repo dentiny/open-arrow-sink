@@ -3,13 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, ordering and compression layers, an optional rebatch layer, and optional
+The library includes shared contracts, ordering, compression, and unordered write layers, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
-core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, CompressionLayer, optional RebatchLayer
+core/       Sink, Writer, DataWriter, WriteSession, SessionCommitter, shared options
+layer/      OrderingLayer, CompressionLayer, UnorderedWriteLayer
 src/        Public facade
 ```
 
@@ -85,24 +85,57 @@ and a nested field override applies to all its descendant physical columns.
 Unknown or ambiguous names are rejected before opening the destination.
 Backends retain the session policy across any file rolling.
 
-## Rebatching
+## Unordered concurrent writes
 
-Enable the facade feature `layer-rebatch` to use `RebatchLayer`:
+`UnorderedWriteLayer` is available by default. Unlike `OrderingLayer`,
+this layer pre-opens a fixed number of writers and drives their I/O concurrently:
 
 ```rust,ignore
 use std::num::NonZeroUsize;
-use open_arrow_sink::{SinkExt, layer::RebatchLayer};
+use open_arrow_sink::{Ordering, Sink, SinkExt, WriteOptions, layer::UnorderedWriteLayer};
 
-let sink = backend.layer(RebatchLayer::new(NonZeroUsize::new(64_000).unwrap()));
+// `backend` implements ParallelSink.
+let sink = backend.layer(
+    UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()),
+);
+let mut writer = sink.open(directory, schema, WriteOptions {
+    ordering: Ordering::Unordered,
+    target_file_size: Some(256 * 1024 * 1024),
+    ..WriteOptions::default()
+}).await?;
+writer.write(batch).await?;
+let summary = writer.commit().await?;
 ```
 
-The layer merges small batches and splits large batches while preserving row order.
-Each forwarded batch has the configured row count, except the final partial batch
-sent by `commit`. Empty batches are ignored after schema validation. `abort` drops
-pending rows and aborts the inner writer. No background tasks or concurrency are added.
+The inner sink implements `ParallelSink`. It reserves a single destination and
+returns a `WriteSession` containing independent `DataWriter`s and one
+`SessionCommitter`. The layer never interprets backend output metadata, file names,
+partition specs, or manifests. Backend adapters supply their own publication and
+cleanup behavior; no source-library metadata is needed.
 
-Pending slices contain at most the configured number of rows. Arrow slices may
-retain their input buffers, so this is a row bound, not a byte-memory limit.
+At most one batch per writer is in flight. When all writers are busy, `write`
+waits for one to finish. An available writer accepts the next nonempty batch;
+there is no round-robin or file-order guarantee. Empty batches are validated and
+otherwise ignored. The bound is in batches, not bytes. Each backend also retains
+its own encoding buffers.
+
+The layer spawns no tasks: it polls data-writer futures during `write`, `commit`,
+or `abort`. Backends may use their native workers (Lance uses bounded channels). A successful `write` means accepted; an asynchronous error may surface
+in a later call. An error or cancellation of `write` makes the session terminal;
+abort or drop it. Commit drains accepted writes, finishes every data writer,
+then calls the session committer once with all outputs. A finish failure aborts
+all writers, including those that already finished, without publishing the session.
+Abort waits for in-flight I/O and attempts to abort every writer, even if another
+abort fails, then aborts the session. Drop never commits or performs async cleanup.
+
+`Ordering::PreserveInput` is rejected before opening files. An outer
+`OrderingLayer::new(Ordering::Unordered)` can explicitly enable reordering.
+
+Publication guarantees belong to the backend. Parquet files become visible before
+commit and have no atomic directory transaction. Transactional adapters can gather all outputs into one native data commit. Once publication begins, its outcome may be
+uncertain on error or cancellation: the layer does not delete potentially committed
+data. The session committer owns publication-failure handling. Before publication,
+cleanup honors `cleanup_on_error` and removes only session-owned output.
 
 ## Partitioning
 
@@ -190,6 +223,16 @@ Implement `Sink` and `Writer` from the facade or `open-arrow-sink-core`:
 
 After a write error or cancellation, abort or drop the writer. No automatic retry,
 write modes, schema evolution or transaction framework is included in this change.
+
+For concurrent writing, additionally implement `ParallelSink` with a backend-owned
+`Output` type. Return exactly the requested number of schema-compatible data writers
+and one committer. `DataWriter::finish(&mut self)` returns metadata without publishing;
+retain sufficient ownership for `abort` to clean up even after finish. The session
+committer receives every output only after all finishes succeed. Its `abort` runs
+after all writer aborts, including when a writer abort reports an error. Once its
+`commit` is entered, it owns publication and cleanup decisions; the layer will not
+abort the data writers afterward. Drop/cancelled open or commit do not promise async
+cleanup. Metadata accumulates until commit; the batch limit is not a metadata limit.
 
 ## Development
 
