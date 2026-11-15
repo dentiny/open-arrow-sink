@@ -3984,6 +3984,7 @@ dependencies = [
  "more-asserts",
  "object_store 0.14.2",
  "open-arrow-sink-core",
+ "open-arrow-sink-layer",
  "rstest",
  "tempfile",
  "tokio",
@@ -3994,6 +3995,7 @@ dependencies = [
 name = "open-arrow-sink-layer"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
  "arrow-schema",
  "arrow-select",
  "async-trait",

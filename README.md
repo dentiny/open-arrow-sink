@@ -188,3 +188,46 @@ retry policy is enabled by default. Apply OpenDAL policies with
 `DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
 attempt gets its own I/O deadline. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
+
+## Download URL columns into native blobs
+
+Compose `DownloadBlobLayer` with a sink supporting streaming blobs (currently
+`LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
+columns by name. The layer passes budgeted chunks directly from OpenDAL into the
+sink's native blob writer; it never collects a complete blob or a batch of payloads.
+Completed, session-owned descriptors are attached to the corresponding rows.
+
+```rust,no_run
+use std::{num::NonZeroUsize, sync::Arc};
+use open_arrow_sink::{SinkExt, lance::LanceDatasetSink, layer::{DownloadBlobLayer, DownloadPool}};
+
+# fn example() -> open_arrow_sink::Result<()> {
+let pool = Arc::new(DownloadPool::new(
+    NonZeroUsize::new(16).unwrap(),
+    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+)?);
+let sink = LanceDatasetSink.layer(
+    DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
+        .with_download_pool(pool),
+);
+# Ok(())
+# }
+```
+
+Enable both `sink-lance` and `layer-download-blob` for this example. Input batch
+boundaries, row order, nulls, and metadata are preserved by the layer; the final
+sink's ordering guarantee still applies. There is no per-blob size limit or
+separate output batch size. Payloads larger than the shared buffer budget stream
+through in chunks. Streamed Lance blobs use native dedicated storage, and default
+scans return descriptors; use `blob_handling(BlobHandling::AllBinary)` to read bytes.
+
+The input writer schema retains URL columns. The inner writer schema has
+blob-marked `LargeBinary` fields with empty placeholders; payloads are carried by
+native handles, not those arrays. Sinks without streaming blob support are rejected
+when opening the layer. Put a `RebatchLayer` before downloading (as an outer layer),
+so it operates on URL batches rather than native handles.
+
+A failed or cancelled write poisons the session and cancels remaining downloads;
+commit then aborts the inner writer. Earlier batches may already have been accepted.
+Dropping chunks releases the shared byte budget, and native blob cleanup follows
+the writer's abort/drop guarantees.

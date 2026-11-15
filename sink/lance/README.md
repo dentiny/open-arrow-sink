@@ -126,3 +126,10 @@ buffering the full payload to select inline or packed storage. Materialized bina
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session, and abort or a rejected commit removes the reserved dataset.
+
+`DownloadBlobLayer` uses this streaming interface directly: network chunks are
+appended to native blob files and only completed handles enter record batches.
+A blob larger than the download pool's buffer budget is supported. The shared
+budget applies to application-owned download chunks; Lance's internal I/O and
+encoding buffers are separate. HTTP errors or cancellation poison the layer and
+native session, and a rejected commit aborts the reserved dataset directory.
