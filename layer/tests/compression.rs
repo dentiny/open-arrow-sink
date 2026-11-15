@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec as Codec, CompressionOptions, Error, Ordering, Result,
-    SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, Writer, async_trait,
+    Compression, CompressionCapability, CompressionCodec as Codec, CompressionOptions, Error,
+    Ordering, Result, SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, Writer, async_trait,
 };
 use open_arrow_sink_layer::CompressionLayer;
 
@@ -21,8 +21,8 @@ impl Sink for ProbeSink {
         SinkCapability {
             ordering: Ordering::PreserveInput,
             compression: CompressionCapability {
-                global: &[Codec::Snappy],
-                per_column: &[Codec::Snappy],
+                global: &[Codec::Snappy, Codec::Zstd],
+                per_column: &[Codec::Snappy, Codec::Zstd],
             },
             supported_partitions: vec![],
             supported_indexes: &[],
@@ -48,15 +48,15 @@ fn layer_replaces_policy_and_preserves_other_session_inputs() {
     };
     let capability = backend.capability();
     let compression = CompressionOptions {
-        global: Some(Codec::Snappy),
-        ..Default::default()
+        global: Some(Compression::Zstd { level: Some(9) }),
+        columns: [("id".into(), Compression::Zstd { level: Some(3) })].into(),
     };
     let sink = backend.layer(CompressionLayer::new(compression.clone()));
     assert_eq!(sink.capability(), capability);
-    let schema = Arc::new(Schema::empty());
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let options = WriteOptions {
         compression: CompressionOptions {
-            global: Some(Codec::Zstd),
+            global: Some(Compression::Zstd { level: Some(1) }),
             ..Default::default()
         },
         target_file_size: Some(256),
@@ -85,11 +85,11 @@ fn layer_replaces_policy_and_preserves_other_session_inputs() {
 fn invalid_policy_never_reaches_inner_open() {
     for compression in [
         CompressionOptions {
-            global: Some(Codec::Zstd),
+            global: Some(Compression::Gzip),
             ..Default::default()
         },
         CompressionOptions {
-            columns: [("missing".into(), Codec::Snappy)].into(),
+            columns: [("missing".into(), Compression::Snappy)].into(),
             ..Default::default()
         },
     ] {

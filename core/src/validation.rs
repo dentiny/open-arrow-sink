@@ -5,16 +5,23 @@ use crate::{Error, IndexSpec, Ordering, RecordBatch, Result, SinkCapability, Wri
 use arrow_schema::Schema;
 
 /// Check declared capabilities before opening a destination or producing side effects.
+/// Backends must additionally validate codec-specific parameters, such as Zstd levels.
 pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
-    if let Some(codec) = options.compression.global
-        && !capability.compression.global.contains(&codec)
+    if let Some(compression) = options.compression.global
+        && !capability.compression.global.contains(&compression.codec())
     {
-        return Err(Error::Unsupported(format!("global compression: {codec:?}")));
+        return Err(Error::Unsupported(format!(
+            "global compression: {compression:?}"
+        )));
     }
-    for (column, codec) in &options.compression.columns {
-        if !capability.compression.per_column.contains(codec) {
+    for (column, compression) in &options.compression.columns {
+        if !capability
+            .compression
+            .per_column
+            .contains(&compression.codec())
+        {
             return Err(Error::Unsupported(format!(
-                "compression {codec:?} on column {column}"
+                "compression {compression:?} on column {column}"
             )));
         }
     }
@@ -99,7 +106,9 @@ pub fn validate_compression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CompressionCapability, CompressionCodec as Codec, CompressionOptions};
+    use crate::{
+        Compression, CompressionCapability, CompressionCodec as Codec, CompressionOptions,
+    };
 
     #[test]
     fn compression_scopes_and_codecs_are_checked_independently() {
@@ -114,23 +123,57 @@ mod tests {
         };
         let mut options = WriteOptions::default();
         assert!(validate_options(&options, capability.clone()).is_ok());
-        options.compression.global = Some(Codec::Snappy);
+        options.compression.global = Some(Compression::Snappy);
         assert!(validate_options(&options, capability.clone()).is_ok());
-        options.compression.global = Some(Codec::Zstd);
+        options.compression.global = Some(Compression::Zstd { level: None });
         assert!(validate_options(&options, capability.clone()).is_err());
         options.compression.global = None;
         options
             .compression
             .columns
-            .insert("id".into(), Codec::Snappy);
+            .insert("id".into(), Compression::Snappy);
         assert!(validate_options(&options, capability.clone()).is_err());
         capability.compression = CompressionCapability {
             global: &[],
             per_column: &[Codec::Snappy],
         };
         assert!(validate_options(&options, capability.clone()).is_ok());
-        options.compression.global = Some(Codec::Snappy);
+        options.compression.global = Some(Compression::Snappy);
         assert!(validate_options(&options, capability).is_err());
+    }
+
+    #[test]
+    fn zstd_capability_is_independent_of_requested_level() {
+        let capability = SinkCapability {
+            ordering: Ordering::PreserveInput,
+            compression: CompressionCapability {
+                global: &[Codec::Zstd],
+                per_column: &[Codec::Zstd],
+            },
+            supported_partitions: vec![],
+            supported_indexes: &[],
+        };
+        // Level ranges are backend-specific, not part of shared codec validation.
+        for level in [None, Some(-5), Some(0), Some(1), Some(9), Some(22)] {
+            let compression = Compression::Zstd { level };
+            let mut options = WriteOptions {
+                compression: CompressionOptions {
+                    global: Some(compression),
+                    columns: [("id".into(), compression)].into(),
+                },
+                ..Default::default()
+            };
+            assert!(validate_options(&options, capability.clone()).is_ok());
+            options
+                .compression
+                .columns
+                .insert("id".into(), Compression::Gzip);
+            assert!(validate_options(&options, capability.clone()).is_err());
+        }
+        assert_eq!(
+            Compression::from(Codec::Zstd),
+            Compression::Zstd { level: None }
+        );
     }
 
     #[test]
@@ -139,7 +182,7 @@ mod tests {
         let schema = Schema::new(vec![field.clone(), field]);
         let compression = CompressionOptions {
             global: None,
-            columns: [("id".into(), Codec::Snappy)].into(),
+            columns: [("id".into(), Compression::Snappy)].into(),
         };
         assert!(validate_compression(&schema, &compression).is_err());
     }
