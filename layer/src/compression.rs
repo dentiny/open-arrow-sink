@@ -3,7 +3,7 @@ use open_arrow_sink_core::{
     async_trait,
 };
 
-/// Overrides the entire session compression policy. The backend performs encoding.
+/// Overrides the entire codec/structural policy. The backend performs encoding.
 /// Like OrderingLayer, install one compression layer per sink.
 #[derive(Debug, Clone)]
 pub struct CompressionLayer {

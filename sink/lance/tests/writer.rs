@@ -222,6 +222,7 @@ async fn compression_survives_rolling_and_round_trips() {
             ("raw_payload".into(), Compression::Uncompressed),
         ]
         .into(),
+        ..Default::default()
     }));
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
