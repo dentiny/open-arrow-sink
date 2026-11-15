@@ -15,7 +15,8 @@ use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent
 use open_arrow_sink_core::{
     Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteMode, WriteOptions,
 };
-use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
+use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
+use open_arrow_sink_storage::opendal;
 
 type Row = (Option<i32>, Option<i64>);
 
@@ -35,6 +36,13 @@ async fn table_with_value_type(
 ) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
     let catalog: Arc<dyn Catalog> = Arc::new(
         MemoryCatalogBuilder::default()
+            .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
+                Storage::new(
+                    opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+                    "memory:///".parse().unwrap(),
+                )
+                .unwrap(),
+            )))
             .load(
                 "test",
                 HashMap::from([(

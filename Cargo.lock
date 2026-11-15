@@ -4113,13 +4113,17 @@ name = "open-arrow-sink-iceberg"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "bytes",
  "futures",
  "iceberg",
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
+ "open-arrow-sink-storage",
  "parquet",
  "rstest",
+ "serde",
  "tokio",
+ "typetag",
  "uuid",
 ]
 
