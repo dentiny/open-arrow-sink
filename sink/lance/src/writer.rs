@@ -138,7 +138,7 @@ impl LanceWriter {
             finished: false,
         };
         let mut params = WriteParams::default();
-        params.mode = match options.mode.unwrap_or(WriteMode::Create) {
+        params.mode = match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
             WriteMode::Append => LanceWriteMode::Append,
             WriteMode::Overwrite => LanceWriteMode::Overwrite,

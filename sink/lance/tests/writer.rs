@@ -327,10 +327,7 @@ async fn explicit_modes_create_append_and_overwrite_versions() {
             .open(
                 path.clone(),
                 batch().schema(),
-                WriteOptions {
-                    mode: Some(mode),
-                    ..options()
-                },
+                WriteOptions { mode, ..options() },
             )
             .await
             .unwrap();
@@ -352,7 +349,7 @@ async fn explicit_modes_create_append_and_overwrite_versions() {
                 path,
                 batch().schema(),
                 WriteOptions {
-                    mode: Some(WriteMode::Create),
+                    mode: WriteMode::Create,
                     ..options()
                 }
             )
@@ -382,10 +379,7 @@ async fn abort_append_and_overwrite_preserves_committed_version() {
             .open(
                 path.clone(),
                 batch().schema(),
-                WriteOptions {
-                    mode: Some(mode),
-                    ..options()
-                },
+                WriteOptions { mode, ..options() },
             )
             .await
             .unwrap();
@@ -403,7 +397,7 @@ async fn append_requires_existing_compatible_dataset() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let append = WriteOptions {
-        mode: Some(WriteMode::Append),
+        mode: WriteMode::Append,
         ..options()
     };
     assert!(
@@ -432,7 +426,7 @@ async fn empty_overwrite_creates_or_clears_dataset() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let overwrite = WriteOptions {
-        mode: Some(WriteMode::Overwrite),
+        mode: WriteMode::Overwrite,
         ..options()
     };
     LanceDatasetSink
@@ -447,7 +441,7 @@ async fn empty_overwrite_creates_or_clears_dataset() {
             path.clone(),
             batch().schema(),
             WriteOptions {
-                mode: Some(WriteMode::Append),
+                mode: WriteMode::Append,
                 ..options()
             },
         )
@@ -491,7 +485,7 @@ async fn append_reuses_compression_schema() {
                 path.clone(),
                 batch().schema(),
                 WriteOptions {
-                    mode: Some(mode),
+                    mode,
                     ..compressed.clone()
                 },
             )
@@ -531,7 +525,7 @@ async fn overwrite_can_replace_schema_without_changing_previous_version() {
             path.clone(),
             replacement.schema(),
             WriteOptions {
-                mode: Some(WriteMode::Overwrite),
+                mode: WriteMode::Overwrite,
                 ..options()
             },
         )

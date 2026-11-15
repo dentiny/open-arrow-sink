@@ -149,8 +149,8 @@ let compression = CompressionOptions {
 
 ### Write modes
 
-`WriteOptions.mode` accepts `Some(WriteMode::Create)` (default when omitted),
-`Some(WriteMode::Append)`, and `Some(WriteMode::Overwrite)`. Append requires an
+`WriteOptions.mode` accepts `WriteMode::Create` (default when omitted),
+`WriteMode::Append`, and `WriteMode::Overwrite`. Append requires an
 existing dataset with the exact effective schema, including requested compression
 metadata. Reuse the original compression options when appending. Overwrite publishes a new native
 Lance version replacing all rows and permits a new schema; it can also create a

@@ -57,7 +57,7 @@ impl Sink for LanceDatasetSink {
                 ))
             })?
             .to_owned();
-        let mode = options.mode.unwrap_or(WriteMode::Create);
+        let mode = options.mode;
         let reserved = match mode {
             WriteMode::Create => {
                 tokio::fs::create_dir(&path).await.map_err(backend)?;
