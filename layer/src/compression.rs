@@ -47,8 +47,7 @@ impl<S: Sink> Sink for CompressionSink<S> {
         mut options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         options.compression = self.compression.clone();
-        validation::validate_options(&options, self.inner.capability())?;
-        validation::validate_compression(&schema, &options.compression)?;
+        validation::validate_options(&schema, &options, self.inner.capability())?;
         self.inner.open(request, schema, options).await
     }
 }

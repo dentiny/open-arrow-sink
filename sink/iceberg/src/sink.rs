@@ -11,8 +11,8 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec, Error, Ordering, PartitionType, Result, SchemaRef,
-    Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
+    Compression, CompressionCapability, CompressionCodec, Error, Ordering, PartitionType, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
 };
 
 use crate::{
@@ -68,8 +68,15 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
-        validation::validate_compression(&schema, &options.compression)?;
+        validation::validate_options(&schema, &options, self.capability())?;
+        // The SDK writes Parquet, whose supported Zstandard levels are 1..=22.
+        if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
+            && !(1..=22).contains(&level)
+        {
+            return Err(Error::Unsupported(format!(
+                "Iceberg Zstd compression level must be between 1 and 22: {level}"
+            )));
+        }
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
         let metadata = table.metadata();
         validate_table(&table, options.partition)?;
@@ -88,18 +95,24 @@ impl Sink for IcebergTableSink {
         let mut properties = metadata.properties().clone();
         if let Some(codec) = options.compression.global {
             let value = match codec {
-                CompressionCodec::Uncompressed => "uncompressed",
-                CompressionCodec::Snappy => "snappy",
-                CompressionCodec::Gzip => "gzip",
-                CompressionCodec::Zstd => "zstd",
-                CompressionCodec::Lz4Raw => "lz4_raw",
+                Compression::Uncompressed => "uncompressed",
+                Compression::Snappy => "snappy",
+                Compression::Gzip => "gzip",
+                Compression::Zstd { .. } => "zstd",
+                Compression::Lz4Raw => "lz4_raw",
             };
             properties.insert(
                 TableProperties::PROPERTY_PARQUET_COMPRESSION_CODEC.into(),
                 value.into(),
             );
-            // An explicit codec uses its default level, not a table's old level.
+            // An explicit codec replaces the table's old codec and level.
             properties.remove(TableProperties::PROPERTY_PARQUET_COMPRESSION_LEVEL);
+            if let Compression::Zstd { level: Some(level) } = codec {
+                properties.insert(
+                    TableProperties::PROPERTY_PARQUET_COMPRESSION_LEVEL.into(),
+                    level.to_string(),
+                );
+            }
         }
         let parquet = ParquetWriterBuilder::from_table_properties(
             &TableProperties::new(&properties),

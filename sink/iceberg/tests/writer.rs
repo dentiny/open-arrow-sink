@@ -701,28 +701,28 @@ async fn assert_numeric_partition_round_trip(
 
 #[rstest::rstest]
 #[case(
-    open_arrow_sink_core::CompressionCodec::Uncompressed,
+    open_arrow_sink_core::Compression::Uncompressed,
     parquet::basic::Compression::UNCOMPRESSED
 )]
 #[case(
-    open_arrow_sink_core::CompressionCodec::Snappy,
+    open_arrow_sink_core::Compression::Snappy,
     parquet::basic::Compression::SNAPPY
 )]
 #[case(
-    open_arrow_sink_core::CompressionCodec::Gzip,
+    open_arrow_sink_core::Compression::Gzip,
     parquet::basic::Compression::GZIP(Default::default())
 )]
 #[case(
-    open_arrow_sink_core::CompressionCodec::Zstd,
+    open_arrow_sink_core::Compression::Zstd { level: None },
     parquet::basic::Compression::ZSTD(Default::default())
 )]
 #[case(
-    open_arrow_sink_core::CompressionCodec::Lz4Raw,
+    open_arrow_sink_core::Compression::Lz4Raw,
     parquet::basic::Compression::LZ4_RAW
 )]
 #[tokio::test]
 async fn session_compression_overrides_data_files_without_changing_table(
-    #[case] codec: open_arrow_sink_core::CompressionCodec,
+    #[case] codec: open_arrow_sink_core::Compression,
     #[case] expected: parquet::basic::Compression,
 ) {
     use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -775,7 +775,7 @@ async fn session_compression_overrides_data_files_without_changing_table(
 
 #[tokio::test]
 async fn column_compression_rejected_before_catalog_access() {
-    use open_arrow_sink_core::CompressionCodec;
+    use open_arrow_sink_core::Compression;
     let (catalog, _, schema) = table().await;
     let sink = IcebergTableSink::new(catalog);
     let missing = TableIdent::new(NamespaceIdent::new("missing".into()), "missing".into());
@@ -783,7 +783,7 @@ async fn column_compression_rejected_before_catalog_access() {
     options
         .compression
         .columns
-        .insert("id".into(), CompressionCodec::Snappy);
+        .insert("id".into(), Compression::Snappy);
     assert!(matches!(
         sink.open(missing, schema, options).await,
         Err(open_arrow_sink_core::Error::Unsupported(_))

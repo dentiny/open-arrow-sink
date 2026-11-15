@@ -48,7 +48,7 @@ impl<S: Sink> Sink for OrderingSink<S> {
         mut options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         options.ordering = self.ordering;
-        validation::validate_options(&options, self.inner.capability())?;
+        validation::validate_options(&schema, &options, self.inner.capability())?;
         self.inner.open(request, schema, options).await
     }
 }

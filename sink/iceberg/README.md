@@ -112,3 +112,7 @@ Supports global data-file compression through `WriteOptions.compression` or
 `CompressionLayer`: Uncompressed, Snappy, Gzip, Zstd, Lz4Raw. Overrides apply only
 to this session, retaining other table writer settings. Column overrides are
 unsupported and rejected before catalog access. Empty options retain table defaults.
+
+Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
+Levels 1 through 22 are supported; unsupported levels are rejected before catalog
+access. `level: None` uses the codec default instead of the table's previous level.
