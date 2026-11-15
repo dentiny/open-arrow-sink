@@ -132,3 +132,51 @@ so there is no per-worker table commit. An empty session publishes no snapshot.
 Before publication, failures abort every writer according to the cleanup policy.
 After publication starts, errors retain files because the catalog may already
 reference them. Per-writer encoding/fanout buffers multiply with concurrency.
+
+## Shared OpenDAL storage
+
+Inject `OpenDalStorageFactory` when building the catalog. The sink already uses
+that catalog's table `FileIO`, so data files, manifest files, scans, and abort
+cleanup all use the same shared operator. The sink request remains `TableIdent`;
+the table metadata determines data locations.
+
+```rust,ignore
+use std::sync::Arc;
+use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
+use open_arrow_sink_storage::opendal;
+use iceberg::{CatalogBuilder, memory::MemoryCatalogBuilder};
+
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///".parse()?)?;
+let factory = Arc::new(OpenDalStorageFactory::new(storage));
+let catalog = MemoryCatalogBuilder::default()
+    .with_storage_factory(factory)
+    .load("example", catalog_properties).await?;
+let sink = IcebergTableSink::new(Arc::new(catalog));
+```
+
+Use a configured filesystem/cloud operator and matching base URL for other
+backends. The base must cover every location used by the table, including any
+custom data location. Out-of-root URLs fail rather than falling back to another
+backend. Existing caller-configured catalogs continue to work unchanged.
+`OpenDalStorageFactory::file_io()` also builds a `FileIO` for native/static-table
+APIs. Factories retain live operators and deliberately reject FileIO serialization;
+reconstruct them with the configured operator in another process.
+
+Native Iceberg owns publication and commit-failure handling. This adapter does
+not change those semantics or introduce a second table transaction. Iceberg's
+`FileWrite` interface has no asynchronous abort method; dropped uploads may need
+backend lifecycle cleanup even when session-owned published files are removed.
+
+### Supported write modes
+
+`IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
+`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+table. A missing table is an error. The shared default is `WriteMode::Create`,
+which this sink rejects; callers must explicitly select Append.
+
+Create and Overwrite return `Error::Unsupported` before catalog access, leaving
+existing snapshots and data unchanged. The iceberg-rust 0.11 dependency exposes
+fast append but no public full-overwrite transaction, and `TableIdent` does not
+carry table creation settings. This sink never drops/recreates a table to emulate
+overwrite. Callers can inspect capabilities to choose an appropriate sink or mode.

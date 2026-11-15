@@ -1,0 +1,94 @@
+use crate::provider::Provider;
+use lance::{
+    dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
+    session::Session,
+};
+use lance_table::io::commit::ConditionalPutCommitHandler;
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode, WriteOptions};
+use open_arrow_sink_storage::{Storage, Url};
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub(crate) struct NativeStorage {
+    storage: Storage,
+    pub url: Url,
+    session: Arc<Session>,
+    reserved: bool,
+}
+impl NativeStorage {
+    pub fn new(storage: Storage, url: Url) -> Result<Self> {
+        let url = storage.directory_url(&url)?;
+        let session = Arc::new(Session::default());
+        session
+            .store_registry()
+            .insert(url.scheme(), Arc::new(Provider(storage.clone())));
+        Ok(Self {
+            storage,
+            url,
+            session,
+            reserved: false,
+        })
+    }
+    pub fn local_path(&self) -> Result<std::path::PathBuf> {
+        let info = self.storage.operator().info();
+        if info.scheme() != "fs" {
+            return Err(open_arrow_sink_core::Error::Unsupported(
+                "streaming blobs require filesystem storage".into(),
+            ));
+        }
+        Ok(std::path::PathBuf::from(info.root()).join(self.storage.path(&self.url)?))
+    }
+    pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
+        if mode == WriteMode::Append {
+            return crate::validation::validate_existing_dataset(
+                self.dataset_builder(),
+                Some(schema),
+            )
+            .await;
+        }
+        if self.storage.prefix_exists(&self.url).await? {
+            return match mode {
+                WriteMode::Create => Err(crate::error::destination_exists()),
+                _ => {
+                    crate::validation::validate_existing_dataset(self.dataset_builder(), None).await
+                }
+            };
+        }
+        self.storage
+            .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
+            .await?;
+        self.reserved = true;
+        Ok(())
+    }
+    pub async fn cleanup(&self) -> Result<()> {
+        if self.reserved {
+            self.storage.remove_all(&self.url).await?;
+        }
+        Ok(())
+    }
+    pub fn write_params(&self, options: &WriteOptions) -> WriteParams {
+        WriteParams {
+            session: Some(self.session.clone()),
+            commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),
+            mode: match options.mode {
+                WriteMode::Create => lance::dataset::WriteMode::Create,
+                WriteMode::Append => lance::dataset::WriteMode::Append,
+                WriteMode::Overwrite => lance::dataset::WriteMode::Overwrite,
+            },
+            max_bytes_per_file: options
+                .target_file_size
+                .unwrap_or(WriteParams::default().max_bytes_per_file),
+            ..Default::default()
+        }
+    }
+    pub fn commit_builder(&self) -> CommitBuilder<'_> {
+        CommitBuilder::new(self.url.as_str())
+            .with_session(self.session.clone())
+            .with_commit_handler(Arc::new(ConditionalPutCommitHandler))
+    }
+    pub fn dataset_builder(&self) -> DatasetBuilder {
+        DatasetBuilder::from_uri(self.url.as_str())
+            .with_session(self.session.clone())
+            .with_commit_handler(Arc::new(ConditionalPutCommitHandler))
+    }
+}

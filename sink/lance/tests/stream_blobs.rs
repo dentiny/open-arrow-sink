@@ -6,7 +6,7 @@ use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Compression, Ordering, Sink, WriteOptions,
 };
-use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn input() -> RecordBatch {
     let field = Field::new("blob", DataType::LargeBinary, true)
@@ -40,8 +40,12 @@ async fn streams_native_blobs_and_preserves_empty_and_null(
     let input = input();
     let mut options = options();
     options.compression.global = compression;
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), input.schema(), options)
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input.schema(),
+            options,
+        )
         .await
         .unwrap();
     assert!(writer.supports_blob_streams());
@@ -96,8 +100,12 @@ async fn streams_native_blobs_and_preserves_empty_and_null(
 async fn dropping_partial_blob_poison_session_and_commit_cleans_up() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), input().schema(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input().schema(),
+            options(),
+        )
         .await
         .unwrap();
     let mut blob = writer.create_blob().await.unwrap();
@@ -113,12 +121,20 @@ async fn rejects_handles_from_another_session() {
     let first_path = temp.path().join("first");
     let second_path = temp.path().join("second");
     let input = input();
-    let mut first = LanceDatasetSink
-        .open(first_path.clone(), input.schema(), options())
+    let mut first = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&first_path).unwrap(),
+            input.schema(),
+            options(),
+        )
         .await
         .unwrap();
-    let mut second = LanceDatasetSink
-        .open(second_path.clone(), input.schema(), options())
+    let mut second = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&second_path).unwrap(),
+            input.schema(),
+            options(),
+        )
         .await
         .unwrap();
     let blob = first.create_blob().await.unwrap().finish().await.unwrap();
@@ -146,8 +162,12 @@ async fn rejects_duplicate_and_null_placements() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("dataset");
         let input = input();
-        let mut writer = LanceDatasetSink
-            .open(path.clone(), input.schema(), options())
+        let mut writer = LanceDatasetSink::default()
+            .open(
+                Url::from_directory_path(&path).unwrap(),
+                input.schema(),
+                options(),
+            )
             .await
             .unwrap();
         let a = writer.create_blob().await.unwrap().finish().await.unwrap();
@@ -185,8 +205,12 @@ async fn ordinary_materialized_blob_values_still_use_native_storage() {
     let values =
         LargeBinaryArray::from(vec![Some(b"hello".as_slice()), None, Some(b"".as_slice())]);
     let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), batch.schema(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
@@ -212,8 +236,12 @@ async fn ordinary_materialized_blob_values_still_use_native_storage() {
 async fn abort_invalidates_live_blob_writers() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), input().schema(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input().schema(),
+            options(),
+        )
         .await
         .unwrap();
     let mut blob = writer.create_blob().await.unwrap();
@@ -244,8 +272,12 @@ async fn marked_binary_uses_native_blob_v2_and_round_trips_null_empty_and_payloa
     let batch = RecordBatch::try_new(schema.clone(), vec![values.clone(), values]).unwrap();
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("blobs.lance");
-    let mut writer = LanceDatasetSink
-        .open(path.clone(), schema.clone(), options())
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            schema.clone(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.schema(), &schema);
@@ -284,10 +316,90 @@ async fn invalid_blob_marker_is_rejected_before_creating_destination() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("invalid.lance");
     assert!(
-        LanceDatasetSink
-            .open(path.clone(), schema, options())
+        LanceDatasetSink::default()
+            .open(Url::from_directory_path(&path).unwrap(), schema, options())
             .await
             .is_err()
     );
     assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn configured_filesystem_root_is_shared_with_native_blobs() {
+    use open_arrow_sink_lance::Storage;
+    use open_arrow_sink_storage::opendal;
+
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::new(
+        opendal::Operator::new(
+            opendal::services::Fs::default().root(temp.path().to_str().unwrap()),
+        )
+        .unwrap(),
+        "file:///warehouse/".parse().unwrap(),
+    )
+    .unwrap();
+    let url = storage.url("dataset/").unwrap();
+    let sink = LanceDatasetSink::new(storage);
+    let mut writer = sink
+        .open(url.clone(), input().schema(), options())
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new("shared root")).await.unwrap();
+    let handle = blob.finish().await.unwrap();
+    writer
+        .write_with_blobs(
+            input(),
+            vec![BlobPlacement {
+                column: 0,
+                row: 0,
+                blob: handle,
+            }],
+        )
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let actual = dataset
+        .scan()
+        .blob_handling(BlobHandling::AllBinary)
+        .try_into_batch()
+        .await
+        .unwrap();
+    let values = actual
+        .column(0)
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .unwrap();
+    assert_eq!(values.value(0), b"shared root");
+    assert!(values.is_null(1));
+}
+
+#[tokio::test]
+async fn unsupported_blob_sessions_fail_before_reserving_a_destination() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_lance::Storage;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use open_arrow_sink_storage::opendal;
+    use std::num::NonZeroUsize;
+
+    let storage = Storage::new(
+        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+        "memory:///warehouse/".parse().unwrap(),
+    )
+    .unwrap();
+    let url = storage.url("dataset/").unwrap();
+    let sink = LanceDatasetSink::new(storage.clone());
+    assert!(
+        sink.open(url.clone(), input().schema(), options())
+            .await
+            .is_err()
+    );
+    assert!(
+        sink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .open(url.clone(), input().schema(), options())
+            .await
+            .is_err()
+    );
+    assert!(storage.list(&url).await.unwrap().is_empty());
 }

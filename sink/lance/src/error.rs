@@ -30,13 +30,6 @@ pub(crate) fn worker_stopped() -> Error {
     backend(io::Error::other("Lance write worker stopped"))
 }
 
-pub(crate) fn invalid_path() -> Error {
-    backend(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "Lance requires a UTF-8 path",
-    ))
-}
-
 pub(crate) fn missing_index_column(column: &str) -> Error {
     Error::Unsupported(format!("index column not found: {column}"))
 }
@@ -75,4 +68,27 @@ pub(crate) fn index_refresh(
     open_arrow_sink_core::IndexCommitError {
         message: format!("refreshing dataset after index construction: {error}"),
     }
+}
+
+pub(crate) fn destination_exists() -> Error {
+    backend(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "destination exists",
+    ))
+}
+
+pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
+    lance::Error::invalid_input(error.to_string())
+}
+
+pub(crate) fn invalid_create_fragments() -> Error {
+    Error::Unsupported("expected compatible uncommitted Lance write fragments".into())
+}
+
+pub(crate) fn empty_writer_session() -> Error {
+    Error::Unsupported("empty Lance writer session".into())
+}
+
+pub(crate) fn different_dataset_versions() -> Error {
+    Error::Unsupported("Lance writers observed different dataset versions".into())
 }

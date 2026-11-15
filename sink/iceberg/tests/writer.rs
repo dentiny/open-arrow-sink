@@ -13,9 +13,10 @@ use iceberg::spec::{
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{
-    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions,
+    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteMode, WriteOptions,
 };
-use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
+use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
+use open_arrow_sink_storage::opendal;
 
 type Row = (Option<i32>, Option<i64>);
 
@@ -35,6 +36,13 @@ async fn table_with_value_type(
 ) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
     let catalog: Arc<dyn Catalog> = Arc::new(
         MemoryCatalogBuilder::default()
+            .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
+                Storage::new(
+                    opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+                    "memory:///".parse().unwrap(),
+                )
+                .unwrap(),
+            )))
             .load(
                 "test",
                 HashMap::from([(
@@ -814,4 +822,32 @@ async fn unordered_commit_preserves_all_rows() {
     );
     expected.sort_unstable();
     assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+}
+
+#[rstest::rstest]
+#[case::create(WriteMode::Create)]
+#[case::append(WriteMode::Append)]
+#[case::overwrite(WriteMode::Overwrite)]
+#[tokio::test]
+async fn write_mode(#[case] mode: WriteMode) {
+    let (catalog, identifier, schema) = table().await;
+    let sink = IcebergTableSink::new(catalog.clone());
+    let result = sink
+        .open(
+            identifier.clone(),
+            schema.clone(),
+            WriteOptions { mode, ..options() },
+        )
+        .await;
+    if mode == WriteMode::Append {
+        let mut writer = result.unwrap();
+        writer.write(batch(schema)).await.unwrap();
+        writer.commit().await.unwrap();
+        assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
+    } else {
+        assert!(matches!(
+            result,
+            Err(open_arrow_sink_core::Error::Unsupported(_))
+        ));
+    }
 }

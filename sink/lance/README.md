@@ -1,15 +1,16 @@
 # Lance dataset sink
 
-`LanceDatasetSink` creates a new local Lance dataset from Arrow batches. It requires
-a Tokio runtime and a new UTF-8 directory path whose parent already exists.
-Existing paths are rejected. Keep exclusive ownership of the destination until the
-session ends, including index construction.
+`LanceDatasetSink` writes a Lance dataset from Arrow batches at a local or
+remote URL. It requires a Tokio runtime. Missing parents are created.
+Create rejects existing destinations; Append requires an existing dataset.
+Keep exclusive ownership of the destination until the session ends, including
+index construction.
 
 ```rust,ignore
 use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let mut writer = LanceDatasetSink.open(
-    "./new.lance".into(),
+let mut writer = LanceDatasetSink::default().open(
+    "file:///tmp/new.lance".parse()?,
     schema,
     WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
 ).await?;
@@ -18,7 +19,7 @@ let summary = writer.commit().await?;
 ```
 
 Enable the facade's `sink-lance` feature, or depend on `open-arrow-sink-lance`
-directly. Cloud backends in Lance are disabled.
+directly. Cloud backends are opt-in through the shared storage features below.
 
 `WriteOptions.target_file_size` sets Lance's native `max_bytes_per_file` parameter.
 `None` keeps the SDK default. It is a soft data-file target: buffered pages, groups,
@@ -28,13 +29,13 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish its first manifest. `abort` stops the worker and removes the
-reserved directory. Dropping closes the stream with an error and never commits,
+Lance to publish a new manifest version. `abort` stops the worker and removes the
+reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
-This first version supports create-only local datasets and unordered input.
-No append, overwrite, schema evolution, cloud options or ordering guarantee.
+This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
 
@@ -53,8 +54,8 @@ Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
 ```rust,ignore
 use open_arrow_sink::{IndexType, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let mut writer = LanceDatasetSink.open(
-    "./indexed.lance".into(),
+let mut writer = LanceDatasetSink::default().open(
+    "file:///tmp/indexed.lance".parse()?,
     schema,
     WriteOptions {
         ordering: Ordering::Unordered,
@@ -113,6 +114,7 @@ cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 
 ## Streaming native blobs
 
+Blob-marked schemas require a single writer with filesystem storage.
 Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
 value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
 finish it to obtain a session-owned `BlobHandle`. Attach handles with
@@ -125,7 +127,8 @@ carry managed blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session, and abort or a rejected commit removes the reserved dataset.
+poisons the session. Abort or a rejected commit removes a freshly reserved dataset
+when `cleanup_on_error` is enabled; existing datasets are preserved.
 
 ## Compression
 
@@ -163,20 +166,37 @@ let compression = CompressionOptions {
 };
 ```
 
-## Concurrent writing
+## Writing and shared storage
 
-Wrap `LanceDatasetSink` in `UnorderedWriteLayer::new(concurrency)` and explicitly
-allow `Ordering::Unordered`. The sink reserves one new directory and returns
-independent fragment writers plus one session committer. Each worker feeds a
-capacity-one queue into Lance's `InsertBuilder::execute_uncommitted_stream`;
-workers write fragments but never publish a manifest. The file-size target applies
-to every worker, and a worker can produce multiple fragments.
+Ordinary single-writer sessions use the same fragment writers and session
+committer as `UnorderedWriteLayer::new(concurrency)`. Streaming blobs use a
+specialized single writer with filesystem storage. Workers produce uncommitted fragments;
+the committer publishes one data manifest and then builds the requested indexes.
 
-After every writer finishes, the committer combines the create transactions'
-fragments and publishes one data manifest through `CommitBuilder`. Lance assigns
-unique fragment IDs at this point. Empty sessions still create a readable empty
-dataset. Requested indexes are built once against the combined dataset afterward;
-index construction can publish additional versions, with the failure semantics
-above. Before publication, abort first stops every worker, then removes the reserved
-directory only when `cleanup_on_error` is enabled. Publication failures retain files
-because the dataset may already have been committed. Drop never publishes.
+Requests are `Url` values. Convert local paths with
+`Url::from_directory_path(std::path::absolute(path)?)`. For custom credentials,
+endpoints, or shared memory, pass a configured `Storage`:
+
+```rust,ignore
+use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_storage::opendal;
+
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
+let sink = LanceDatasetSink::new(storage.clone());
+let url = storage.url("new-dataset/")?;
+let mut writer = sink.open(url.clone(), schema, options).await?;
+writer.write(batch).await?;
+writer.commit().await?;
+let dataset = sink.dataset_builder(url)?.load().await?;
+```
+
+Reads, writes, commits, and indexes share that operator. Enable `aws`, `gcp`, or
+`azure` (facade: `lance-aws`, `lance-gcp`, `lance-azure`) for cloud URLs. Use an
+explicit `Storage` for memory URLs so reads and writes share the same store.
+
+Append requires the same effective schema, including compression metadata.
+Overwrite publishes a new version, retaining historical versions, and can also
+create a missing dataset. Abort waits for workers to stop and removes only a
+freshly reserved destination when `cleanup_on_error` is enabled. Existing
+datasets and files with an uncertain publication outcome are retained.

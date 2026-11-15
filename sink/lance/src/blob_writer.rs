@@ -4,61 +4,22 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use arrow_array::RecordBatchReader;
-use arrow_schema::ArrowError;
-use lance::{Dataset, dataset::WriteParams};
+use lance::Dataset;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, IndexSpec, RecordBatch, Result, SchemaRef, WriteSummary, Writer,
+    BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer,
     async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, failed, worker_stopped},
+    error::{backend, failed, worker_stopped},
     index::build_indexes,
+    parallel::{ChannelReader, Message},
+    storage::NativeStorage,
 };
 
-pub(crate) enum Message {
-    Batch(RecordBatch),
-    Commit,
-}
-
-pub(crate) struct ChannelReader {
-    pub(crate) schema: SchemaRef,
-    pub(crate) receiver: mpsc::Receiver<Message>,
-    pub(crate) finished: bool,
-}
-
-impl Iterator for ChannelReader {
-    type Item = std::result::Result<RecordBatch, ArrowError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-        // Lance polls RecordBatchReader on its blocking background iterator.
-        match self.receiver.blocking_recv() {
-            Some(Message::Batch(batch)) => Some(Ok(batch)),
-            Some(Message::Commit) => {
-                self.finished = true;
-                None
-            }
-            None => {
-                self.finished = true;
-                Some(Err(aborted()))
-            }
-        }
-    }
-}
-
-impl RecordBatchReader for ChannelReader {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
-
-pub(crate) struct LanceWriter {
+pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
     path: PathBuf,
@@ -68,11 +29,12 @@ pub(crate) struct LanceWriter {
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
     failed: bool,
-    indexes: Vec<IndexSpec>,
+    destination: NativeStorage,
+    options: WriteOptions,
 }
 
 #[async_trait]
-impl Writer for LanceWriter {
+impl Writer for BlobDatasetWriter {
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -135,7 +97,7 @@ impl Writer for LanceWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        build_indexes(&mut dataset, &self.indexes)
+        build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
         Ok(WriteSummary {
@@ -148,19 +110,21 @@ impl Writer for LanceWriter {
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
-        tokio::fs::remove_dir_all(&self.path).await.map_err(backend)
+        if self.options.cleanup_on_error {
+            self.destination.cleanup().await?;
+        }
+        Ok(())
     }
 }
 
-impl LanceWriter {
+impl BlobDatasetWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         storage_schema: SchemaRef,
         encoding_schema: SchemaRef,
+        destination: NativeStorage,
         path: PathBuf,
-        uri: String,
-        target_file_size: Option<usize>,
-        indexes: Vec<IndexSpec>,
+        options: WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
@@ -168,10 +132,8 @@ impl LanceWriter {
             receiver,
             finished: false,
         };
-        let mut params = WriteParams::default();
-        if let Some(size) = target_file_size {
-            params.max_bytes_per_file = size;
-        }
+        let params = destination.write_params(&options);
+        let uri = destination.url.to_string();
         let task =
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
@@ -184,7 +146,8 @@ impl LanceWriter {
             task,
             rows: 0,
             failed: false,
-            indexes,
+            destination,
+            options,
         }
     }
 }

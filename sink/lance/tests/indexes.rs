@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field};
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_index::scalar::FullTextSearchQuery;
 use open_arrow_sink_core::{IndexSpec as Spec, IndexType as Kind, Ordering, Sink, WriteOptions};
-use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn options() -> WriteOptions {
     WriteOptions {
@@ -69,9 +69,13 @@ async fn builds_all_index_kinds_and_queries_them() {
         Spec::new("category", Kind::BloomFilter),
         Spec::new("vector", Kind::Vector),
     ];
-    let sink = LanceDatasetSink;
+    let sink = LanceDatasetSink::default();
     let mut writer = sink
-        .open(path.clone(), batch.schema(), indexed_options(specs.clone()))
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            indexed_options(specs.clone()),
+        )
         .await
         .unwrap();
     writer.write(batch.slice(0, 100)).await.unwrap();
@@ -161,9 +165,13 @@ async fn builds_all_index_kinds_and_queries_them() {
 async fn empty_index_list_preserves_empty_dataset_commit() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("no-indexes");
-    let sink = LanceDatasetSink;
+    let sink = LanceDatasetSink::default();
     let writer = sink
-        .open(path.clone(), vectors(0).schema(), options())
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            vectors(0).schema(),
+            options(),
+        )
         .await
         .unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 0);

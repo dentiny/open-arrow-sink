@@ -6,7 +6,7 @@ use open_arrow_sink_core::{
     Compression as Codec, CompressionOptions, Ordering, Sink, SinkExt, WriteOptions,
 };
 use open_arrow_sink_layer::CompressionLayer;
-use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::{arrow::ParquetRecordBatchStreamBuilder, basic::Compression};
 
 fn batch() -> RecordBatch {
@@ -46,14 +46,18 @@ async fn compression_survives_rolling_and_round_trips() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("output");
         let batch = batch();
-        let sink = ParquetDirectorySink.layer(CompressionLayer::new(CompressionOptions {
-            global: Some(codec),
-            columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
-        }));
-        assert_eq!(sink.capability(), ParquetDirectorySink.capability());
+        let sink =
+            ParquetDirectorySink::default().layer(CompressionLayer::new(CompressionOptions {
+                global: Some(codec),
+                columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
+            }));
+        assert_eq!(
+            sink.capability(),
+            ParquetDirectorySink::default().capability()
+        );
         let mut writer = sink
             .open(
-                directory.clone(),
+                Url::from_directory_path(&directory).unwrap(),
                 batch.schema(),
                 WriteOptions {
                     ordering: Ordering::Unordered,

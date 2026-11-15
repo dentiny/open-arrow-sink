@@ -1,4 +1,4 @@
-//! Configuration validation before destination creation.
+//! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
     Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
@@ -95,4 +95,58 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
         }
     }
     Ok(())
+}
+
+pub(crate) async fn validate_existing_dataset(
+    builder: lance::dataset::builder::DatasetBuilder,
+    schema: Option<&Schema>,
+) -> Result<()> {
+    let dataset = builder.load().await.map_err(error::backend)?;
+    if let Some(schema) = schema
+        && &Schema::from(dataset.schema()) != schema
+    {
+        return Err(open_arrow_sink_core::Error::SchemaMismatch);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_transaction_compatibility(
+    target: &lance::dataset::transaction::Transaction,
+    incoming: &lance::dataset::transaction::Transaction,
+) -> Result<()> {
+    use lance::dataset::transaction::Operation;
+    if target.read_version != incoming.read_version {
+        return Err(error::different_dataset_versions());
+    }
+    if !matches!(
+        (&target.operation, &incoming.operation),
+        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
+            | (Operation::Append { .. }, Operation::Append { .. })
+    ) {
+        return Err(error::invalid_create_fragments());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
+    if failed {
+        return Err(error::failed());
+    }
+    Ok(())
+}
+
+pub(crate) fn write_fragments(
+    operation: &mut lance::dataset::transaction::Operation,
+) -> Result<&mut Vec<lance_table::format::Fragment>> {
+    match operation {
+        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
+        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
+        _ => Err(error::invalid_create_fragments()),
+    }
+}
+
+pub(crate) fn validate_session_transaction(
+    transaction: Option<lance::dataset::transaction::Transaction>,
+) -> Result<lance::dataset::transaction::Transaction> {
+    transaction.ok_or_else(error::empty_writer_session)
 }

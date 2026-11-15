@@ -4,24 +4,31 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Minimal local Parquet directory sink"
+description = "Parquet directory sink over shared OpenDAL storage"
 
 [features]
 default = []
+aws = ["open-arrow-sink-storage/aws"]
+gcp = ["open-arrow-sink-storage/gcp"]
+azure = ["open-arrow-sink-storage/azure"]
 snappy = ["parquet/snap"]
 gzip = ["parquet/flate2-zlib-rs"]
 zstd = ["parquet/zstd"]
 lz4 = ["parquet/lz4"]
 
 [dependencies]
+bytes = "1"
+futures.workspace = true
+open-arrow-sink-storage.workspace = true
 open-arrow-sink-core.workspace = true
 parquet = { workspace = true, features = ["arrow", "async"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
+
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-futures.workspace = true
 arrow-array.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
