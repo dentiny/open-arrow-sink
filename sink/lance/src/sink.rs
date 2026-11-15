@@ -1,11 +1,9 @@
-use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::{Storage, Url};
 use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
     CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
-    SchemaRef, Sink, SinkCapability, SinkExt, WriteMode, WriteOptions, WriteSession, Writer,
-    async_trait,
+    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{compression::writer_schema, storage::NativeStorage, validation::validate_options};
@@ -91,9 +89,9 @@ impl Sink for LanceDatasetSink {
             )?));
         }
         // Use the same fragment writing and publication path for every session.
-        self.clone()
-            .layer(UnorderedWriteLayer::new(NonZeroUsize::MIN))
-            .open(url, schema, options)
+        self.open_writers(url, schema, options, NonZeroUsize::MIN)
+            .await?
+            .into_writer()
             .await
     }
 }

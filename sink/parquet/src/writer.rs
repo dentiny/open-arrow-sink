@@ -1,6 +1,5 @@
 use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
-    validation,
+    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
@@ -25,7 +24,8 @@ pub(crate) struct ParquetDirectoryWriter {
 }
 
 #[async_trait]
-impl Writer for ParquetDirectoryWriter {
+impl DataWriter for ParquetDirectoryWriter {
+    type Output = u64;
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -56,23 +56,37 @@ impl Writer for ParquetDirectoryWriter {
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
         writer.write(&batch).await.map_err(backend)?;
-        writer.flush().await.map_err(backend)?;
+        // Let Parquet coalesce small batches into its bounded row groups.
+        // Only force an early group boundary when buffered encoded data could
+        // reach the file target; rolling still uses actual flushed bytes.
+        if writer.in_progress_rows() > 0
+            && self.options.target_file_size.is_some_and(|size| {
+                writer
+                    .bytes_written()
+                    .saturating_add(writer.in_progress_size())
+                    >= size
+            })
+        {
+            writer.flush().await.map_err(backend)?;
+        }
         self.rows_written += batch.num_rows() as u64;
         self.active = true;
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = DataWriter::finish(self.as_mut()).await {
-            let _ = self.cleanup().await;
-            return Err(error);
-        }
-        self.destination.publish().await?;
-        Ok(WriteSummary {
-            rows_written: self.rows_written,
-        })
+    async fn finish(&mut self) -> Result<u64> {
+        crate::validation::validate_writer_active(self.active)?;
+        self.active = false;
+        self.writer
+            .as_mut()
+            .ok_or_else(closed)?
+            .finish()
+            .await
+            .map_err(backend)?;
+        self.writer = None;
+        self.destination.complete_reservation().await?;
+        Ok(self.rows_written)
     }
-
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.active = false;
         self.cleanup().await
@@ -138,32 +152,5 @@ impl ParquetDirectoryWriter {
             result = Err(error);
         }
         result
-    }
-}
-
-#[async_trait]
-impl DataWriter for ParquetDirectoryWriter {
-    type Output = u64;
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        Writer::write(self, batch).await
-    }
-    async fn finish(&mut self) -> Result<u64> {
-        crate::validation::validate_writer_active(self.active)?;
-        self.active = false;
-        self.writer
-            .as_mut()
-            .ok_or_else(closed)?
-            .finish()
-            .await
-            .map_err(backend)?;
-        self.writer = None;
-        self.destination.complete_reservation().await?;
-        Ok(self.rows_written)
-    }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        Writer::abort(self).await
     }
 }

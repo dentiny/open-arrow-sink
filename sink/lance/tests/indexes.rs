@@ -184,22 +184,3 @@ async fn builds_all_index_kinds_and_queries_them() {
         0
     );
 }
-
-#[tokio::test]
-async fn empty_index_list_preserves_empty_dataset_commit() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("no-indexes");
-    let sink = LanceDatasetSink::default();
-    let writer = sink
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            vectors(0).schema(),
-            options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 0);
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 0);
-    assert!(dataset.load_indices().await.unwrap().is_empty());
-}

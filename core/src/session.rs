@@ -34,3 +34,71 @@ pub struct WriteSession<T: Send + 'static> {
     pub writers: Vec<Box<dyn DataWriter<Output = T>>>,
     pub committer: Box<dyn SessionCommitter<T>>,
 }
+
+impl<T: Send + 'static> WriteSession<T> {
+    /// Adapt a one-writer session to the public writer interface. Failed writes,
+    /// cancellation, and finish errors abort both the data writer and session.
+    /// Once publication starts, cleanup belongs exclusively to the committer.
+    pub async fn into_writer(mut self) -> Result<Box<dyn crate::Writer>> {
+        if self.writers.len() != 1 {
+            for writer in self.writers {
+                let _ = writer.abort().await;
+            }
+            let _ = self.committer.abort().await;
+            return Err(crate::Error::Unsupported("expected one data writer".into()));
+        }
+        Ok(Box::new(SessionWriter {
+            writer: self.writers.pop().unwrap(),
+            committer: self.committer,
+            failed: false,
+        }))
+    }
+}
+
+struct SessionWriter<T: Send + 'static> {
+    writer: Box<dyn DataWriter<Output = T>>,
+    committer: Box<dyn SessionCommitter<T>>,
+    failed: bool,
+}
+
+#[async_trait]
+impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
+    fn schema(&self) -> &SchemaRef {
+        self.writer.schema()
+    }
+
+    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        if self.failed {
+            return Err(crate::Error::Unsupported(
+                "writer failed; abort or drop it".into(),
+            ));
+        }
+        self.failed = true;
+        self.writer.write(batch).await?;
+        self.failed = false;
+        Ok(())
+    }
+
+    async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
+        let output = if self.failed {
+            Err(crate::Error::Unsupported(
+                "writer failed; abort or drop it".into(),
+            ))
+        } else {
+            self.writer.finish().await
+        };
+        match output {
+            Ok(output) => self.committer.commit(vec![output]).await,
+            Err(error) => {
+                let _ = self.abort().await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn abort(self: Box<Self>) -> Result<()> {
+        let writer = self.writer.abort().await;
+        let session = self.committer.abort().await;
+        writer.and(session)
+    }
+}

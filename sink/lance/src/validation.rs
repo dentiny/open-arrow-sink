@@ -103,6 +103,15 @@ pub(crate) async fn validate_existing_dataset(
     schema: Option<&Schema>,
 ) -> Result<()> {
     let dataset = builder.load().await.map_err(error::backend)?;
+    if !matches!(
+        dataset.manifest().data_storage_format.version,
+        lance_file::version::ConcreteFileVersion::V2_2
+            | lance_file::version::ConcreteFileVersion::V2_3
+    ) {
+        return Err(error::unsupported_storage_version(
+            dataset.manifest().data_storage_format.version,
+        ));
+    }
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
@@ -241,13 +250,11 @@ pub(crate) fn validate_blob_placements(
 pub(crate) fn parse_storage_version(
     version: Option<&str>,
 ) -> Result<Option<lance_file::version::LanceFileVersion>> {
-    version
-        .map(|version| {
-            version.parse().map_err(|error| {
-                open_arrow_sink_core::Error::Unsupported(format!(
-                    "Lance storage version {version:?}: {error}"
-                ))
-            })
-        })
-        .transpose()
+    use lance_file::version::LanceFileVersion;
+    match version {
+        None => Ok(None),
+        Some("2.2") => Ok(Some(LanceFileVersion::V2_2)),
+        Some("2.3") => Ok(Some(LanceFileVersion::V2_3)),
+        Some(version) => Err(error::unsupported_storage_version(version)),
+    }
 }

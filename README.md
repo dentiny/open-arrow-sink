@@ -23,6 +23,10 @@ shared `WriteOptions`. Applications supply batches with `write`, then explicitly
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
+Single-writer backends can adapt their `WriteSession` with `into_writer()`.
+This shares write-failure, cancellation, finish, abort, and publication handling
+across sinks; backend data writers only produce output, and committers publish it.
+
 A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[], compression: Default::default(), supports_storage_version: false }`
 or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
 request if it cannot provide that guarantee. Writing

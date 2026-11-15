@@ -137,7 +137,9 @@ buffering the full payload to select inline or packed storage. Materialized bina
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session. Abort or a rejected commit removes a freshly reserved dataset
-when `cleanup_on_error` is enabled; existing datasets are preserved.
+when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
+owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
+streamed blobs when appending to or overwriting an existing dataset.
 
 ## Compression
 
@@ -219,10 +221,11 @@ native session, and a rejected commit aborts the reserved dataset directory.
 
 ## Storage version
 
-Set `WriteOptions.storage_version` to `Some("2.1".into())` to select Lance's native
+Set `WriteOptions.storage_version` to `Some("2.2".into())` to select Lance's native
 data-file format version. `SinkCapability.supports_storage_version` is `true`.
-Accepted values follow Lance 14: `legacy` / `0.1`, `2.0` / `0.3`, `2.1`, `2.2`,
-`2.3`, `stable`, and `next`. Invalid values fail before destination I/O.
+Only `2.2` and `2.3` are supported. Older versions and aliases such as `stable`
+and `next` are rejected before destination I/O. Existing datasets must also use
+format `2.2` or `2.3`.
 `None` keeps Lance's default: the latest stable format for a new dataset, or the
 existing manifest's format for an existing dataset. An explicit version is passed
 to Lance for create, append, and overwrite, including parallel and blob writers.
