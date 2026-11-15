@@ -26,9 +26,10 @@ pub(crate) async fn validate_append_directory(
     if metadata.is_none() && files.is_empty() && !storage.exists(directory).await? {
         return Err(error::missing_directory());
     }
-    // Overlap metadata I/O while bounding the number of schemas in flight.
+    // Schedule all schema checks; storage enforces the shared HTTP request budget.
+    let concurrency = files.len();
     stream::iter(files.into_iter().map(Ok))
-        .try_for_each_concurrent(8, |file| async move {
+        .try_for_each_concurrent(concurrency, |file| async move {
             if file
                 .path()
                 .strip_prefix(directory.path())
