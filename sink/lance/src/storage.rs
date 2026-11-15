@@ -68,8 +68,6 @@ impl NativeStorage {
                     lance::dataset::ExternalBlobMode::Ingest
                 }
             },
-            allow_external_blob_outside_bases: blob.allow_external_blob_outside_bases,
-            blob_pack_file_size_threshold: blob.blob_pack_file_size_threshold,
             data_storage_version: crate::validation::parse_storage_version(
                 options.storage_version.as_deref(),
             )?,

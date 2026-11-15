@@ -9,10 +9,12 @@ use std::{
 use crate::{error::backend, validation};
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
-use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
+use lance::blob::{
+    BlobDescriptor, BlobDescriptorArrayBuilder, BlobFieldOptions, blob_field_with_options,
+};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result,
-    SchemaRef, async_trait,
+    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobHandleConfig, BlobPlacement, BlobWriter,
+    RecordBatch, Result, SchemaRef, async_trait,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
@@ -114,6 +116,43 @@ pub(crate) async fn create_blob(
         finished: false,
         failed: false,
     }))
+}
+
+/// Apply per-write layout options to top-level native logical or prepared blob fields.
+/// Keep the input shape and metadata, overriding only explicitly configured thresholds.
+pub(crate) fn writer_schema(schema: &SchemaRef, config: Option<&BlobHandleConfig>) -> SchemaRef {
+    let Some(config) = config else {
+        return schema.clone();
+    };
+    if config.inline_size_threshold.is_none() && config.dedicated_size_threshold.is_none() {
+        return schema.clone();
+    }
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str)
+                != Some("lance.blob.v2")
+            {
+                return field.clone();
+            }
+            let native = blob_field_with_options(
+                field.name(),
+                field.is_nullable(),
+                BlobFieldOptions {
+                    inline_size_threshold: config.inline_size_threshold,
+                    dedicated_size_threshold: config.dedicated_size_threshold,
+                },
+            );
+            let mut metadata = field.metadata().clone();
+            metadata.extend(native.metadata().clone());
+            Arc::new(field.as_ref().clone().with_metadata(metadata))
+        })
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {

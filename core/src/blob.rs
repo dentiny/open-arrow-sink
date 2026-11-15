@@ -1,4 +1,4 @@
-use std::{any::Any, fmt};
+use std::{any::Any, fmt, num::NonZeroUsize};
 
 use crate::{Result, async_trait};
 
@@ -18,11 +18,13 @@ pub enum ExternalBlobMode {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobHandleConfig {
     pub external_blob_mode: ExternalBlobMode,
-    /// Permit references outside registered non-root base paths. Default: false.
-    pub allow_external_blob_outside_bases: bool,
-    /// Soft size limit for native blob pack files. None keeps the native default.
-    /// Does not limit the dedicated objects used by streamed handles.
-    pub blob_pack_file_size_threshold: Option<usize>,
+    /// Maximum payload size in bytes kept inline before using packed storage.
+    /// Matches Lance BlobFieldOptions; None keeps field metadata or Lance's default.
+    pub inline_size_threshold: Option<usize>,
+    /// Maximum payload size in bytes kept in packed storage before using a
+    /// dedicated object. Lance selects dedicated storage strictly above this size.
+    /// None keeps field metadata or Lance's default; zero is not valid.
+    pub dedicated_size_threshold: Option<NonZeroUsize>,
 }
 
 /// A download chunk and the resources accounting for its buffered bytes.

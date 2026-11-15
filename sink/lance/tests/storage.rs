@@ -184,29 +184,81 @@ async fn explicit_storage_version() {
     );
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn rejects_conflicting_blob_options_before_creating_destination() {
-    use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
+async fn blob_thresholds_select_inline_packed_and_dedicated(
+    #[values(false, true)] parallel: bool,
+    #[values(false, true)] from_uri: bool,
+) {
+    use lance::{
+        blob::{BlobArrayBuilder, BlobFieldOptions, blob_field_with_options},
+        datatypes::BlobKind,
+    };
+    use open_arrow_sink_core::BlobHandleConfig;
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("invalid-blob/").unwrap();
-    let result = sink
-        .open(
-            url.clone(),
-            batch().schema(),
-            WriteOptions {
-                blob_handle: Some(BlobHandleConfig {
-                    external_blob_mode: ExternalBlobMode::Ingest,
-                    allow_external_blob_outside_bases: true,
-                    ..Default::default()
-                }),
-                ..write_options()
-            },
-        )
-        .await;
-    assert!(matches!(
-        result,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
-    ));
-    assert!(!storage.prefix_exists(&url).await.unwrap());
+    let sizes = [4, 5, 8, 9];
+    let mut sources = Vec::new();
+    let mut values = BlobArrayBuilder::new(sizes.len());
+    for size in sizes {
+        let bytes = vec![b'x'; size];
+        if from_uri {
+            let source = storage.url(&format!("source-{size}.bin")).unwrap();
+            storage.write(&source, bytes.into()).await.unwrap();
+            values.push_uri(source.as_str()).unwrap();
+            sources.push(source);
+        } else {
+            values.push_bytes(&bytes).unwrap();
+        }
+    }
+    // Explicit write config overrides existing per-field thresholds.
+    let field = blob_field_with_options(
+        "blob",
+        true,
+        BlobFieldOptions {
+            inline_size_threshold: Some(100),
+            dedicated_size_threshold: NonZeroUsize::new(200),
+        },
+    );
+    let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![values.finish().unwrap()]).unwrap();
+    let options = WriteOptions {
+        blob_handle: Some(BlobHandleConfig {
+            inline_size_threshold: Some(4),
+            dedicated_size_threshold: NonZeroUsize::new(8),
+            ..Default::default()
+        }),
+        ..write_options()
+    };
+    let url = storage.url("thresholds/").unwrap();
+    let mut writer = if parallel {
+        sink.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .open(url.clone(), schema, options)
+            .await
+            .unwrap()
+    } else {
+        sink.open(url.clone(), schema, options).await.unwrap()
+    };
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    for source in sources {
+        storage.delete(&source).await.unwrap();
+    }
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let blobs = Arc::new(dataset)
+        .take_blobs_by_indices(&[0, 1, 2, 3], "blob")
+        .await
+        .unwrap();
+    let kinds = [
+        BlobKind::Inline,
+        BlobKind::Packed,
+        BlobKind::Packed,
+        BlobKind::Dedicated,
+    ];
+    for ((blob, size), kind) in blobs.into_iter().zip(sizes).zip(kinds) {
+        let blob = blob.unwrap();
+        assert_eq!(blob.kind(), kind);
+        assert_eq!(blob.read().await.unwrap().as_ref(), vec![b'x'; size]);
+    }
 }

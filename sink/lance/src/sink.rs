@@ -70,8 +70,10 @@ impl Sink for LanceDatasetSink {
         if storage_schema != schema {
             validate_options(&schema, &options, self.capability())?;
             // Apply compression before constructing the native descriptor fields.
-            let encoding_schema =
-                crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
+            let encoding_schema = crate::blob::writer_schema(
+                &crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?,
+                options.blob_handle.as_ref(),
+            );
             let mut destination = self.resolve(url)?;
             destination.prepare(&encoding_schema, options.mode).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
@@ -102,7 +104,10 @@ impl ParallelSink for LanceDatasetSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
-        let encoding_schema = writer_schema(&schema, &options.compression);
+        let encoding_schema = crate::blob::writer_schema(
+            &writer_schema(&schema, &options.compression),
+            options.blob_handle.as_ref(),
+        );
         let mut destination = self.resolve(url)?;
         destination.prepare(&encoding_schema, options.mode).await?;
         let writers = (0..count.get())

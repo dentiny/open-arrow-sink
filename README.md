@@ -348,9 +348,11 @@ the writer's abort/drop guarantees.
 ### Blob handle configuration
 
 `WriteOptions.blob_handle: Option<BlobHandleConfig>` configures each write session.
-The initial configuration follows Lance's blob write options: `external_blob_mode`
-(`Ingest` by default or explicit `Reference`), `allow_external_blob_outside_bases`, and
-`blob_pack_file_size_threshold`. `None` uses these defaults, including `Ingest`. Lance advertises
+The configuration follows Lance's `BlobFieldOptions`: `inline_size_threshold`
+(inline to packed) and `dedicated_size_threshold` (packed to dedicated), plus
+`external_blob_mode` (`Ingest` by default or explicit `Reference`). Thresholds
+apply to top-level native blob fields; omitted thresholds preserve field metadata
+or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
 `SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
 configuration before destination I/O. Native schema and parallel-session restrictions
 still apply. See the [Lance blob options](sink/lance/README.md#external-blob-ingestion).
