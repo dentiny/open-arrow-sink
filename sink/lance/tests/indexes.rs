@@ -53,33 +53,10 @@ fn vectors(count: usize) -> RecordBatch {
                 (0..count).map(|i| if i % 2 == 0 { "even" } else { "odd" }),
             )) as ArrayRef,
         ),
-        ("vector", Arc::new(vector) as ArrayRef),
+        ("vector", Arc::new(vector.clone()) as ArrayRef),
+        ("quantized_vector", Arc::new(vector) as ArrayRef),
     ])
     .unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn builds_product_quantized_vector_index() {
-    use open_arrow_sink_lance::VectorIndexKind;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("quantized");
-    let batch = vectors(256);
-    let mut writer = LanceDatasetSink::default()
-        .with_vector_index_kind(VectorIndexKind::IvfPq)
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            batch.schema(),
-            indexed_options(vec![Spec::new("vector", Kind::Vector)]),
-        )
-        .await
-        .unwrap();
-    writer.write(batch).await.unwrap();
-    writer.commit().await.unwrap();
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(
-        dataset.describe_indices(None).await.unwrap()[0].index_type(),
-        "IVF_PQ"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -92,6 +69,7 @@ async fn builds_all_index_kinds_and_queries_them() {
         Spec::new("text", Kind::Text),
         Spec::new("category", Kind::BloomFilter),
         Spec::new("vector", Kind::Vector),
+        Spec::new("quantized_vector", Kind::VectorPq),
     ];
     let sink = LanceDatasetSink::default();
     let mut writer = sink
@@ -107,9 +85,10 @@ async fn builds_all_index_kinds_and_queries_them() {
     assert_eq!(writer.commit().await.unwrap().rows_written, 256);
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let descriptions = dataset.describe_indices(None).await.unwrap();
-    for (spec, expected) in specs
-        .iter()
-        .zip(["BTree", "Inverted", "BloomFilter", "IVF_FLAT"])
+    for (spec, expected) in
+        specs
+            .iter()
+            .zip(["BTree", "Inverted", "BloomFilter", "IVF_FLAT", "IVF_PQ"])
     {
         let field_id = u32::try_from(dataset.schema().field(&spec.column).unwrap().id).unwrap();
         let description = descriptions
@@ -122,7 +101,7 @@ async fn builds_all_index_kinds_and_queries_them() {
         );
     }
     let metadata = dataset.load_indices().await.unwrap();
-    assert_eq!(metadata.len(), 4);
+    assert_eq!(metadata.len(), 5);
     for index in metadata.iter() {
         let bitmap = index.fragment_bitmap.as_ref().unwrap();
         assert!(

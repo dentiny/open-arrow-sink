@@ -190,9 +190,9 @@ limits may also cause rolling before the target is reached.
 Index requests are backend-independent `IndexSpec` and `IndexType` values in
 `WriteOptions.indexes`. The request list is empty by default.
 `SinkCapability.supported_indexes` lists the supported `IndexType` values. Each
-requested type must appear in that list. Lance supports Scalar, Vector, Text,
-and BloomFilter; Parquet and Iceberg expose empty lists and reject index requests
-before opening a writer or accessing the destination.
+requested type must appear in that list. Lance supports Scalar, Vector, VectorPq,
+Text, and BloomFilter; Parquet and Iceberg expose empty lists and reject index
+requests before opening a writer or accessing the destination.
 General layers forward this capability and the options to their inner sink.
 
 ```rust
@@ -209,8 +209,9 @@ let options = WriteOptions {
 ```
 
 Backends choose the concrete implementation of each logical index type and validate
-column types before writing. Lance maps the four kinds to BTree, IVF_FLAT with L2,
-Inverted, and BloomFilter, then constructs them after committing the dataset's data.
+column types before writing. Lance maps these kinds to BTree, IVF_FLAT with L2,
+IVF_PQ with L2, Inverted, and BloomFilter, then constructs them after committing
+the dataset's data.
 See the [Lance documentation](sink/lance/README.md) for construction failure semantics.
 `WriteOptions` owns its index list and implements `Clone`; clone options when
 reusing them across sessions.

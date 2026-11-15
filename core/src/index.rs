@@ -6,6 +6,8 @@
 pub enum IndexType {
     Scalar,
     Vector,
+    /// Product-quantized vector index. Backends choose the concrete algorithm.
+    VectorPq,
     Text,
     BloomFilter,
 }

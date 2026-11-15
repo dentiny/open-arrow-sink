@@ -72,7 +72,7 @@ let summary = writer.commit().await?;
 
 `IndexType`, `IndexSpec`, and `IndexCommitError` are defined
 in `open-arrow-sink-core` and re-exported by the facade. They have no Lance SDK
-dependency. Lance lists Scalar, Vector, Text, and BloomFilter in
+dependency. Lance lists Scalar, Vector, VectorPq, Text, and BloomFilter in
 `SinkCapability.supported_indexes`. Parquet and Iceberg expose empty lists and
 reject index requests before destination I/O. Shared validation checks every
 requested type against the supported list.
@@ -86,6 +86,7 @@ concrete mappings are:
 | --- | --- |
 | Scalar | BTree |
 | Vector | IVF_FLAT with L2 |
+| VectorPq | IVF_PQ with L2 |
 | Text | Inverted with default parameters |
 | BloomFilter | Bloom filter |
 
@@ -94,6 +95,22 @@ positive dimension. The default IVF partition count is
 `clamp(ceil(dataset_rows / 8192), 1, 4096)`. Unsupported types fail before writing;
 training failures, including insufficient usable vectors, are returned explicitly.
 An empty index list preserves the underlying sink behavior.
+
+Select quantization per column through the existing request list:
+
+```rust
+use open_arrow_sink_core::{IndexSpec, IndexType};
+
+let indexes = vec![
+    IndexSpec::new("embedding", IndexType::Vector),
+    IndexSpec::new("compressed_embedding", IndexType::VectorPq),
+];
+```
+
+`VectorPq` uses the largest divisor of the vector dimension up to 16 as its
+subvector count and the same IVF partition policy as `Vector`. Native training
+failures are reported through `IndexCommitError` after data publication.
+
 
 Index creation clones the dataset handle returned by the native data commit and
 spawns one Tokio task per requested index. Each task builds and commits its index
@@ -111,15 +128,6 @@ A runnable index construction example (destination must not exist):
 ```sh
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
-
-## Quantized vector indexes
-
-`LanceDatasetSink::with_vector_index_kind(VectorIndexKind::IvfPq)` selects IVF_PQ
-with L2 distance for shared vector-index requests, matching the conversion service.
-`IvfFlat` remains the default. PQ uses the largest divisor of the vector dimension
-up to 16 as its subvector count. The IVF partition policy is shared with IVF_FLAT;
-Lance validates training-data requirements and reports failures through
-`IndexCommitError` after data publication. Deterministic names include the algorithm.
 
 ## Streaming native blobs
 

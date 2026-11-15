@@ -12,7 +12,6 @@ use crate::{compression::writer_schema, storage::NativeStorage, validation::vali
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
-    vector_index_kind: crate::VectorIndexKind,
     storage: Option<Storage>,
 }
 
@@ -20,7 +19,6 @@ impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
-            ..Default::default()
         }
     }
     fn resolve(&self, url: Url) -> Result<NativeStorage> {
@@ -30,12 +28,6 @@ impl LanceDatasetSink {
         };
         NativeStorage::new(storage, url)
     }
-    /// Select the native algorithm for shared vector-index requests.
-    pub fn with_vector_index_kind(mut self, kind: crate::VectorIndexKind) -> Self {
-        self.vector_index_kind = kind;
-        self
-    }
-
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
         Ok(self.resolve(url)?.dataset_builder())
@@ -59,6 +51,7 @@ impl Sink for LanceDatasetSink {
             supported_indexes: &[
                 IndexType::Scalar,
                 IndexType::Vector,
+                IndexType::VectorPq,
                 IndexType::Text,
                 IndexType::BloomFilter,
             ],
@@ -85,7 +78,6 @@ impl Sink for LanceDatasetSink {
                 encoding_schema,
                 destination,
                 options,
-                self.vector_index_kind,
             )?));
         }
         // Use the same fragment writing and publication path for every session.
@@ -127,7 +119,6 @@ impl ParallelSink for LanceDatasetSink {
             committer: Box::new(crate::committer::LanceCommitter {
                 destination,
                 options,
-                vector_index_kind: self.vector_index_kind,
             }),
         })
     }

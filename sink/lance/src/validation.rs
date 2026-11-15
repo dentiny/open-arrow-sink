@@ -65,9 +65,8 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
                     | Time64(_)
                     | Timestamp(_, _)
             ),
-            // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
-            // Int8 is rejected even though the older reference allowed it.
-            IndexType::Vector => {
+            // Both native vector index implementations use floating-point L2 vectors.
+            IndexType::Vector | IndexType::VectorPq => {
                 matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
             }
             IndexType::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
