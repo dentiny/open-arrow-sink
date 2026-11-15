@@ -1,8 +1,8 @@
 use std::{io, path::PathBuf};
 
 use open_arrow_sink_core::{
-    IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
-    async_trait, validation,
+    CompressionCapability, IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability,
+    WriteOptions, Writer, async_trait, validation,
 };
 
 use crate::{error::backend, validation::validate_indexes, writer::LanceWriter};
@@ -19,7 +19,7 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
-            compression: Default::default(),
+            compression: CompressionCapability::default(),
             supported_partitions: vec![],
             supported_indexes: &[
                 IndexType::Scalar,
@@ -37,6 +37,7 @@ impl Sink for LanceDatasetSink {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         validation::validate_options(&options, self.capability())?;
+        validation::validate_compression(&schema, &options.compression)?;
         validate_indexes(&schema, &options.indexes)?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.
