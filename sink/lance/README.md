@@ -1,8 +1,8 @@
 # Lance dataset sink
 
-`LanceDatasetSink` creates a new local Lance dataset from Arrow batches. It requires
-a Tokio runtime and a new UTF-8 directory path whose parent already exists.
-Existing paths are rejected. Keep exclusive ownership of the destination until the
+`LanceDatasetSink` writes local Lance datasets from Arrow batches. It requires
+a Tokio runtime and a UTF-8 directory path whose parent already exists.
+Create mode (the default) rejects existing paths. Keep exclusive ownership of the destination until the
 session ends, including index construction.
 
 ```rust,ignore
@@ -28,15 +28,15 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish its first manifest. `abort` stops the worker and removes the
-reserved directory. Dropping closes the stream with an error and never commits,
+Lance to publish a manifest. `abort` stops the worker and removes only a newly
+reserved directory when cleanup is enabled. Dropping closes the stream with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
-This first version supports create-only local datasets and unordered input.
-No append, overwrite, schema evolution, cloud options or ordering guarantee.
-The destination may contain uncommitted files before commit, but becomes readable
-as a Lance dataset only when the native manifest is published.
+This sink supports create, append, and full overwrite of local datasets with
+unordered input. It does not provide append-time schema evolution, cloud options,
+or an ordering guarantee. New fragments may exist before commit; readers see
+the new dataset version only when the native manifest is published.
 
 A manual write/read example (destination must not already exist):
 
@@ -147,20 +147,39 @@ let compression = CompressionOptions {
 };
 ```
 
+### Write modes
+
+`WriteOptions.mode` accepts `WriteMode::Create` (default when omitted),
+`WriteMode::Append`, and `WriteMode::Overwrite`. Append requires an
+existing dataset with the exact effective schema, including requested compression
+metadata. Reuse the original compression options when appending. Overwrite publishes a new native
+Lance version replacing all rows and permits a new schema; it can also create a
+missing dataset. An existing path that is not a Lance dataset is rejected.
+
+Append and overwrite use Lance's native versioned commit, so old rows remain
+readable until commit and an empty overwrite clears the dataset. Abort never
+recursively removes an existing dataset. Unpublished fragments from aborted
+writes to existing datasets may remain for native Lance maintenance to reclaim.
+For a newly reserved directory, abort removes it when `cleanup_on_error` is true.
+Index construction still follows data publication; an index failure does not roll
+back the committed data version. Callers must exclude external replacement of
+the dataset directory during a session.
+
 ## Concurrent writing
 
 Wrap `LanceDatasetSink` in `UnorderedWriteLayer::new(concurrency)` and explicitly
-allow `Ordering::Unordered`. The sink reserves one new directory and returns
-independent fragment writers plus one session committer. Each worker feeds a
+allow `Ordering::Unordered`. The sink prepares the destination according to the
+selected write mode and returns independent fragment writers plus one session committer. Each worker feeds a
 capacity-one queue into Lance's `InsertBuilder::execute_uncommitted_stream`;
 workers write fragments but never publish a manifest. The file-size target applies
 to every worker, and a worker can produce multiple fragments.
 
-After every writer finishes, the committer combines the create transactions'
+After every writer finishes, the committer combines the transactions'
 fragments and publishes one data manifest through `CommitBuilder`. Lance assigns
-unique fragment IDs at this point. Empty sessions still create a readable empty
-dataset. Requested indexes are built once against the combined dataset afterward;
+unique fragment IDs at this point. Empty Create sessions produce a readable empty
+dataset; empty Append preserves rows, and empty Overwrite clears them. Requested
+indexes are built once against the combined dataset afterward;
 index construction can publish additional versions, with the failure semantics
-above. Before publication, abort first stops every worker, then removes the reserved
-directory only when `cleanup_on_error` is enabled. Publication failures retain files
+above. Before publication, abort first stops every worker, then removes a newly
+reserved directory only when `cleanup_on_error` is enabled. Publication failures retain files
 because the dataset may already have been committed. Drop never publishes.
