@@ -1,13 +1,13 @@
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use arrow_array::{
     Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
 };
 use arrow_schema::{DataType, Schema};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, Layer, RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
-    WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, RecordBatch, Result, SchemaRef,
+    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::{
@@ -16,49 +16,23 @@ use crate::{
     validation::validate_download_config,
 };
 
-const DEFAULT_MAX_BLOB_BYTES: NonZeroUsize = NonZeroUsize::new(16 * 1024 * 1024).unwrap();
-const DEFAULT_ROWS_PER_BATCH: NonZeroUsize = NonZeroUsize::new(16).unwrap();
-
-/// Download explicit top-level URL columns over HTTP(S), replacing each with a
-/// blob-marked LargeBinary column. Nulls and input row order are preserved.
-/// Requires a Tokio runtime. Downloads share a global pool by default, without
-/// retries or a request timeout. Use `with_download_pool` to supply another pool.
+/// Stream selected URL columns into native blobs and attach their descriptors.
+/// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
+/// Input batch boundaries, row order, nulls, and unselected columns are preserved.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
     columns: HashSet<String>,
-    max_blob_bytes: NonZeroUsize,
-    rows_per_batch: NonZeroUsize,
     download_pool: Option<Arc<DownloadPool>>,
 }
-
 impl DownloadBlobLayer {
-    /// Select URL columns by name; the set is resolved once when opening a writer.
     pub fn new(columns: HashSet<String>) -> Self {
         Self {
             columns,
-            max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
-            rows_per_batch: DEFAULT_ROWS_PER_BATCH,
             download_pool: None,
         }
     }
-
-    /// Share a caller-owned pool across any number of layers and writers.
-    /// Otherwise, all layers share a process-wide pool of 16 active downloads.
     pub fn with_download_pool(mut self, pool: Arc<DownloadPool>) -> Self {
         self.download_pool = Some(pool);
-        self
-    }
-
-    pub fn with_max_blob_bytes(mut self, bytes: NonZeroUsize) -> Self {
-        self.max_blob_bytes = bytes;
-        self
-    }
-
-    /// Maximum rows per batch forwarded to the inner sink (default: 16).
-    /// Bounds output buffering independently of the caller's batch size;
-    /// download concurrency is controlled separately by the download pool.
-    pub fn with_rows_per_batch(mut self, rows: NonZeroUsize) -> Self {
-        self.rows_per_batch = rows;
         self
     }
 }
@@ -67,10 +41,8 @@ pub struct DownloadBlobSink<S> {
     inner: S,
     config: DownloadBlobLayer,
 }
-
 impl<S: Sink> Layer<S> for DownloadBlobLayer {
     type Layered = DownloadBlobSink<S>;
-
     fn layer(&self, inner: S) -> Self::Layered {
         DownloadBlobSink {
             inner,
@@ -78,15 +50,12 @@ impl<S: Sink> Layer<S> for DownloadBlobLayer {
         }
     }
 }
-
 #[async_trait]
 impl<S: Sink> Sink for DownloadBlobSink<S> {
     type Request = S::Request;
-
     fn capability(&self) -> SinkCapability {
         self.inner.capability()
     }
-
     async fn open(
         &self,
         request: Self::Request,
@@ -95,13 +64,13 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     ) -> Result<Box<dyn Writer>> {
         let indices = validate_download_config(&schema, &self.config.columns)?;
         let mut fields = schema.fields().to_vec();
-        for &index in &indices {
-            let field = schema.field(index);
+        for &column_index in &indices {
+            let field = schema.field(column_index);
             let mut metadata = field.metadata().clone();
             metadata.remove("ARROW:extension:name");
             metadata.remove("ARROW:extension:metadata");
             metadata.insert(BLOB_METADATA_KEY.into(), "true".into());
-            fields[index] = Arc::new(
+            fields[column_index] = Arc::new(
                 field
                     .clone()
                     .with_data_type(DataType::LargeBinary)
@@ -117,13 +86,18 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             .inner
             .open(request, output_schema.clone(), options)
             .await?;
+        if !indices.is_empty() && !inner.supports_blob_streams() {
+            let _ = inner.abort().await;
+            return Err(Error::Unsupported(
+                "download layer requires a sink with streaming blob support".into(),
+            ));
+        }
         Ok(Box::new(DownloadBlobWriter {
             inner,
             schema,
             output_schema,
             indices,
             pool,
-            config: self.config.clone(),
             failed: false,
         }))
     }
@@ -135,96 +109,111 @@ struct DownloadBlobWriter {
     output_schema: SchemaRef,
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
-    config: DownloadBlobLayer,
     failed: bool,
 }
-
+fn url_value(array: &dyn Array, row: usize) -> &str {
+    match array.data_type() {
+        DataType::Utf8 => array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(row),
+        DataType::LargeUtf8 => array
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .value(row),
+        DataType::Utf8View => array
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .unwrap()
+            .value(row),
+        _ => unreachable!("validated at open"),
+    }
+}
+async fn download(
+    pool: Arc<DownloadPool>,
+    url: String,
+    mut native: Box<dyn BlobWriter>,
+    name: String,
+    column: usize,
+    row: usize,
+) -> Result<BlobPlacement> {
+    let result = async {
+        let mut stream = pool.stream(&url).await?;
+        while let Some(chunk) = stream.next().await {
+            native.write(chunk?).await?;
+        }
+        native.finish().await
+    }
+    .await
+    .map_err(|error| failure(format!("download column {name} row {row}: {error}")))?;
+    Ok(BlobPlacement {
+        column,
+        row,
+        blob: result,
+    })
+}
 #[async_trait]
 impl Writer for DownloadBlobWriter {
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
-
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         if self.failed {
             return Err(failure("blob writer failed; abort or drop it"));
         }
-        // Cancellation or any error poisons the session, including after earlier
-        // output chunks have already been accepted by the inner writer.
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
         } else {
-            for start in (0..batch.num_rows()).step_by(self.config.rows_per_batch.get()) {
-                let count = (batch.num_rows() - start).min(self.config.rows_per_batch.get());
-                let slice = batch.slice(start, count);
-                let mut columns = slice.columns().to_vec();
-                let pool = &self.pool;
-                let schema = &self.schema;
-                let limit = self.config.max_blob_bytes.get();
-                let jobs: Vec<_> = self
-                    .indices
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(column, &index)| (0..count).map(move |row| (column, index, row)))
-                    .collect();
-                let jobs = jobs.into_iter().map(|(column, index, row)| {
-                    let array = slice.column(index);
-                    async move {
-                        let bytes = if array.is_null(row) {
-                            None
-                        } else {
-                            let url = match array.data_type() {
-                                DataType::Utf8 => array
-                                    .as_any()
-                                    .downcast_ref::<StringArray>()
-                                    .unwrap()
-                                    .value(row),
-                                DataType::LargeUtf8 => array
-                                    .as_any()
-                                    .downcast_ref::<LargeStringArray>()
-                                    .unwrap()
-                                    .value(row),
-                                DataType::Utf8View => array
-                                    .as_any()
-                                    .downcast_ref::<StringViewArray>()
-                                    .unwrap()
-                                    .value(row),
-                                _ => unreachable!("validated at open"),
-                            };
-                            Some(pool.download(url, limit).await.map_err(|e| {
-                                failure(format!(
-                                    "download column {} row {}: {e}",
-                                    schema.field(index).name(),
-                                    start + row
-                                ))
-                            })?)
-                        };
-                        Ok::<_, open_arrow_sink_core::Error>((column, row, bytes))
+            let mut columns = batch.columns().to_vec();
+            let mut jobs = Vec::new();
+            for &column in &self.indices {
+                let array = batch.column(column);
+                let mut builder = LargeBinaryBuilder::new();
+                for row in 0..batch.num_rows() {
+                    if array.is_null(row) {
+                        builder.append_null();
+                    } else {
+                        builder.append_value([]);
+                        jobs.push((column, row));
                     }
-                });
-                let mut downloads = stream::iter(jobs).buffer_unordered(pool.concurrency());
-                let mut values = vec![vec![None; count]; self.indices.len()];
-                while let Some((column, row, bytes)) = downloads.try_next().await? {
-                    values[column][row] = bytes;
                 }
-                for (&index, values) in self.indices.iter().zip(values) {
-                    let mut builder = LargeBinaryBuilder::new();
-                    for value in values {
-                        builder.append_option(value);
-                    }
-                    columns[index] = Arc::new(builder.finish());
-                }
-                let output =
-                    RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
-                self.inner.write(output).await?;
+                columns[column] = Arc::new(builder.finish());
             }
+            let mut jobs = jobs.into_iter();
+            let mut active = FuturesUnordered::new();
+            let mut blobs = Vec::new();
+            loop {
+                while active.len() < self.pool.concurrency() {
+                    let Some((column, row)) = jobs.next() else {
+                        break;
+                    };
+                    let native = self.inner.create_blob().await?;
+                    let url = url_value(batch.column(column).as_ref(), row).to_owned();
+                    active.push(download(
+                        self.pool.clone(),
+                        url,
+                        native,
+                        self.schema.field(column).name().clone(),
+                        column,
+                        row,
+                    ));
+                }
+                match active.next().await {
+                    Some(result) => blobs.push(result?),
+                    None => break,
+                }
+            }
+            let output =
+                RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
+            self.inner.write_with_blobs(output, blobs).await?;
         }
         self.failed = false;
         Ok(())
     }
-
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         if self.failed {
             let _ = self.inner.abort().await;
@@ -232,7 +221,6 @@ impl Writer for DownloadBlobWriter {
         }
         self.inner.commit().await
     }
-
     async fn abort(self: Box<Self>) -> Result<()> {
         self.inner.abort().await
     }

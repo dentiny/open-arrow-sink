@@ -46,23 +46,6 @@ cargo run -p open-arrow-sink-lance --example write_lance -- /tmp/new-example.lan
 
 The native Lance dependency needs `protoc` available when building from source.
 
-## Downloaded blobs
-
-Compose this sink with `DownloadBlobLayer` (facade feature `layer-download-blob`)
-to download URL columns before writing. The layer produces `LargeBinary` fields
-marked with `open-arrow-sink:blob = true`; this sink converts those fields to native
-Lance Blob v2 (`ARROW:extension:name = lance.blob.v2`) with the payload in `data`,
-using the SDK's default 2.2 file format. Nulls and empty payloads remain distinct.
-Unmarked binary fields remain ordinary binary columns. Applications may also
-supply marked `LargeBinary` fields directly; invalid marked types are rejected
-before creating the destination.
-
-The writer reports and validates the input schema. The stored dataset schema
-contains native blob structs, so it intentionally differs for these columns.
-Lance's default scans return blob descriptors; use
-`dataset.scan().blob_handling(lance::datatypes::BlobHandling::AllBinary)` to
-materialize payloads as `LargeBinary`, or use Lance's blob read APIs for lazy reads.
-
 ## Index construction
 
 Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
@@ -127,3 +110,26 @@ A runnable index construction example (destination must not exist):
 ```sh
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
+
+## Streaming native blobs
+
+Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
+value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
+finish it to obtain a session-owned `BlobHandle`. Attach handles with
+`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
+non-null binary placeholders. Null cells remain null. Ordinary materialized
+binary values can still be written through `Writer::write`.
+
+Streams append directly through Lance's native `DedicatedBlobWriter`, and batches
+carry managed blob descriptors. Streaming values use dedicated storage without
+buffering the full payload to select inline or packed storage. Materialized binary
+inputs remain supported through Lance's prepared-blob path. Handles from another
+session and duplicate/null placements are rejected. Dropping an unfinished blob
+poisons the session, and abort or a rejected commit removes the reserved dataset.
+
+`DownloadBlobLayer` uses this streaming interface directly: network chunks are
+appended to native blob files and only completed handles enter record batches.
+A blob larger than the download pool's buffer budget is supported. The shared
+budget applies to application-owned download chunks; Lance's internal I/O and
+encoding buffers are separate. HTTP errors or cancellation poison the layer and
+native session, and a rejected commit aborts the reserved dataset directory.

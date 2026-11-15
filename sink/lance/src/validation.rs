@@ -1,6 +1,6 @@
-//! Schema and index configuration validation before destination creation.
+//! Index configuration validation before destination creation.
 use arrow_schema::{DataType, Schema};
-use open_arrow_sink_core::{BLOB_METADATA_KEY, Error, IndexSpec, IndexType, Result, validation};
+use open_arrow_sink_core::{IndexSpec, IndexType, Result, validation};
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
@@ -69,20 +69,6 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
                 index.index_type,
                 index.column,
                 field.data_type()
-            )));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
-    for field in schema.fields() {
-        if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true")
-            && field.data_type() != &DataType::LargeBinary
-        {
-            return Err(Error::Unsupported(format!(
-                "blob column must be LargeBinary: {}",
-                field.name()
             )));
         }
     }

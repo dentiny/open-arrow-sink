@@ -9,38 +9,20 @@ description = "Composable layers for Arrow RecordBatch sinks"
 [features]
 default = []
 download-blob = [
-  "dep:arrow-array",
-  "dep:opendal",
-  "dep:http",
-  "dep:url",
-  "dep:futures",
-  "dep:tokio",
+  "dep:arrow-array", "dep:opendal", "dep:http", "dep:url", "dep:futures", "dep:tokio",
 ]
 rebatch = ["dep:arrow-select"]
 
 [dependencies]
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"], optional = true }
-open-arrow-sink-core.workspace = true
-arrow-schema.workspace = true
-async-trait.workspace = true
-arrow-select = { version = "58.4", optional = true }
-arrow-array = { workspace = true, optional = true }
 http = { version = "1", optional = true }
 url = { version = "2", optional = true }
 opendal = { version = "0.59.5", default-features = false, features = [
-  "services-http",
-  "http-transport-reqwest",
-  "executors-tokio",
-  "layers-timeout",
-  "layers-retry",
+  "services-http", "http-transport-reqwest", "executors-tokio", "layers-timeout", "layers-retry",
 ], optional = true }
-
-[dev-dependencies]
-tokio = { version = "1", features = [
-  "macros",
-  "rt-multi-thread",
-  "net",
-  "io-util",
-  "time",
-] }
+open-arrow-sink-core.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+arrow-array = { workspace = true, optional = true }
+arrow-select = { version = "58.4", optional = true }

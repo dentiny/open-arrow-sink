@@ -3,14 +3,13 @@
 An independent Rust library for writing Apache Arrow `RecordBatch` values to sinks.
 It has no dependency on open-arrow-access or any other source library.
 
-The library includes shared contracts, ordering, optional rebatch and blob download
-layers, and optional
+The library includes shared contracts, an ordering layer, an optional rebatch layer, and optional
 [Parquet](sink/parquet/README.md), [Iceberg](sink/iceberg/README.md), and
 [Lance](sink/lance/README.md) sinks.
 
 ```text
 core/       Sink, Writer, Layer, options, capabilities, validation and errors
-layer/      OrderingLayer, optional RebatchLayer and DownloadBlobLayer
+layer/      OrderingLayer, optional RebatchLayer
 src/        Public facade
 ```
 
@@ -60,91 +59,6 @@ pending rows and aborts the inner writer. No background tasks or concurrency are
 
 Pending slices contain at most the configured number of rows. Arrow slices may
 retain their input buffers, so this is a row bound, not a byte-memory limit.
-
-## Downloading URL columns as blobs
-
-Enable `layer-download-blob` to use `DownloadBlobLayer`. Select top-level URL
-columns explicitly using a `HashSet<String>`; each selected column is replaced in
-place with `LargeBinary`
-containing the downloaded HTTP(S) response body. `Utf8`, `LargeUtf8`, and `Utf8View`
-inputs are supported. Nulls remain null without a request; empty files remain
-non-null empty binary values. Other columns and row order are preserved.
-
-```rust,ignore
-use std::collections::HashSet;
-use open_arrow_sink::{SinkExt, layer::DownloadBlobLayer, lance::LanceDatasetSink};
-
-// Enable both `layer-download-blob` and `sink-lance`.
-let url_columns: HashSet<String> = ["image_url", "audio_url"]
-    .map(str::to_owned).into_iter().collect();
-let sink = LanceDatasetSink.layer(DownloadBlobLayer::new(url_columns));
-// Open with the original URL schema and Ordering::Unordered for Lance.
-// writer.schema() continues to expose the original input schema.
-```
-
-The layer marks output fields with `open-arrow-sink:blob = true`. The Lance sink
-maps these fields to native **Blob v2** columns and writes the downloaded bytes
-into Lance-owned storage. Other sinks receive ordinary `LargeBinary` values with
-the marker. Ordinary unmarked binary columns retain their existing behavior.
-
-Downloads run concurrently on the caller's Tokio runtime, following HTTP redirects,
-using OpenDAL's HTTP service. By default, no retries or timeout are configured;
-all layers and writers share a process-wide `DownloadPool` with at most 16 active
-downloads and a shared OpenDAL operator. The limit covers the entire response body,
-including any configured retries. Output retains input row and column order even when downloads finish out of order. Defaults are a 16 MiB limit
-per blob and at most 16 rows per forwarded batch. Configure these with
-`with_max_blob_bytes` and `with_rows_per_batch` (both take
-`NonZeroUsize`). The size limit is checked while reading, including responses
-without a content length. Buffering scales with output rows × selected columns ×
-maximum blob size, plus concurrent responses and Arrow allocation overhead; slices can retain
-input buffers. An inner rebatch layer can add its own buffering.
-
-To control concurrency or isolate workloads, provide a pool and share its `Arc`
-across the layers that should use the same budget:
-
-```rust,no_run
-use std::{num::NonZeroUsize, sync::Arc};
-use open_arrow_sink::layer::{DownloadBlobLayer, DownloadPool};
-
-# fn example() -> open_arrow_sink::Result<()> {
-let pool = Arc::new(DownloadPool::new(NonZeroUsize::new(8).unwrap())?);
-let layer = DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
-    .with_download_pool(pool.clone());
-# Ok(())
-# }
-```
-
-Use `DownloadPool::with_layer` to apply OpenDAL layers consistently to every
-download in a pool. For example, opt into per-I/O timeouts and retries with:
-
-```rust,no_run
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
-use open_arrow_sink::layer::DownloadPool;
-use opendal::layers::{RetryLayer, TimeoutLayer};
-
-# fn example() -> open_arrow_sink::Result<()> {
-let pool = Arc::new(
-    DownloadPool::new(NonZeroUsize::new(8).unwrap())?
-        .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_secs(10)))
-        .with_layer(RetryLayer::default()),
-);
-# Ok(())
-# }
-```
-
-Add `TimeoutLayer` before `RetryLayer` so each attempt has an I/O deadline and
-cancellation does not interrupt the retry layer's state restoration. These are
-OpenDAL operation/I/O timeouts, rather than a total deadline across all retries.
-Source URL queries and escaped paths are preserved, including signed URLs.
-Pools use the caller's runtime without detached worker tasks. Cancelling a write
-drops its pending downloads and releases their permits; failures also cancel remaining downloads in the current chunk.
-
-A failed or cancelled write poisons the session: subsequent writes fail and
-`commit` aborts the inner writer. Earlier output chunks may already have been
-accepted; cleanup follows the backend's guarantees. Missing, ambiguous, or
-non-string selected columns are rejected before the inner sink opens. Source field metadata is retained except for Arrow extension-type metadata, which no
-longer describes the converted binary column. Only explicit top-level columns and
-HTTP(S) URLs are supported in this version.
 
 ## Partitioning
 
@@ -248,3 +162,72 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
+
+## Streaming download pool
+
+Enable `layer-download-blob` to use `layer::DownloadPool`. Construct a pool with
+`DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
+writers. `DownloadPool::global()` shares a process-wide pool with 16 request slots
+and a 64 MiB payload-buffer budget.
+
+`pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
+Consume each chunk (for example with `BlobWriter::write`) before requesting more.
+The pool reserves buffer capacity before allocation and reading; the reservation
+travels with the chunk until the consumer drops it. Retaining a chunk keeps its
+budget charged even if the source stream is cancelled. Exhausting the shared
+budget pauses readers, including readers from other writers. Whole blobs are
+never collected by the pool and may exceed its budget.
+
+The budget covers application-owned transfer buffers. OpenDAL/HTTP/TLS read buffers,
+Lance encoding/output buffers, input batches, and descriptor metadata are separate;
+it is not a process RSS limit. Error response bodies are discarded before OpenDAL
+classifies the status to avoid collecting unbounded diagnostic payloads.
+
+HTTP(S), escaped paths, signed queries, and redirects are supported. No timeout or
+retry policy is enabled by default. Apply OpenDAL policies with
+`DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
+attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+releases its request slot; dropping its yielded chunks releases their byte budget.
+
+## Download URL columns into native blobs
+
+Compose `DownloadBlobLayer` with a sink supporting streaming blobs (currently
+`LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
+columns by name. The layer passes budgeted chunks directly from OpenDAL into the
+sink's native blob writer; it never collects a complete blob or a batch of payloads.
+Completed, session-owned descriptors are attached to the corresponding rows.
+
+```rust,no_run
+use std::{num::NonZeroUsize, sync::Arc};
+use open_arrow_sink::{SinkExt, lance::LanceDatasetSink, layer::{DownloadBlobLayer, DownloadPool}};
+
+# fn example() -> open_arrow_sink::Result<()> {
+let pool = Arc::new(DownloadPool::new(
+    NonZeroUsize::new(16).unwrap(),
+    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+)?);
+let sink = LanceDatasetSink.layer(
+    DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
+        .with_download_pool(pool),
+);
+# Ok(())
+# }
+```
+
+Enable both `sink-lance` and `layer-download-blob` for this example. Input batch
+boundaries, row order, nulls, and metadata are preserved by the layer; the final
+sink's ordering guarantee still applies. There is no per-blob size limit or
+separate output batch size. Payloads larger than the shared buffer budget stream
+through in chunks. Streamed Lance blobs use native dedicated storage, and default
+scans return descriptors; use `blob_handling(BlobHandling::AllBinary)` to read bytes.
+
+The input writer schema retains URL columns. The inner writer schema has
+blob-marked `LargeBinary` fields with empty placeholders; payloads are carried by
+native handles, not those arrays. Sinks without streaming blob support are rejected
+when opening the layer. Put a `RebatchLayer` before downloading (as an outer layer),
+so it operates on URL batches rather than native handles.
+
+A failed or cancelled write poisons the session and cancels remaining downloads;
+commit then aborts the inner writer. Earlier batches may already have been accepted.
+Dropping chunks releases the shared byte budget, and native blob cleanup follows
+the writer's abort/drop guarantees.

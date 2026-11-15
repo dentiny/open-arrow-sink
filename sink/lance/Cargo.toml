@@ -7,6 +7,9 @@ repository.workspace = true
 description = "Minimal local Lance dataset sink"
 
 [dependencies]
+lance-io = { version = "14.0.1", default-features = false }
+object_store = { version = "0.14", default-features = false }
+uuid = { version = "1", features = ["v4"] }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
@@ -16,13 +19,8 @@ lance = { version = "14.0.1", default-features = false }
 tokio = { version = "1", features = ["fs", "rt", "sync"] }
 
 [dev-dependencies]
+open-arrow-sink-layer = { workspace = true, features = ["download-blob"] }
 more-asserts.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = [
-  "macros",
-  "rt-multi-thread",
-  "net",
-  "io-util",
-] }
-open-arrow-sink-layer = { workspace = true, features = ["download-blob"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
