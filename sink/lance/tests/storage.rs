@@ -127,3 +127,34 @@ async fn explicit_storage_version() {
         "2.1"
     );
 }
+
+#[tokio::test]
+async fn idle_writer_does_not_supply_dictionary_schema() {
+    use arrow_array::{DictionaryArray, types::Int32Type};
+    use open_arrow_sink_core::ParallelSink;
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("dictionary/").unwrap();
+    let values: DictionaryArray<Int32Type> = ["hello"].into_iter().collect();
+    let batch = RecordBatch::try_from_iter([("value", Arc::new(values) as ArrayRef)]).unwrap();
+    let mut session = sink
+        .open_writers(
+            url.clone(),
+            batch.schema(),
+            WriteOptions {
+                storage_version: Some("legacy".into()),
+                ..write_options()
+            },
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .await
+        .unwrap();
+    session.writers[1].write(batch).await.unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut session.writers {
+        outputs.push(writer.finish().await.unwrap());
+    }
+    session.committer.commit(outputs).await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap().num_rows(), 1);
+}

@@ -119,12 +119,31 @@ pub(crate) fn validate_transaction_compatibility(
     if target.read_version != incoming.read_version {
         return Err(error::different_dataset_versions());
     }
-    if !matches!(
-        (&target.operation, &incoming.operation),
-        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
-            | (Operation::Append { .. }, Operation::Append { .. })
-    ) {
-        return Err(error::invalid_create_fragments());
+    match (&target.operation, &incoming.operation) {
+        (
+            Operation::Overwrite {
+                schema,
+                config_upsert_values,
+                initial_bases,
+                ..
+            },
+            Operation::Overwrite {
+                schema: incoming_schema,
+                config_upsert_values: incoming_config,
+                initial_bases: incoming_bases,
+                ..
+            },
+        ) if schema.compare_with_options(
+            incoming_schema,
+            &lance::datatypes::SchemaCompareOptions {
+                compare_metadata: true,
+                compare_field_ids: true,
+                ..Default::default()
+            },
+        ) && config_upsert_values == incoming_config
+            && initial_bases == incoming_bases => {}
+        (Operation::Append { .. }, Operation::Append { .. }) => {}
+        _ => return Err(error::invalid_create_fragments()),
     }
     Ok(())
 }

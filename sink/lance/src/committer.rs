@@ -19,6 +19,21 @@ impl SessionCommitter<Output> for LanceCommitter {
             rows_written += rows;
             if let Some(target) = &mut combined {
                 crate::validation::validate_transaction_compatibility(target, &transaction)?;
+                // Idle legacy writers have no dictionary metadata. Retain the
+                // schema of a writer that actually produced data files.
+                if let (
+                    lance::dataset::transaction::Operation::Overwrite {
+                        fragments, schema, ..
+                    },
+                    lance::dataset::transaction::Operation::Overwrite {
+                        schema: incoming_schema,
+                        ..
+                    },
+                ) = (&mut target.operation, &transaction.operation)
+                    && fragments.is_empty()
+                {
+                    *schema = incoming_schema.clone();
+                }
                 let fragments = crate::validation::write_fragments(&mut target.operation)?;
                 let incoming = crate::validation::write_fragments(&mut transaction.operation)?;
                 fragments.append(incoming);
