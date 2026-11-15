@@ -93,8 +93,6 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        // Inner layers may override options (for example OrderingLayer), so leave
-        // shared option validation to the inner sink, as RebatchLayer does.
         let indices = validate_download_config(&schema, &self.config.columns)?;
         let mut fields = schema.fields().to_vec();
         for &index in &indices {
