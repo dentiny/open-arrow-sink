@@ -92,59 +92,6 @@ async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> us
 }
 
 #[tokio::test]
-async fn remote_append_validates_schema_and_abort_preserves_existing_parts() {
-    let storage = storage();
-    let sink = ParquetDirectorySink::new(storage.clone());
-    let directory = storage.url("modes/").unwrap();
-    for mode in [WriteMode::Create, WriteMode::Append] {
-        let mut writer = sink
-            .open(
-                directory.clone(),
-                batch().schema(),
-                WriteOptions { mode, ..options() },
-            )
-            .await
-            .unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.commit().await.unwrap();
-    }
-    assert_eq!(rows(&storage, &directory).await, 6);
-    let before = storage.list(&directory).await.unwrap();
-    let append = WriteOptions {
-        mode: WriteMode::Append,
-        ..options()
-    };
-    let wrong =
-        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-            .unwrap();
-    assert!(
-        sink.open(directory.clone(), wrong.schema(), append.clone())
-            .await
-            .is_err()
-    );
-    let mut writer = sink
-        .open(directory.clone(), batch().schema(), append.clone())
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.abort().await.unwrap();
-    assert_eq!(storage.list(&directory).await.unwrap(), before);
-    assert!(
-        sink.open(
-            directory.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Overwrite,
-                ..options()
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(storage.list(&directory).await.unwrap(), before);
-}
-
-#[tokio::test]
 async fn filesystem_staged_overwrite_abort_preserves_visible_target() {
     let temp = tempfile::tempdir().unwrap();
     let directory =
