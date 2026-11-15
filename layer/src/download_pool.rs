@@ -18,7 +18,7 @@ use crate::{error::backend, validation};
 
 // These are tuning defaults, not benchmark-established optimal values.
 // Default maximum number of active download streams across the shared pool.
-const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Default shared transfer-buffer budget: 64 MiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
 const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
@@ -75,12 +75,16 @@ impl DownloadPool {
         self.max_buffered_bytes.get() - self.buffers.available_permits()
     }
 
+    /// Return the process-wide pool. On first initialization, read
+    /// `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`; missing or invalid positive
+    /// integers fall back to 64. Limits above semaphore capacity return an error.
     pub fn global() -> Result<Arc<Self>> {
         static POOL: OnceLock<Arc<DownloadPool>> = OnceLock::new();
         if let Some(pool) = POOL.get() {
             return Ok(pool.clone());
         }
-        let pool = Arc::new(Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES)?);
+        let concurrency = env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", DEFAULT_CONCURRENCY);
+        let pool = Arc::new(Self::new(concurrency, DEFAULT_BUFFERED_BYTES)?);
         Ok(POOL.get_or_init(|| pool).clone())
     }
 
@@ -136,6 +140,13 @@ impl DownloadPool {
             },
         )))
     }
+}
+
+fn env_or(name: &str, default: NonZeroUsize) -> NonZeroUsize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 // The HTTP service encodes object paths. Replace its synthetic object URI with
