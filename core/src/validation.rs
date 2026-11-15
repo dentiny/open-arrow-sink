@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 
 use crate::error::{
-    duplicate_index, invalid_target_file_size, missing_index_column, preserve_input_unsupported,
+    duplicate_index, invalid_index_column, invalid_target_file_size, preserve_input_unsupported,
     unsupported_index, unsupported_partition,
 };
 use crate::{
@@ -67,13 +67,7 @@ pub fn validate_compression_options(
         }
     }
     for column in options.columns.keys() {
-        if schema
-            .fields()
-            .iter()
-            .filter(|field| field.name() == column)
-            .count()
-            != 1
-        {
+        if unique_column_index(schema, column).is_none() {
             return Err(Error::Unsupported(format!(
                 "compression column must identify one top-level field: {column}"
             )));
@@ -133,6 +127,22 @@ pub fn validate_batch(schema: &Schema, batch: &RecordBatch) -> Result<()> {
     Ok(())
 }
 
+/// Resolve an exact, unique top-level field name without interpreting dots as paths.
+/// Return `None` for missing or ambiguous names. Callers can add operation-specific
+/// error context before using the returned index.
+pub fn unique_column_index(schema: &Schema, name: &str) -> Option<usize> {
+    let mut matches = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.name() == name);
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(index)
+}
+
 /// Validate index column existence and uniqueness independently of the backend.
 /// Concrete backends additionally validate their supported column types.
 pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
@@ -141,9 +151,8 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
         if !columns.insert(&index.column) {
             return Err(duplicate_index(&index.column));
         }
-        schema
-            .field_with_name(&index.column)
-            .map_err(|_| missing_index_column(&index.column))?;
+        unique_column_index(schema, &index.column)
+            .ok_or_else(|| invalid_index_column(&index.column))?;
     }
     Ok(())
 }

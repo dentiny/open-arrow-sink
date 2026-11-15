@@ -31,16 +31,9 @@ pub(crate) fn validate_download_config(
 ) -> Result<Vec<usize>> {
     let mut indices = Vec::new();
     for name in columns {
-        let matches: Vec<_> = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.name() == name)
-            .collect();
-        if matches.len() != 1 {
-            return Err(error::download_column_unique(name));
-        }
-        let (index, field) = matches[0];
+        let index = open_arrow_sink_core::validation::unique_column_index(schema, name)
+            .ok_or_else(|| error::download_column_unique(name))?;
+        let field = schema.field(index);
         if !matches!(
             field.data_type(),
             arrow_schema::DataType::Utf8
