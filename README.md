@@ -162,3 +162,34 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 Run `cargo fmt --all` and `taplo fmt` to apply formatting fixes.
+
+## Streaming download pool
+
+`layer::DownloadPool` is always available. Construct a pool with
+`DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
+writers. Every pool shares one process-wide request limiter. The first pool reads
+`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to its `concurrency` argument
+when unset, non-Unicode, invalid, or zero. Later pools reuse that limit, ignoring
+their `concurrency` arguments. Values above semaphore capacity return an error
+without initializing the limiter. `DownloadPool::global()` uses a fallback of 64
+and an 8 GiB transfer-buffer budget. Transfer-buffer budgets remain per pool;
+creating a new pool does not add independent request slots.
+
+`pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
+Consume each chunk (for example with `BlobWriter::write`) before requesting more.
+The pool reserves buffer capacity before allocation and reading; the reservation
+travels with the chunk until the consumer drops it. Retaining a chunk keeps its
+budget charged even if the source stream is cancelled. Exhausting the shared
+budget pauses readers, including readers from other writers. Whole blobs are
+never collected by the pool and may exceed its budget.
+
+The budget covers application-owned transfer buffers. OpenDAL/HTTP/TLS read buffers,
+Lance encoding/output buffers, input batches, and descriptor metadata are separate;
+it is not a process RSS limit. Error response bodies are discarded before OpenDAL
+classifies the status to avoid collecting unbounded diagnostic payloads.
+
+HTTP(S), escaped paths, signed queries, and redirects are supported. No timeout or
+retry policy is enabled by default. Apply OpenDAL policies with
+`DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
+attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+releases its request slot; dropping its yielded chunks releases their byte budget.
