@@ -312,3 +312,15 @@ or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
 `SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
 configuration before destination I/O. Native schema and parallel-session restrictions
 still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
+
+## Write byte metrics
+
+`WriteSummary.bytes_read` and `bytes_written` are optional session payload-byte
+counters. Lance returns `Some`, measured across native reads, fragment writes,
+manifest/index work, and directly streamed blobs. DownloadBlobLayer adds source
+payload bytes consumed by its downloads when the inner sink provides metrics.
+Each open gets independent counters, including when reusing a sink or Storage.
+They count successful logical I/O payloads, not HTTP headers, network retries,
+or process memory. Counters are reported after successful commit and index work.
+Parquet, Iceberg, and custom sinks without measurement return `None`.
+Existing complete `WriteSummary` literals should add `..Default::default()`.

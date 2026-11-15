@@ -102,6 +102,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             indices,
             pool,
             failed: false,
+            bytes_downloaded: 0,
         }))
     }
 }
@@ -113,6 +114,7 @@ struct DownloadBlobWriter {
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
     failed: bool,
+    bytes_downloaded: u64,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
     match array.data_type() {
@@ -141,21 +143,27 @@ async fn download(
     name: String,
     column: usize,
     row: usize,
-) -> Result<BlobPlacement> {
+) -> Result<(BlobPlacement, u64)> {
     let result = async {
         let mut stream = pool.stream(&url).await?;
+        let mut bytes = 0;
         while let Some(chunk) = stream.next().await {
-            native.write(chunk?).await?;
+            let chunk = chunk?;
+            bytes += chunk.as_ref().len() as u64;
+            native.write(chunk).await?;
         }
-        native.finish().await
+        Ok((native.finish().await?, bytes))
     }
     .await
     .map_err(|error| error::download_context(&name, row, error))?;
-    Ok(BlobPlacement {
-        column,
-        row,
-        blob: result,
-    })
+    Ok((
+        BlobPlacement {
+            column,
+            row,
+            blob: result.0,
+        },
+        result.1,
+    ))
 }
 #[async_trait]
 impl Writer for DownloadBlobWriter {
@@ -204,7 +212,11 @@ impl Writer for DownloadBlobWriter {
                     ));
                 }
                 match active.next().await {
-                    Some(result) => blobs.push(result?),
+                    Some(result) => {
+                        let (blob, bytes) = result?;
+                        self.bytes_downloaded += bytes;
+                        blobs.push(blob);
+                    }
                     None => break,
                 }
             }
@@ -220,7 +232,11 @@ impl Writer for DownloadBlobWriter {
             let _ = self.inner.abort().await;
             return Err(error::download_aborted());
         }
-        self.inner.commit().await
+        let mut summary = self.inner.commit().await?;
+        if let Some(bytes) = &mut summary.bytes_read {
+            *bytes += self.bytes_downloaded;
+        }
+        Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.inner.abort().await

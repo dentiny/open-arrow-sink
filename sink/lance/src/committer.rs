@@ -41,7 +41,7 @@ impl SessionCommitter<Output> for LanceCommitter {
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
-        Ok(WriteSummary { rows_written })
+        Ok(self.destination.summary(rows_written))
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         if self.options.cleanup_on_error {

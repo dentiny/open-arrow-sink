@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub(crate) struct Provider {
     pub destination: Storage,
     pub sources: StorageResolver,
+    pub io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
 }
 impl Provider {
     fn resolve(&self, url: &Url) -> open_arrow_sink_core::Result<Storage> {
@@ -35,6 +36,10 @@ impl ObjectStoreProvider for Provider {
             )),
             None => Arc::new(OpendalStore::new(storage.operator())),
         };
+        use lance_io::object_store::WrappingObjectStore;
+        let object_store = self
+            .io_tracker
+            .wrap(storage.base_url().as_str(), object_store);
         let mut store = ObjectStore::new(
             object_store,
             base_path,

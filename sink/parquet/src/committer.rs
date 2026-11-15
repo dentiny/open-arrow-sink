@@ -9,6 +9,7 @@ impl SessionCommitter<u64> for ParquetCommitter {
         self.0.publish().await?;
         Ok(WriteSummary {
             rows_written: outputs.into_iter().sum(),
+            ..Default::default()
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {

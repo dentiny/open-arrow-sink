@@ -126,6 +126,7 @@ impl Writer for CaptureWriter {
         state.committed = true;
         Ok(WriteSummary {
             rows_written: state.batches.iter().map(|b| b.num_rows() as u64).sum(),
+            ..Default::default()
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {

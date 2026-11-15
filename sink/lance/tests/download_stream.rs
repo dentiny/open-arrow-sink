@@ -54,7 +54,10 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
         .unwrap();
     writer.write(input).await.unwrap();
     assert_eq!(budget.buffered_bytes(), 0);
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_written, 3);
+    assert!(summary.bytes_read.unwrap() >= 17 * 1024 * 1024);
+    assert!(summary.bytes_written.unwrap() > 17 * 1024 * 1024);
     drop(server);
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let actual = dataset

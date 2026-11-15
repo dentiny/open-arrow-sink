@@ -18,6 +18,7 @@ use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
 pub(crate) struct BlobSession {
     pub failed: AtomicBool,
+    io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
     pub active: AtomicUsize,
     storage: Storage,
     relative_prefix: String,
@@ -25,11 +26,16 @@ pub(crate) struct BlobSession {
     unattached: Mutex<HashSet<Url>>,
 }
 impl BlobSession {
-    pub fn new(storage: Storage, dataset: &Url) -> Self {
+    pub fn new(
+        storage: Storage,
+        dataset: &Url,
+        io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
+    ) -> Self {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
         let directory = dataset.join(&relative_prefix).unwrap();
         Self {
             failed: AtomicBool::new(false),
+            io_tracker,
             active: AtomicUsize::new(0),
             storage,
             relative_prefix,
@@ -88,6 +94,11 @@ impl BlobWriter for NativeBlobWriter {
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
         validation::validate_blob_state(self.failed, &self.session)?;
         let size = self.inner.close().await?;
+        self.session.io_tracker.record_write(
+            "streamed_blob",
+            object_store::path::Path::from(self.url.path()),
+            size,
+        );
         self.finished = true;
         Ok(BlobHandle::new(NativeBlob {
             session: self.session.clone(),

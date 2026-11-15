@@ -88,9 +88,7 @@ impl Writer for BlobDatasetWriter {
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
-        Ok(WriteSummary {
-            rows_written: self.rows,
-        })
+        Ok(self.destination.summary(self.rows))
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -132,6 +130,7 @@ impl BlobDatasetWriter {
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
                 &destination.url,
+                destination.io_tracker.clone(),
             )),
             sender: Some(sender),
             task,

@@ -72,7 +72,9 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         )
         .await
         .unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_written, 3);
+    assert!(summary.bytes_written.unwrap() > 17 * 1024 * 1024);
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let actual = dataset
         .scan()

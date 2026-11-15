@@ -53,7 +53,10 @@ async fn shared_operator_commit_indexes_and_read_back() {
     for _ in 0..4 {
         writer.write(batch()).await.unwrap();
     }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 12);
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_written, 12);
+    assert_gt!(summary.bytes_read.unwrap(), 0);
+    assert_gt!(summary.bytes_written.unwrap(), 0);
     let dataset = sink
         .dataset_builder(url.clone())
         .unwrap()
@@ -259,4 +262,22 @@ async fn external_blobs_resolve_independent_buckets() {
     }
     actual.sort();
     assert_eq!(actual, vec![b"first".to_vec(), b"second".to_vec()]);
+}
+
+#[tokio::test]
+async fn io_metrics_are_isolated_per_session() {
+    let store = storage();
+    let sink = LanceDatasetSink::new(store.clone());
+    let mut totals = Vec::new();
+    for name in ["first", "second"] {
+        let mut writer = sink
+            .open(store.url(name).unwrap(), batch().schema(), write_options())
+            .await
+            .unwrap();
+        writer.write(batch()).await.unwrap();
+        totals.push(writer.commit().await.unwrap().bytes_written.unwrap());
+    }
+    assert!(totals[0] > 0);
+    // Identical output shapes should have comparable counters, not accumulate.
+    assert!(totals[1] < totals[0] * 3 / 2);
 }
