@@ -94,34 +94,6 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
 }
 
 #[tokio::test]
-async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
-    for drop_partial in [true, false] {
-        let storage = storage();
-        let url = storage.url("failed/").unwrap();
-        let sink = LanceDatasetSink::new(storage.clone());
-        let mut writer = sink
-            .open(url.clone(), input().schema(), options())
-            .await
-            .unwrap();
-        let mut blob = Some(writer.create_blob().await.unwrap());
-        blob.as_mut()
-            .unwrap()
-            .write(BlobChunk::new("partial"))
-            .await
-            .unwrap();
-        if drop_partial {
-            drop(blob.take());
-        }
-        assert!(writer.commit().await.is_err());
-        assert!(storage.list(&url).await.unwrap().is_empty());
-        if let Some(mut blob) = blob {
-            assert!(blob.write(BlobChunk::new("late")).await.is_err());
-            assert!(blob.finish().await.is_err());
-        }
-    }
-}
-
-#[tokio::test]
 async fn overwrite_abort_removes_attached_session_blobs() {
     let storage = storage();
     let url = storage.url("existing/").unwrap();
@@ -166,4 +138,32 @@ async fn overwrite_abort_removes_attached_session_blobs() {
     );
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
+    for drop_partial in [true, false] {
+        let storage = storage();
+        let url = storage.url("failed/").unwrap();
+        let sink = LanceDatasetSink::new(storage.clone());
+        let mut writer = sink
+            .open(url.clone(), input().schema(), options())
+            .await
+            .unwrap();
+        let mut blob = Some(writer.create_blob().await.unwrap());
+        blob.as_mut()
+            .unwrap()
+            .write(BlobChunk::new("partial"))
+            .await
+            .unwrap();
+        if drop_partial {
+            drop(blob.take());
+        }
+        assert!(writer.commit().await.is_err());
+        assert!(storage.list(&url).await.unwrap().is_empty());
+        if let Some(mut blob) = blob {
+            assert!(blob.write(BlobChunk::new("late")).await.is_err());
+            assert!(blob.finish().await.is_err());
+        }
+    }
 }
