@@ -1,4 +1,5 @@
 //! Lance implementation of shared index requests, run after the data commit.
+use arrow_schema::DataType;
 use lance::{
     Dataset,
     index::{DatasetIndexExt, vector::VectorIndexParams},
@@ -6,6 +7,7 @@ use lance::{
 use lance_index::{
     IndexParams, IndexType as LanceIndexType,
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
+    vector::{ivf::IvfBuildParams, pq::PQBuildParams},
 };
 use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
@@ -15,6 +17,7 @@ use crate::error::{index_creation, index_refresh, index_task};
 
 const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 const MAX_VECTOR_PARTITIONS: usize = 4096;
+const MAX_PRODUCT_SUBVECTORS: usize = 16;
 
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
@@ -62,12 +65,26 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
         ),
         IndexType::Vector => {
             let rows = dataset.count_rows(None).await?;
+            let DataType::FixedSizeList(_, dimension) = dataset
+                .schema()
+                .field(&spec.column)
+                .expect("index column validated at open")
+                .data_type()
+            else {
+                unreachable!("vector column type validated at open");
+            };
             (
-                LanceIndexType::IvfFlat,
-                Box::new(VectorIndexParams::ivf_flat(
-                    rows.div_ceil(TARGET_VECTOR_PARTITION_ROWS)
-                        .clamp(1, MAX_VECTOR_PARTITIONS),
+                LanceIndexType::IvfPq,
+                Box::new(VectorIndexParams::with_ivf_pq_params(
                     MetricType::L2,
+                    IvfBuildParams::new(
+                        rows.div_ceil(TARGET_VECTOR_PARTITION_ROWS)
+                            .clamp(1, MAX_VECTOR_PARTITIONS),
+                    ),
+                    PQBuildParams {
+                        num_sub_vectors: product_subvectors(dimension as usize),
+                        ..Default::default()
+                    },
                 )),
             )
         }
@@ -108,9 +125,32 @@ fn hex(bytes: &[u8]) -> String {
 fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
         IndexType::Scalar => "btree",
-        IndexType::Vector => "ivf_flat",
+        IndexType::Vector => "ivf_pq",
         IndexType::Text => "text",
         IndexType::BloomFilter => "bloom",
     };
     format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
+}
+
+// PQ splits each vector into equal-width sub-vectors. Bound the code size
+// without requiring dimensions to be multiples of 16.
+fn product_subvectors(dimension: usize) -> usize {
+    (1..=MAX_PRODUCT_SUBVECTORS.min(dimension))
+        .rev()
+        .find(|candidate| dimension.is_multiple_of(*candidate))
+        .expect("positive vector dimension validated at open")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::product_subvectors;
+
+    #[rstest::rstest]
+    #[case::standard_dimension(128, 16)]
+    #[case::composite_dimension(12, 12)]
+    #[case::prime_dimension(17, 1)]
+    #[test]
+    fn chooses_largest_bounded_divisor(#[case] dimension: usize, #[case] expected: usize) {
+        assert_eq!(product_subvectors(dimension), expected);
+    }
 }

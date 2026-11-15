@@ -215,7 +215,7 @@ let options = WriteOptions {
 ```
 
 Backends choose the concrete implementation of each logical index type and validate
-column types before writing. Lance maps the four kinds to BTree, IVF_FLAT with L2,
+column types before writing. Lance maps the four kinds to BTree, IVF_PQ with L2,
 Inverted, and BloomFilter, then constructs them after committing the dataset's data.
 See the [Lance documentation](../sink/lance/README.md) for construction failure semantics.
 `WriteOptions` owns its index list and implements `Clone`; clone options when

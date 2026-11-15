@@ -19,7 +19,7 @@ restrictions below. Cargo features are additive.
 | Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd |
 | Explicit Zstd level | 1–22 | 1–22 | 0–22 |
 | Target file size | Soft target; rolls between batches, default one file per writer | SDK soft target; table default otherwise | Native soft target; SDK default otherwise |
-| Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_FLAT L2, Text/Inverted, BloomFilter |
+| Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_PQ L2, Text/Inverted, BloomFilter |
 | Native streaming blobs | Unsupported | Unsupported | Single-writer blob schema only |
 | Explicit storage version | Unsupported | Unsupported | `2.2` or `2.3` |
 | Empty successful session | One readable file per opened writer | No new snapshot | Readable empty dataset on Create; see native mode semantics |

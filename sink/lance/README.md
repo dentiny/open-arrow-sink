@@ -85,14 +85,18 @@ concrete mappings are:
 | Shared type | Lance implementation |
 | --- | --- |
 | Scalar | BTree |
-| Vector | IVF_FLAT with L2 |
+| Vector | IVF_PQ with L2 |
 | Text | Inverted with default parameters |
 | BloomFilter | Bloom filter |
 
 Vector columns must be fixed-size lists of Float16, Float32, or Float64 with a
 positive dimension. The default IVF partition count is
-`clamp(ceil(dataset_rows / 8192), 1, 4096)`. Unsupported types fail before writing;
-training failures, including insufficient usable vectors, are returned explicitly.
+`clamp(ceil(dataset_rows / 8192), 1, 4096)`. Product quantization uses Lance's
+8-bit codebook and the largest divisor of the vector dimension that is at most
+16 as its number of sub-vectors (for example, 128 → 16, 12 → 12, and 17 → 1).
+An 8-bit codebook needs at least 256 usable training vectors. Lance may defer
+training for smaller datasets and search uncovered rows directly. Unsupported
+types fail before writing; any index training errors are returned explicitly.
 An empty index list preserves the underlying sink behavior.
 
 Index creation clones the dataset handle returned by the native data commit and
