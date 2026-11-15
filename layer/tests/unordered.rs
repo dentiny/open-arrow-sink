@@ -24,6 +24,7 @@ struct State {
     fail_finish: bool,
     fail_abort: bool,
     wrong_count: bool,
+    supports_blobs: bool,
     unordered: bool,
     requested_ordering: Option<Ordering>,
     wrong_schema: bool,
@@ -48,16 +49,18 @@ fn error() -> Error {
 impl Sink for TestSink {
     type Request = ();
     fn capability(&self) -> SinkCapability {
+        let state = self.0.lock().unwrap();
         SinkCapability {
             supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            ordering: if self.0.lock().unwrap().unordered {
+            ordering: if state.unordered {
                 Ordering::Unordered
             } else {
                 Ordering::PreserveInput
             },
             compression: Default::default(),
             supported_partitions: vec![],
-            supports_blob_handle: false,
+            supports_blob_handle: state.supports_blobs,
+            supports_blob_streaming: state.supports_blobs,
             supports_storage_version: false,
             supported_indexes: &[],
         }
@@ -77,6 +80,7 @@ impl ParallelSink for TestSink {
         options: WriteOptions,
         writers: NonZeroUsize,
     ) -> Result<WriteSession<u64>> {
+        open_arrow_sink_core::validation::validate_options(&schema, &options, self.capability())?;
         self.0.lock().unwrap().requested_ordering = Some(options.ordering);
         let mut result = Vec::new();
         let count = if self.0.lock().unwrap().wrong_count {
@@ -437,6 +441,49 @@ async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
     assert!(writer.abort().await.is_err());
     let state = state.lock().unwrap();
     assert_eq!((state.aborted, state.session_aborted), (2, 1));
+}
+
+#[tokio::test]
+async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
+    use arrow_array::StringArray;
+    use open_arrow_sink_layer::DownloadBlobLayer;
+
+    let state = Arc::new(Mutex::new(State {
+        supports_blobs: true,
+        ..Default::default()
+    }));
+    assert!(TestSink(state.clone()).capability().supports_blob_handle);
+    let sink = sink(&state);
+    assert!(sink.capability().supports_blob_handle);
+    assert!(!sink.capability().supports_blob_streaming);
+    let input = RecordBatch::try_from_iter([(
+        "url",
+        Arc::new(StringArray::from(vec!["https://example.invalid/blob"])) as _,
+    )])
+    .unwrap();
+    // Native logical blob options remain valid for parallel data writers.
+    sink.open(
+        (),
+        input.schema(),
+        WriteOptions {
+            blob_handle: Some(Default::default()),
+            ..options()
+        },
+    )
+    .await
+    .unwrap()
+    .abort()
+    .await
+    .unwrap();
+    let opened = state.lock().unwrap().opened;
+    assert_eq!(opened, 2);
+    assert!(
+        sink.layer(DownloadBlobLayer::new(["url".to_owned()].into()))
+            .open((), input.schema(), options())
+            .await
+            .is_err()
+    );
+    assert_eq!(state.lock().unwrap().opened, opened);
 }
 
 #[tokio::test]

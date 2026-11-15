@@ -11,6 +11,7 @@ pub trait Writer: Send {
     async fn write(&mut self, batch: RecordBatch) -> Result<()>;
 
     /// Start a native blob. An unfinished or failed blob poisons the write session.
+    /// Sinks advertise this interface with `SinkCapability.supports_blob_streaming`.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         Err(crate::error::unsupported_blob_streams())
     }

@@ -48,6 +48,7 @@ impl Sink for LanceDatasetSink {
             },
             supported_partitions: vec![],
             supports_blob_handle: true,
+            supports_blob_streaming: true,
             supports_storage_version: true,
             supported_indexes: &[
                 IndexType::Scalar,

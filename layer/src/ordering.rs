@@ -50,7 +50,7 @@ impl<S: Sink> Sink for OrderingSink<S> {
         mut options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         options.ordering = self.ordering;
-        validation::validate_options(&schema, &options, self.inner.capability())?;
+        validation::validate_ordering_options(options.ordering, self.inner.capability().ordering)?;
         self.inner.open(request, schema, options).await
     }
 }
@@ -66,7 +66,7 @@ impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
         writers: NonZeroUsize,
     ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
         options.ordering = self.ordering;
-        validation::validate_options(&schema, &options, self.inner.capability())?;
+        validation::validate_ordering_options(options.ordering, self.inner.capability().ordering)?;
         self.inner
             .open_writers(request, schema, options, writers)
             .await

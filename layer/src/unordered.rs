@@ -43,6 +43,8 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            // DataWriter has no native-blob interface to forward.
+            supports_blob_streaming: false,
             ..self.inner.capability()
         }
     }
@@ -54,7 +56,8 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         // Reordering must be explicitly permitted, including with one writer.
-        validation::validate_options(&schema, &options, self.capability())?;
+        validation::validate_ordering_options(options.ordering, Ordering::Unordered)?;
+        // The backend validates other options after inner layers apply overrides.
         let session = self
             .inner
             .open_writers(request, schema.clone(), options, self.writers)

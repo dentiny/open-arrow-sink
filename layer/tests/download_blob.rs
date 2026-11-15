@@ -60,6 +60,7 @@ impl Sink for Capture {
             ordering: Ordering::PreserveInput,
             supported_partitions: vec![],
             supports_blob_handle: true,
+            supports_blob_streaming: true,
             supports_storage_version: false,
             supported_indexes: &[],
         }
@@ -788,14 +789,14 @@ async fn opendal_retries_transient_errors_only_when_configured() {
 }
 
 #[tokio::test]
-async fn rejects_missing_blob_capability_before_open() {
+async fn rejects_missing_streaming_capability_before_open() {
     struct UnsupportedSink;
     #[async_trait]
     impl Sink for UnsupportedSink {
         type Request = ();
         fn capability(&self) -> SinkCapability {
             SinkCapability {
-                supports_blob_handle: false,
+                supports_blob_streaming: false,
                 ..Capture::default().capability()
             }
         }
@@ -812,4 +813,24 @@ async fn rejects_missing_blob_capability_before_open() {
         result,
         Err(open_arrow_sink_core::Error::Unsupported(_))
     ));
+}
+
+#[tokio::test]
+async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it() {
+    let capture = Capture::default();
+    let sink = capture
+        .clone()
+        .layer(download_layer(["url".to_owned()].into()));
+    assert!(sink.capability().supports_blob_handle);
+    assert!(!sink.capability().supports_blob_streaming);
+    let input = batch(vec![Some("https://example.invalid/blob")]);
+    let result = sink
+        .layer(download_layer(["url".to_owned()].into()))
+        .open((), input.schema(), WriteOptions::default())
+        .await;
+    assert!(matches!(
+        result,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
+    assert!(capture.0.lock().unwrap().schema.is_none());
 }

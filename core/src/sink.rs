@@ -10,6 +10,8 @@ pub trait ParallelSink: Sink {
     /// Backend-owned metadata, such as Iceberg data files or Lance fragments.
     type Output: Send + 'static;
 
+    /// Validate effective options and the schema before destination I/O, just as
+    /// `Sink::open` does. Layers may override options before delegating here.
     async fn open_writers(
         &self,
         request: Self::Request,

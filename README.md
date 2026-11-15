@@ -27,9 +27,9 @@ Single-writer backends can adapt their `WriteSession` with `into_writer()`.
 This shares write-failure, cancellation, finish, abort, and publication handling
 across sinks; backend data writers only produce output, and committers publish it.
 
-A backend declares its guarantee with `SinkCapability { ordering: Ordering::PreserveInput, supported_partitions: vec![], supported_indexes: &[], compression: Default::default(), supports_storage_version: false }`
-or `Ordering::Unordered` (no input-order guarantee). It must reject a preserve-input
-request if it cannot provide that guarantee. Writing
+A backend declares its guarantee through `SinkCapability.ordering`, using
+`Ordering::PreserveInput` or `Ordering::Unordered` (no input-order guarantee).
+It must reject a preserve-input request if it cannot provide that guarantee. Writing
 files sequentially does not by itself guarantee directory or table scan order.
 
 `Ordering::Unordered` allows reordering rows and batches without losing or
@@ -43,8 +43,9 @@ let sink = backend.layer(OrderingLayer::new(Ordering::Unordered));
 ```
 
 The ordering layer overrides the session option and checks the inner capability
-before opening it. Install one ordering layer per sink. Layers wrap without I/O;
-the last installed layer is outermost.
+before opening it. Option layers validate only their own constraints; the backend
+validates the effective options after all inner overrides. Install one ordering
+layer per sink. Layers wrap without I/O; the last installed layer is outermost.
 
 ## Compression
 
@@ -111,6 +112,11 @@ let mut writer = sink.open(directory, schema, WriteOptions {
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
+
+The unordered layer advertises `supports_blob_streaming: false`: its data writers
+have no native streaming blob interface. An outer `DownloadBlobLayer` selecting
+URL columns is rejected before opening writers. Native logical blob inputs and
+`WriteOptions.blob_handle` configuration remain backend-controlled.
 
 The inner sink implements `ParallelSink`. It reserves a single destination and
 returns a `WriteSession` containing independent `DataWriter`s and one
@@ -311,11 +317,16 @@ releases its request slot; dropping its yielded chunks releases their byte budge
 
 ## Download URL columns into native blobs
 
-Compose `DownloadBlobLayer` with a sink advertising `SinkCapability.supports_blob_handle` (currently
+Compose `DownloadBlobLayer` with a sink advertising `SinkCapability.supports_blob_streaming` (currently
 `LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
 columns by name. The layer passes budgeted chunks directly from OpenDAL into the
 sink's native blob writer; it never collects a complete blob or a batch of payloads.
 Completed, session-owned descriptors are attached to the corresponding rows.
+The download layer consumes native streams internally and advertises
+`supports_blob_streaming: false` to callers. Select all URL columns in one layer;
+nesting download layers is rejected before opening the destination.
+`supports_blob_handle` separately governs native logical blob inputs and
+`WriteOptions.blob_handle` configuration.
 
 ```rust,no_run
 use std::{num::NonZeroUsize, sync::Arc};
