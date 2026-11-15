@@ -19,6 +19,7 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            compression: Default::default(),
             supported_partitions: vec![],
             supported_indexes: &[
                 IndexType::Scalar,
@@ -35,7 +36,7 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
+        validation::validate_options(&schema, &options, self.capability())?;
         validate_indexes(&schema, &options.indexes)?;
         // Reserve a fresh destination. The caller must keep exclusive ownership of
         // this directory until commit/abort; no existing dataset is overwritten.

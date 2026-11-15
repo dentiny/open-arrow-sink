@@ -38,6 +38,7 @@ impl Sink for IcebergTableSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability {
             ordering: Ordering::Unordered,
+            compression: Default::default(),
             supported_partitions: vec![
                 PartitionType::Identity,
                 PartitionType::Year,
@@ -58,7 +59,7 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
+        validation::validate_options(&schema, &options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
         let metadata = table.metadata();
         validate_table(&table, options.partition)?;
