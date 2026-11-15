@@ -70,7 +70,9 @@ impl Sink for LanceDatasetSink {
             let encoding_schema =
                 crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
             let mut destination = self.resolve(url)?;
-            destination.prepare(&encoding_schema, options.mode).await?;
+            destination
+                .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
+                .await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
                 storage_schema,
