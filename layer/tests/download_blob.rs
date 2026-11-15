@@ -56,6 +56,7 @@ impl Sink for Capture {
             compression: open_arrow_sink_core::CompressionCapability {
                 global: &[],
                 per_column: &[],
+                structural_encodings: &[],
             },
             ordering: Ordering::PreserveInput,
             supported_partitions: vec![],

@@ -109,7 +109,7 @@ let options = WriteOptions {
     ordering: Ordering::Unordered,
     compression: CompressionOptions {
         global: Some(Compression::Zstd { level: Some(9) }),
-        columns: Default::default(),
+        ..Default::default()
     },
     target_file_size: Some(256 * 1024 * 1024),
     ..WriteOptions::default()

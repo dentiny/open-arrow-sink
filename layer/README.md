@@ -8,7 +8,7 @@ Enable a backend feature to construct that backend.
 | Layer | Changes | Required inner contract |
 | --- | --- | --- |
 | `OrderingLayer` | Overrides `WriteOptions.ordering`; does not sort or start workers | `Sink`; also forwards `ParallelSink` when implemented |
-| `CompressionLayer` | Replaces the entire compression policy, including column overrides | `Sink`; also forwards `ParallelSink` when implemented |
+| `CompressionLayer` | Replaces codec and structural encoding policies, including column overrides | `Sink`; also forwards `ParallelSink` when implemented |
 | `UnorderedWriteLayer` | Dispatches whole batches to a fixed set of independent data writers | `ParallelSink` |
 | `DownloadBlobLayer` | Streams selected URL columns into native managed blobs | `Sink` advertising `supports_blob_streaming`; currently Lance single-writer sessions |
 

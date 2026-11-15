@@ -47,6 +47,7 @@ async fn compression_survives_rolling_and_round_trips(
     let sink = ParquetDirectorySink::default().layer(CompressionLayer::new(CompressionOptions {
         global: Some(codec),
         columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
+        ..Default::default()
     }));
     assert_eq!(
         sink.capability(),
@@ -63,6 +64,7 @@ async fn compression_survives_rolling_and_round_trips(
                 compression: CompressionOptions {
                     global: None,
                     columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
+                    ..Default::default()
                 },
                 ..Default::default()
             },

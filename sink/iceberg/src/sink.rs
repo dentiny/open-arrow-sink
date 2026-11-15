@@ -56,6 +56,7 @@ impl Sink for IcebergTableSink {
                     CompressionCodec::Lz4Raw,
                 ],
                 per_column: &[],
+                structural_encodings: &[],
             },
             supported_partitions: vec![
                 PartitionType::Identity,

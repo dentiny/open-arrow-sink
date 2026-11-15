@@ -52,7 +52,7 @@ pub struct WriteOptions {
     /// including the default, fail before destination I/O.
     pub mode: WriteMode,
     pub ordering: Ordering,
-    /// Global default and top-level column overrides; empty preserves backend defaults.
+    /// Codec and structural encoding defaults/column overrides; empty preserves backend defaults.
     pub compression: CompressionOptions,
     /// None disables partition routing; Some uses the destination partition spec.
     pub partition: Option<PartitionOptions>,

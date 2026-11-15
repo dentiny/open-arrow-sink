@@ -2,62 +2,95 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Schema};
-use open_arrow_sink_core::{Compression, CompressionOptions, RecordBatch, Result, SchemaRef};
+use open_arrow_sink_core::{
+    Compression, CompressionOptions, RecordBatch, Result, SchemaRef, StructuralEncoding,
+};
 
 use crate::error::backend;
 
 const CODEC: &str = "lance-encoding:compression";
+const STRUCTURAL: &str = "lance-encoding:structural-encoding";
 const LEVEL: &str = "lance-encoding:compression-level";
 const DICT_CODEC: &str = "lance-encoding:dict-values-compression";
 const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
 
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> SchemaRef {
-    if options.global.is_none() && options.columns.is_empty() {
+    if options.global.is_none()
+        && options.columns.is_empty()
+        && options.structural_encoding.is_none()
+        && options.column_encodings.is_empty()
+    {
         return schema.clone();
     }
     let fields: Vec<_> = schema
         .fields()
         .iter()
         .map(|field| {
-            match options
+            let codec = options
                 .columns
                 .get(field.name())
                 .copied()
-                .or(options.global)
-            {
-                Some(compression) => Arc::new(compression_field(field, compression)),
-                None => field.clone(),
+                .or(options.global);
+            let encoding = options
+                .column_encodings
+                .get(field.name())
+                .copied()
+                .or(options.structural_encoding);
+            if codec.is_none() && encoding.is_none() {
+                field.clone()
+            } else {
+                Arc::new(compression_field(field, codec, encoding))
             }
         })
         .collect();
     Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
-fn compression_field(field: &Field, compression: Compression) -> Field {
+fn compression_field(
+    field: &Field,
+    compression: Option<Compression>,
+    encoding: Option<StructuralEncoding>,
+) -> Field {
     let mut metadata = field.metadata().clone();
-    // Capability validation rejects all other codecs before building this schema.
-    let codec = match compression {
-        Compression::Uncompressed => "none",
-        Compression::Zstd { .. } => "zstd",
-        _ => unreachable!("compression must be validated before schema conversion"),
-    };
-    metadata.insert(CODEC.into(), codec.into());
-    // Dictionary values have an independent native compression default.
-    metadata.insert(DICT_CODEC.into(), codec.into());
-    metadata.remove(LEVEL);
-    metadata.remove(DICT_LEVEL);
-    if let Compression::Zstd { level: Some(level) } = compression {
-        metadata.insert(LEVEL.into(), level.to_string());
-        metadata.insert(DICT_LEVEL.into(), level.to_string());
+    if let Some(compression) = compression {
+        // Capability validation rejects all other codecs before building this schema.
+        let codec = match compression {
+            Compression::Uncompressed => "none",
+            Compression::Zstd { .. } => "zstd",
+            _ => unreachable!("compression must be validated before schema conversion"),
+        };
+        metadata.insert(CODEC.into(), codec.into());
+        // Dictionary values have an independent native compression default.
+        metadata.insert(DICT_CODEC.into(), codec.into());
+        metadata.remove(LEVEL);
+        metadata.remove(DICT_LEVEL);
+        if let Compression::Zstd { level: Some(level) } = compression {
+            metadata.insert(LEVEL.into(), level.to_string());
+            metadata.insert(DICT_LEVEL.into(), level.to_string());
+        }
+    }
+    if let Some(encoding) = encoding {
+        metadata.insert(
+            STRUCTURAL.into(),
+            match encoding {
+                StructuralEncoding::Miniblock => "miniblock",
+                StructuralEncoding::Fullzip => "fullzip",
+            }
+            .into(),
+        );
     }
     field
         .clone()
-        .with_data_type(compression_type(field.data_type(), compression))
+        .with_data_type(compression_type(field.data_type(), compression, encoding))
         .with_metadata(metadata)
 }
 
-fn compression_type(data_type: &DataType, compression: Compression) -> DataType {
-    let child = |field: &Arc<Field>| Arc::new(compression_field(field, compression));
+fn compression_type(
+    data_type: &DataType,
+    compression: Option<Compression>,
+    encoding: Option<StructuralEncoding>,
+) -> DataType {
+    let child = |field: &Arc<Field>| Arc::new(compression_field(field, compression, encoding));
     match data_type {
         DataType::Struct(fields) => DataType::Struct(fields.iter().map(child).collect()),
         DataType::List(field) => DataType::List(child(field)),
@@ -66,9 +99,10 @@ fn compression_type(data_type: &DataType, compression: Compression) -> DataType 
         DataType::LargeListView(field) => DataType::LargeListView(child(field)),
         DataType::FixedSizeList(field, size) => DataType::FixedSizeList(child(field), *size),
         DataType::Map(field, sorted) => DataType::Map(child(field), *sorted),
-        DataType::Dictionary(key, value) => {
-            DataType::Dictionary(key.clone(), Box::new(compression_type(value, compression)))
-        }
+        DataType::Dictionary(key, value) => DataType::Dictionary(
+            key.clone(),
+            Box::new(compression_type(value, compression, encoding)),
+        ),
         DataType::Union(fields, mode) => DataType::Union(
             fields
                 .iter()
@@ -91,4 +125,60 @@ pub(crate) fn writer_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Rec
         .with_row_count(Some(batch.num_rows()));
     RecordBatch::try_new_with_options(schema.clone(), batch.columns().to_vec(), &options)
         .map_err(backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Field;
+
+    #[test]
+    fn omitted_policies_preserve_defaults_and_unrelated_metadata() {
+        let child = Field::new("child", DataType::Int64, false).with_metadata(
+            [
+                (CODEC.into(), "zstd".into()),
+                (LEVEL.into(), "7".into()),
+                (STRUCTURAL.into(), "miniblock".into()),
+                ("custom".into(), "preserved".into()),
+            ]
+            .into(),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "nested",
+            DataType::Struct(vec![Arc::new(child)].into()),
+            false,
+        )]));
+        assert!(Arc::ptr_eq(
+            &schema,
+            &writer_schema(&schema, &Default::default())
+        ));
+        let encoded = writer_schema(
+            &schema,
+            &CompressionOptions {
+                structural_encoding: Some(StructuralEncoding::Fullzip),
+                ..Default::default()
+            },
+        );
+        let DataType::Struct(fields) = encoded.field(0).data_type() else {
+            panic!("expected struct")
+        };
+        let metadata = fields[0].metadata();
+        assert_eq!(metadata[CODEC], "zstd");
+        assert_eq!(metadata[LEVEL], "7");
+        assert_eq!(metadata[STRUCTURAL], "fullzip");
+        assert_eq!(metadata["custom"], "preserved");
+        let codec_only = writer_schema(
+            &encoded,
+            &CompressionOptions {
+                global: Some(Compression::Uncompressed),
+                ..Default::default()
+            },
+        );
+        let DataType::Struct(fields) = codec_only.field(0).data_type() else {
+            panic!("expected struct")
+        };
+        assert_eq!(fields[0].metadata()[STRUCTURAL], "fullzip");
+        assert_eq!(fields[0].metadata()[CODEC], "none");
+        assert!(!fields[0].metadata().contains_key(LEVEL));
+    }
 }

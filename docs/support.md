@@ -17,6 +17,7 @@ restrictions below. Cargo features are additive.
 | Partition routing | Unsupported | Existing spec: Identity, Year, Month, Day, Hour, Bucket, Truncate, Void | Unsupported |
 | Compression, global | Uncompressed; opt-in Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Zstd |
 | Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd |
+| Structural encoding | Unsupported | Unsupported | Miniblock, Fullzip; global and per-column |
 | Explicit Zstd level | 1–22 | 1–22 | 0–22 |
 | Target file size | Soft target; rolls between batches, default one file per writer | SDK soft target; table default otherwise | Native soft target; SDK default otherwise |
 | Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_FLAT L2, Text/Inverted, BloomFilter |
