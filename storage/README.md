@@ -34,3 +34,9 @@ Call `close` to publish bytes or `abort` to cancel an active upload. Failed or
 cancelled writes are terminal; explicit abort retains access to the upload.
 Drop performs no async cleanup. Cleanup of already published objects and the
 meaning of a successful commit belong to each sink.
+
+Filesystem operators must leave OpenDAL's `atomic_write_dir` unset. In OpenDAL
+0.59 its check-then-rename staging does not enforce conditional creation atomically.
+The default filesystem resolver therefore uses non-staged writes. Abort drops
+those file handles; the owning sink removes its already-visible files. This
+keeps local reservation and concurrent manifest publication safe.
