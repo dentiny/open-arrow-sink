@@ -324,3 +324,24 @@ They count successful logical I/O payloads, not HTTP headers, network retries,
 or process memory. Counters are reported after successful commit and index work.
 Parquet, Iceberg, and custom sinks without measurement return `None`.
 Existing complete `WriteSummary` literals should add `..Default::default()`.
+
+### Observing sessions with MetricsLayer
+
+Compose `sink.layer(MetricsLayer::default())` for backend-independent observation.
+Keep `let metrics = layer.metrics()` before moving the layer into the sink and
+call `metrics.snapshot()` at any time. `MetricsLayer::new(WriteMetrics::default())`
+also accepts a shared handle. Counters aggregate all sessions using that handle.
+
+The layer records opened/committed/aborted sessions, accepted batches and rows,
+committed rows, failed/cancelled operations, and write/commit durations. Accepted
+rows include buffered data that may later fail; committed rows count only successful
+commit returns, not uncertain or partially successful native publication. Durations
+are accumulated wall time of operations and can overlap with parallel writers.
+Byte totals come from backend summaries; the layer never estimates encoded bytes
+from Arrow memory. If any committed session lacks a byte counter, the corresponding
+aggregate remains `None`. Snapshotting does not reset counters.
+
+The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
+Install one observation layer at the boundary you want to measure. Placing it outside
+DownloadBlobLayer includes downloaded source bytes in its committed summary; placing
+it inside observes only the native sink's I/O.

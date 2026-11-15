@@ -15,3 +15,6 @@ pub use open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE;
 
 mod download_blob;
 pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};
+
+mod metrics;
+pub use metrics::{MetricsLayer, MetricsSink, MetricsSnapshot, WriteMetrics};
