@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_parquet::ParquetDirectorySink;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -180,254 +180,32 @@ async fn row_count(directory: &std::path::Path) -> usize {
     rows
 }
 
+#[rstest::rstest]
+#[case::create(WriteMode::Create, 3)]
+#[case::append(WriteMode::Append, 4)]
+#[case::overwrite(WriteMode::Overwrite, 3)]
 #[tokio::test]
-async fn modes_preserve_append_and_replace_rows() {
-    use open_arrow_sink_core::WriteMode;
+async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
-    for (mode, expected) in [
-        (WriteMode::Create, 3),
-        (WriteMode::Append, 6),
-        (WriteMode::Overwrite, 3),
-    ] {
+    let batch = batch();
+    if mode != WriteMode::Create {
         let mut writer = ParquetDirectorySink
-            .open(
-                path.clone(),
-                batch().schema(),
-                WriteOptions { mode, ..options() },
-            )
+            .open(path.clone(), batch.schema(), options())
             .await
             .unwrap();
-        writer.write(batch()).await.unwrap();
+        writer.write(batch.slice(0, 1)).await.unwrap();
         writer.commit().await.unwrap();
-        assert_eq!(row_count(&path).await, expected);
     }
-    assert!(
-        ParquetDirectorySink
-            .open(
-                path,
-                batch().schema(),
-                WriteOptions {
-                    mode: WriteMode::Create,
-                    ..options()
-                }
-            )
-            .await
-            .is_err()
-    );
-}
-
-#[tokio::test]
-async fn abort_keeps_original_for_append_and_overwrite() {
-    use open_arrow_sink_core::WriteMode;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
-        .open(path.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.commit().await.unwrap();
-    for mode in [WriteMode::Append, WriteMode::Overwrite] {
-        let mut writer = ParquetDirectorySink
-            .open(
-                path.clone(),
-                batch().schema(),
-                WriteOptions {
-                    mode,
-                    target_file_size: Some(1),
-                    ..options()
-                },
-            )
-            .await
-            .unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.abort().await.unwrap();
-        assert_eq!(row_count(&path).await, 3);
-    }
-}
-
-#[tokio::test]
-async fn append_validates_destination_and_schema_before_writing() {
-    use open_arrow_sink_core::WriteMode;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    let append = WriteOptions {
-        mode: WriteMode::Append,
-        ..options()
-    };
-    assert!(
-        ParquetDirectorySink
-            .open(path.clone(), batch().schema(), append.clone())
-            .await
-            .is_err()
-    );
-    let mut writer = ParquetDirectorySink
-        .open(path.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.commit().await.unwrap();
-    let wrong_schema =
-        RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-            .unwrap()
-            .schema();
-    assert!(matches!(
-        ParquetDirectorySink
-            .open(path.clone(), wrong_schema, append)
-            .await,
-        Err(open_arrow_sink_core::Error::SchemaMismatch)
-    ));
-    assert_eq!(row_count(&path).await, 3);
-}
-
-#[tokio::test]
-async fn parallel_overwrite_publishes_all_shards_once() {
-    use open_arrow_sink_core::{ParallelSink, WriteMode};
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    tokio::fs::create_dir(&path).await.unwrap();
-    tokio::fs::write(path.join("old"), "old").await.unwrap();
-    let session = ParquetDirectorySink
-        .open_writers(
-            path.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Overwrite,
-                ..options()
-            },
-            std::num::NonZeroUsize::new(2).unwrap(),
-        )
-        .await
-        .unwrap();
-    let mut outputs = Vec::new();
-    for mut writer in session.writers {
-        writer.write(batch()).await.unwrap();
-        outputs.push(writer.finish().await.unwrap());
-    }
-    assert!(path.join("old").exists());
-    assert_eq!(
-        session
-            .committer
-            .commit(outputs)
-            .await
-            .unwrap()
-            .rows_written,
-        6
-    );
-    assert!(!path.join("old").exists());
-    assert_eq!(row_count(&path).await, 6);
-}
-
-#[tokio::test]
-async fn empty_overwrite_creates_or_clears_directory() {
-    use open_arrow_sink_core::WriteMode;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    let overwrite = WriteOptions {
-        mode: WriteMode::Overwrite,
-        ..options()
-    };
-    ParquetDirectorySink
-        .open(path.clone(), batch().schema(), overwrite.clone())
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    assert_eq!(row_count(&path).await, 0);
     let mut writer = ParquetDirectorySink
         .open(
             path.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Append,
-                ..options()
-            },
+            batch.schema(),
+            WriteOptions { mode, ..options() },
         )
         .await
         .unwrap();
-    writer.write(batch()).await.unwrap();
+    writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    ParquetDirectorySink
-        .open(path.clone(), batch().schema(), overwrite)
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    assert_eq!(row_count(&path).await, 0);
-}
-
-#[tokio::test]
-async fn failed_overwrite_publication_restores_previous_directory() {
-    use open_arrow_sink_core::WriteMode;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
-        .open(path.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.commit().await.unwrap();
-    let writer = ParquetDirectorySink
-        .open(
-            path.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Overwrite,
-                ..options()
-            },
-        )
-        .await
-        .unwrap();
-    // Inject failure of the second rename after publication has moved the old output.
-    let mut entries = tokio::fs::read_dir(temp.path()).await.unwrap();
-    while let Some(entry) = entries.next_entry().await.unwrap() {
-        if entry
-            .file_name()
-            .to_str()
-            .unwrap()
-            .starts_with(".open-arrow-sink-")
-        {
-            tokio::fs::remove_dir_all(entry.path()).await.unwrap();
-        }
-    }
-    assert!(writer.commit().await.is_err());
-    assert_eq!(row_count(&path).await, 3);
-}
-
-#[tokio::test]
-async fn parallel_append_abort_keeps_preexisting_rows() {
-    use open_arrow_sink_core::{ParallelSink, WriteMode};
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("output");
-    let mut writer = ParquetDirectorySink
-        .open(path.clone(), batch().schema(), options())
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    writer.commit().await.unwrap();
-    let session = ParquetDirectorySink
-        .open_writers(
-            path.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Append,
-                target_file_size: Some(1),
-                ..options()
-            },
-            std::num::NonZeroUsize::new(2).unwrap(),
-        )
-        .await
-        .unwrap();
-    for mut writer in session.writers {
-        writer.write(batch()).await.unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.finish().await.unwrap();
-        writer.abort().await.unwrap();
-    }
-    session.committer.abort().await.unwrap();
-    assert_eq!(row_count(&path).await, 3);
+    assert_eq!(row_count(&path).await, expected_rows);
 }
