@@ -68,6 +68,11 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     let file = output.join("part%20%E9%9B%AA").unwrap();
     storage.create(&file, "data".into()).await.unwrap();
     assert_eq!(storage.read(&file).await.unwrap(), "data");
+    let aborted = root.join("aborted").unwrap();
+    let mut writer = storage.writer(&aborted).await.unwrap();
+    writer.write("incomplete".into()).await.unwrap();
+    writer.abort().await.unwrap();
+    assert!(!storage.exists(&aborted).await.unwrap());
     let sibling = root.join("keep").unwrap();
     storage.create(&sibling, "keep".into()).await.unwrap();
     storage.remove_all(&output).await.unwrap();

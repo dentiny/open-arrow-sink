@@ -44,10 +44,20 @@ impl Storage {
         let mut base = url.clone();
         base.set_path("/");
         let operator = if url.scheme() == "file" {
-            if url.to_file_path().is_err() {
-                return Err(invalid("invalid file URL"));
-            }
-            Operator::new(opendal::services::Fs::default().root("/")).map_err(backend)?
+            let local = url
+                .to_file_path()
+                .map_err(|_| invalid("invalid file URL"))?;
+            // Stage on the destination filesystem, including mounted volumes.
+            let parent = local.parent().unwrap_or(std::path::Path::new("/"));
+            let staging = parent
+                .to_str()
+                .ok_or_else(|| invalid("filesystem path must be UTF-8"))?;
+            Operator::new(
+                opendal::services::Fs::default()
+                    .root("/")
+                    .atomic_write_dir(staging),
+            )
+            .map_err(backend)?
         } else {
             Operator::from_uri(base.as_str()).map_err(backend)?
         };
