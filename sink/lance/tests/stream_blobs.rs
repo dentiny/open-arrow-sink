@@ -45,7 +45,6 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(url.clone(), input().schema(), options())
         .await
         .unwrap();
-    assert!(writer.supports_blob_streams());
     let mut blob = writer.create_blob().await.unwrap();
     // A 17 MiB value streamed from bounded chunks.
     for _ in 0..272 {

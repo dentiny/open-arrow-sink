@@ -14,14 +14,9 @@ pub(crate) struct NativeStorage {
     pub url: Url,
     session: Arc<Session>,
     reserved: bool,
-    external_blob_mode: crate::ExternalBlobMode,
 }
 impl NativeStorage {
-    pub fn new(
-        storage: Storage,
-        url: Url,
-        external_blob_mode: crate::ExternalBlobMode,
-    ) -> Result<Self> {
+    pub fn new(storage: Storage, url: Url) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
         session
@@ -32,7 +27,6 @@ impl NativeStorage {
             url,
             session,
             reserved: false,
-            external_blob_mode,
         })
     }
     pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
@@ -64,8 +58,18 @@ impl NativeStorage {
         Ok(())
     }
     pub fn write_params(&self, options: &WriteOptions) -> Result<WriteParams> {
+        let blob = options.blob_handle.clone().unwrap_or_default();
         Ok(WriteParams {
-            external_blob_mode: self.external_blob_mode,
+            external_blob_mode: match blob.external_blob_mode {
+                open_arrow_sink_core::ExternalBlobMode::Reference => {
+                    lance::dataset::ExternalBlobMode::Reference
+                }
+                open_arrow_sink_core::ExternalBlobMode::Ingest => {
+                    lance::dataset::ExternalBlobMode::Ingest
+                }
+            },
+            allow_external_blob_outside_bases: blob.allow_external_blob_outside_bases,
+            blob_pack_file_size_threshold: blob.blob_pack_file_size_threshold,
             data_storage_version: crate::validation::parse_storage_version(
                 options.storage_version.as_deref(),
             )?,

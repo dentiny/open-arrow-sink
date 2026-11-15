@@ -15,29 +15,20 @@ use crate::{compression::writer_schema, storage::NativeStorage, validation::vali
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    external_blob_mode: crate::ExternalBlobMode,
 }
 
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
-            ..Default::default()
         }
     }
-    /// Choose whether native logical blob URIs remain external references or
-    /// are ingested into destination-owned storage. Defaults to Reference.
-    pub fn with_external_blob_mode(mut self, mode: crate::ExternalBlobMode) -> Self {
-        self.external_blob_mode = mode;
-        self
-    }
-
     fn resolve(&self, url: Url) -> Result<NativeStorage> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         };
-        NativeStorage::new(storage, url, self.external_blob_mode)
+        NativeStorage::new(storage, url)
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
@@ -58,6 +49,7 @@ impl Sink for LanceDatasetSink {
                 per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
             },
             supported_partitions: vec![],
+            supports_blob_handle: true,
             supports_storage_version: true,
             supported_indexes: &[
                 IndexType::Scalar,

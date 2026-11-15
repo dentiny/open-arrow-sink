@@ -38,10 +38,6 @@ impl Writer for BlobDatasetWriter {
         self.write_with_blobs(batch, Vec::new()).await
     }
 
-    fn supports_blob_streams(&self) -> bool {
-        true
-    }
-
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
         self.failed = true;

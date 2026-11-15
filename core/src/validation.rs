@@ -19,6 +19,9 @@ pub fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validate_mode_options(options.mode, capability.supported_modes)?;
+    if options.blob_handle.is_some() && !capability.supports_blob_handle {
+        return Err(Error::Unsupported("blob handle configuration".into()));
+    }
     validate_storage_version_options(
         options.storage_version.as_deref(),
         capability.supports_storage_version,

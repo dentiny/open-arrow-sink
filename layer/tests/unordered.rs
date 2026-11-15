@@ -51,6 +51,7 @@ impl Sink for TestSink {
             ordering: Ordering::PreserveInput,
             compression: Default::default(),
             supported_partitions: vec![],
+            supports_blob_handle: false,
             supports_storage_version: false,
             supported_indexes: &[],
         }

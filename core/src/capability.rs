@@ -17,9 +17,12 @@ pub enum PartitionType {
 }
 
 /// Guarantees provided by the configured sink.
-/// Each sink explicitly declares ordering, partition, index, and compression support.
+/// Each sink explicitly declares ordering, partition, index, compression, and blob handle support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkCapability {
+    /// Supports native blob handles and explicit per-write blob configuration.
+    /// Writer/schema and parallel-session restrictions still apply.
+    pub supports_blob_handle: bool,
     /// Explicit destination modes accepted by this sink.
     pub supported_modes: &'static [crate::WriteMode],
     /// `PreserveInput` guarantees input row order in the target's documented

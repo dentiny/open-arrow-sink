@@ -14,6 +14,14 @@ pub(crate) fn validate_options(
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
     parse_storage_version(options.storage_version.as_deref())?;
+    if let Some(blob) = &options.blob_handle
+        && blob.external_blob_mode == open_arrow_sink_core::ExternalBlobMode::Ingest
+        && blob.allow_external_blob_outside_bases
+    {
+        return Err(error::invalid_blob(
+            "allow_external_blob_outside_bases only applies to Reference mode",
+        ));
+    }
     for compression in options
         .compression
         .global

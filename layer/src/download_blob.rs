@@ -63,6 +63,10 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
         let indices = validate_download_config(&schema, &self.config.columns)?;
+        crate::validation::validate_download_support(
+            !indices.is_empty(),
+            self.inner.capability().supports_blob_handle,
+        )?;
         let mut fields = schema.fields().to_vec();
         for &column_index in &indices {
             let field = schema.field(column_index);
@@ -86,13 +90,6 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             .inner
             .open(request, output_schema.clone(), options)
             .await?;
-        if let Err(error) = crate::validation::validate_download_support(
-            !indices.is_empty(),
-            inner.supports_blob_streams(),
-        ) {
-            let _ = inner.abort().await;
-            return Err(error);
-        }
         Ok(Box::new(DownloadBlobWriter {
             inner,
             schema,

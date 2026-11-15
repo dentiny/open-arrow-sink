@@ -132,9 +132,25 @@ when `cleanup_on_error` is enabled; existing datasets are preserved.
 
 ## External blob ingestion
 
-Native logical blob fields may contain source URIs. Set
-`LanceDatasetSink::with_external_blob_mode(ExternalBlobMode::Ingest)` to copy
-those values into destination-owned storage, matching the conversion service.
+Lance advertises `SinkCapability.supports_blob_handle`. Configure each session
+through `WriteOptions.blob_handle`; the core types currently follow Lance blob options:
+
+```rust
+use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Ordering, WriteOptions};
+
+let options = WriteOptions {
+    ordering: Ordering::Unordered,
+    blob_handle: Some(BlobHandleConfig {
+        external_blob_mode: ExternalBlobMode::Ingest,
+        ..Default::default()
+    }),
+    ..Default::default()
+};
+```
+
+Native logical blob source URIs are copied into destination-owned storage with
+`Ingest`. `allow_external_blob_outside_bases` applies only to `Reference` mode;
+`blob_pack_file_size_threshold` controls native blob pack size.
 The default remains `ExternalBlobMode::Reference`, which retains external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
 `DownloadBlobLayer` already creates destination-owned managed streams directly.

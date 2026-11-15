@@ -304,7 +304,7 @@ releases its request slot; dropping its yielded chunks releases their byte budge
 
 ## Download URL columns into native blobs
 
-Compose `DownloadBlobLayer` with a sink supporting streaming blobs (currently
+Compose `DownloadBlobLayer` with a sink advertising `SinkCapability.supports_blob_handle` (currently
 `LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
 columns by name. The layer passes budgeted chunks directly from OpenDAL into the
 sink's native blob writer; it never collects a complete blob or a batch of payloads.
@@ -344,3 +344,13 @@ A failed or cancelled write poisons the session and cancels remaining downloads;
 commit then aborts the inner writer. Earlier batches may already have been accepted.
 Dropping chunks releases the shared byte budget, and native blob cleanup follows
 the writer's abort/drop guarantees.
+
+### Blob handle configuration
+
+`WriteOptions.blob_handle: Option<BlobHandleConfig>` configures each write session.
+The initial configuration follows Lance's blob write options: `external_blob_mode`
+(`Reference` by default or `Ingest`), `allow_external_blob_outside_bases`, and
+`blob_pack_file_size_threshold`. `None` keeps backend defaults. Lance advertises
+`SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
+configuration before destination I/O. Native schema and parallel-session restrictions
+still apply. See the [Lance blob options](sink/lance/README.md#external-blob-ingestion).

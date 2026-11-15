@@ -72,13 +72,16 @@ async fn shared_operator_commit_indexes_and_read_back() {
     );
 }
 
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
-async fn ingested_blob_survives_source_removal() {
+async fn ingested_blob_survives_source_removal(#[case] parallel: bool) {
     use lance::{
         blob::{BlobArrayBuilder, blob_field},
         datatypes::BlobHandling,
     };
-    use open_arrow_sink_lance::ExternalBlobMode;
+    use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
     let storage = storage();
     let source = storage.url("source.bin").unwrap();
     storage.write(&source, "payload".into()).await.unwrap();
@@ -86,13 +89,25 @@ async fn ingested_blob_survives_source_removal() {
     values.push_uri(source.as_str()).unwrap();
     let schema = Arc::new(arrow_schema::Schema::new(vec![blob_field("blob", true)]));
     let batch = RecordBatch::try_new(schema.clone(), vec![values.finish().unwrap()]).unwrap();
-    let sink =
-        LanceDatasetSink::new(storage.clone()).with_external_blob_mode(ExternalBlobMode::Ingest);
+    let sink = LanceDatasetSink::new(storage.clone());
+    let options = WriteOptions {
+        blob_handle: Some(BlobHandleConfig {
+            external_blob_mode: ExternalBlobMode::Ingest,
+            ..Default::default()
+        }),
+        ..write_options()
+    };
     let url = storage.url("ingested/").unwrap();
-    let mut writer = sink
-        .open(url.clone(), schema, write_options())
-        .await
-        .unwrap();
+    assert!(sink.capability().supports_blob_handle);
+    let mut writer = if parallel {
+        sink.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .open(url.clone(), schema, options)
+            .await
+            .unwrap()
+    } else {
+        sink.open(url.clone(), schema, options).await.unwrap()
+    };
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     storage.delete(&source).await.unwrap();
@@ -168,4 +183,31 @@ async fn explicit_storage_version() {
         dataset.manifest().data_storage_format.version.to_string(),
         "2.1"
     );
+}
+
+#[tokio::test]
+async fn rejects_conflicting_blob_options_before_creating_destination() {
+    use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("invalid-blob/").unwrap();
+    let result = sink
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                blob_handle: Some(BlobHandleConfig {
+                    external_blob_mode: ExternalBlobMode::Ingest,
+                    allow_external_blob_outside_bases: true,
+                    ..Default::default()
+                }),
+                ..write_options()
+            },
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
+    assert!(!storage.prefix_exists(&url).await.unwrap());
 }
