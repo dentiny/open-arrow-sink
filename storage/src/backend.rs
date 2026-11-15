@@ -17,8 +17,10 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
+    // Preserve the caller's context so replacing the budget does not nest
+    // transport limiters (or acquire the same semaphore twice).
+    base_operator: Operator,
     base_url: Url,
-    http_concurrency_limit: HttpConcurrencyLimitLayer,
 }
 
 impl Storage {
@@ -32,9 +34,9 @@ impl Storage {
         }
         validation::decoded_path(&base_url)?;
         Ok(Self {
-            operator,
+            operator: operator.clone().layer(HttpConcurrencyLimitLayer::default()),
+            base_operator: operator,
             base_url,
-            http_concurrency_limit: HttpConcurrencyLimitLayer::default(),
         })
     }
 
@@ -86,7 +88,7 @@ impl Storage {
 
     /// Replace the request budget shared by this storage and its clones.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
-        self.http_concurrency_limit = limit;
+        self.operator = self.base_operator.clone().layer(limit);
         self
     }
 
@@ -96,9 +98,7 @@ impl Storage {
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
     pub fn operator(&self) -> Operator {
-        self.operator
-            .clone()
-            .layer(self.http_concurrency_limit.clone())
+        self.operator.clone()
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.

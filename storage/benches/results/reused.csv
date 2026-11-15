@@ -1,0 +1,11 @@
+operation,sample,iterations,nanoseconds_per_op
+operator,1,1000000,10.690
+operator,2,1000000,10.633
+operator,3,1000000,10.739
+operator,4,1000000,10.653
+operator,5,1000000,10.756
+stat_optional,1,10000,9712.804
+stat_optional,2,10000,10131.696
+stat_optional,3,10000,9959.400
+stat_optional,4,10000,9331.462
+stat_optional,5,10000,9406.700
