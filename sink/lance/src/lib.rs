@@ -9,6 +9,7 @@ mod provider;
 mod sink;
 mod validation;
 
+pub use lance::dataset::ExternalBlobMode;
 pub use sink::LanceDatasetSink;
 
 mod index;

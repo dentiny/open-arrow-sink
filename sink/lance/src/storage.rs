@@ -14,9 +14,14 @@ pub(crate) struct NativeStorage {
     pub url: Url,
     session: Arc<Session>,
     reserved: bool,
+    external_blob_mode: crate::ExternalBlobMode,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, url: Url) -> Result<Self> {
+    pub fn new(
+        storage: Storage,
+        url: Url,
+        external_blob_mode: crate::ExternalBlobMode,
+    ) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
         session
@@ -27,6 +32,7 @@ impl NativeStorage {
             url,
             session,
             reserved: false,
+            external_blob_mode,
         })
     }
     pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
@@ -59,6 +65,7 @@ impl NativeStorage {
     }
     pub fn write_params(&self, options: &WriteOptions) -> Result<WriteParams> {
         Ok(WriteParams {
+            external_blob_mode: self.external_blob_mode,
             data_storage_version: crate::validation::parse_storage_version(
                 options.storage_version.as_deref(),
             )?,

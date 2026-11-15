@@ -73,6 +73,48 @@ async fn shared_operator_commit_indexes_and_read_back() {
 }
 
 #[tokio::test]
+async fn ingested_blob_survives_source_removal() {
+    use lance::{
+        blob::{BlobArrayBuilder, blob_field},
+        datatypes::BlobHandling,
+    };
+    use open_arrow_sink_lance::ExternalBlobMode;
+    let storage = storage();
+    let source = storage.url("source.bin").unwrap();
+    storage.write(&source, "payload".into()).await.unwrap();
+    let mut values = BlobArrayBuilder::new(1);
+    values.push_uri(source.as_str()).unwrap();
+    let schema = Arc::new(arrow_schema::Schema::new(vec![blob_field("blob", true)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![values.finish().unwrap()]).unwrap();
+    let sink =
+        LanceDatasetSink::new(storage.clone()).with_external_blob_mode(ExternalBlobMode::Ingest);
+    let url = storage.url("ingested/").unwrap();
+    let mut writer = sink
+        .open(url.clone(), schema, write_options())
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    storage.delete(&source).await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let batch = dataset
+        .scan()
+        .blob_handling(BlobHandling::AllBinary)
+        .try_into_batch()
+        .await
+        .unwrap();
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::LargeBinaryArray>()
+            .unwrap()
+            .value(0),
+        b"payload"
+    );
+}
+
+#[tokio::test]
 async fn shared_operator_abort_honors_cleanup() {
     for cleanup_on_error in [true, false] {
         let storage = storage();
