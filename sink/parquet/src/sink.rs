@@ -14,7 +14,7 @@ use crate::{
 
 /// Writes a local directory containing Parquet files. Create is the default.
 /// The parent directory must exist; overwrite stages output until commit.
-/// Callers must exclude concurrent directory replacement during a session.
+/// Callers must exclude other writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
 /// directory transaction. Drop does not commit or clean up incomplete files.
@@ -97,6 +97,7 @@ impl ParquetDirectorySink {
                 options
                     .mode
                     .unwrap_or(open_arrow_sink_core::WriteMode::Create),
+                options.cleanup_on_error,
             )
             .await?,
         );

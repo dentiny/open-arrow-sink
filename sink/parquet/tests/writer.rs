@@ -322,3 +322,115 @@ async fn parallel_overwrite_publishes_all_shards_once() {
     assert!(!path.join("old").exists());
     assert_eq!(row_count(&path).await, 6);
 }
+
+#[tokio::test]
+async fn empty_overwrite_creates_or_clears_directory() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("output");
+    let overwrite = WriteOptions {
+        mode: Some(WriteMode::Overwrite),
+        ..options()
+    };
+    ParquetDirectorySink
+        .open(path.clone(), batch().schema(), overwrite.clone())
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(row_count(&path).await, 0);
+    let mut writer = ParquetDirectorySink
+        .open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: Some(WriteMode::Append),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    ParquetDirectorySink
+        .open(path.clone(), batch().schema(), overwrite)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(row_count(&path).await, 0);
+}
+
+#[tokio::test]
+async fn failed_overwrite_publication_restores_previous_directory() {
+    use open_arrow_sink_core::WriteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("output");
+    let mut writer = ParquetDirectorySink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let writer = ParquetDirectorySink
+        .open(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: Some(WriteMode::Overwrite),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    // Inject failure of the second rename after publication has moved the old output.
+    let mut entries = tokio::fs::read_dir(temp.path()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        if entry
+            .file_name()
+            .to_str()
+            .unwrap()
+            .starts_with(".open-arrow-sink-")
+        {
+            tokio::fs::remove_dir_all(entry.path()).await.unwrap();
+        }
+    }
+    assert!(writer.commit().await.is_err());
+    assert_eq!(row_count(&path).await, 3);
+}
+
+#[tokio::test]
+async fn parallel_append_abort_keeps_preexisting_rows() {
+    use open_arrow_sink_core::{ParallelSink, WriteMode};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("output");
+    let mut writer = ParquetDirectorySink
+        .open(path.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let session = ParquetDirectorySink
+        .open_writers(
+            path.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: Some(WriteMode::Append),
+                target_file_size: Some(1),
+                ..options()
+            },
+            std::num::NonZeroUsize::new(2).unwrap(),
+        )
+        .await
+        .unwrap();
+    for mut writer in session.writers {
+        writer.write(batch()).await.unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.finish().await.unwrap();
+        writer.abort().await.unwrap();
+    }
+    session.committer.abort().await.unwrap();
+    assert_eq!(row_count(&path).await, 3);
+}

@@ -1,9 +1,9 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a new local directory path and writes uncompressed
+`ParquetDirectorySink` writes a local directory. Create mode (the default) writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
-one file per session. The parent must exist; an existing target
-is rejected, including an empty directory. Enable facade feature `sink-parquet`
+one file per session. The parent must exist; Create rejects an existing target,
+including an empty directory. Append and Overwrite are described below. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
 
 Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
@@ -16,8 +16,8 @@ nonempty batches once the current file's encoded bytes reach the target. A batch
 and the file footer can exceed the target; it is not a strict maximum. `None`
 keeps the single-file behavior. An empty session still creates one readable file.
 
-Commit completes the final file footer. The target is visible while writing and has no
-atomic directory transaction or durability/fsync guarantee.
+Commit completes the final file footer. In Create and Append modes, files are
+visible while writing. There is no durability/fsync guarantee.
 
 `WriteOptions.cleanup_on_error` defaults to `true`: abort removes this session's files and
 attempts to remove its directory; failed open/commit also attempts cleanup. Set it
@@ -84,8 +84,9 @@ writes a sibling staging directory and replaces the complete destination on comm
 including unrelated files in that destination. Abort preserves the old directory.
 An empty overwrite publishes an empty, readable Parquet file.
 
-The parent directory must exist. Callers must exclude concurrent replacement of
+The parent directory must exist. Callers must exclude other writes or replacement of
 the destination for the session lifetime. Directory replacement uses two renames
 with rollback on a failed second rename; readers can observe a brief missing path,
-so it is not an atomic directory transaction. Create and append files are visible
+so it is not an atomic directory transaction. Cancellation during publication may
+leave staging or backup directories; inspect them before retrying. Create and append files are visible
 before commit. `cleanup_on_error = false` retains unfinished session output.

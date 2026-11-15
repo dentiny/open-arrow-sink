@@ -7,16 +7,22 @@ use tokio::fs;
 use crate::error::backend;
 
 /// Overwrite stages a complete directory; append owns only its unique files.
-/// Callers must exclude concurrent directory replacement for the session lifetime.
+/// Callers must exclude other writes or directory replacement for the session lifetime.
 pub(crate) struct Destination {
     pub directory: PathBuf,
     pub prefix: String,
     pub remove_directory: bool,
     target: Option<PathBuf>,
+    cleanup_on_error: bool,
 }
 
 impl Destination {
-    pub async fn open(path: PathBuf, schema: &SchemaRef, mode: WriteMode) -> Result<Self> {
+    pub async fn open(
+        path: PathBuf,
+        schema: &SchemaRef,
+        mode: WriteMode,
+        cleanup_on_error: bool,
+    ) -> Result<Self> {
         match mode {
             WriteMode::Create => {
                 fs::create_dir(&path).await.map_err(backend)?;
@@ -25,6 +31,7 @@ impl Destination {
                     prefix: "part-".into(),
                     remove_directory: true,
                     target: None,
+                    cleanup_on_error,
                 })
             }
             WriteMode::Append => {
@@ -45,6 +52,7 @@ impl Destination {
                     prefix: format!("part-{}-", uuid::Uuid::new_v4()),
                     remove_directory: false,
                     target: None,
+                    cleanup_on_error,
                 })
             }
             WriteMode::Overwrite => {
@@ -66,12 +74,23 @@ impl Destination {
                     prefix: "part-".into(),
                     remove_directory: true,
                     target: Some(path),
+                    cleanup_on_error,
                 })
             }
         }
     }
 
     pub async fn publish(&self) -> Result<()> {
+        let result = self.publish_inner().await;
+        if result.is_err() && self.cleanup_on_error && self.target.is_some() {
+            // A failed publication owns its cleanup; parallel callers must not
+            // abort writers after entering the session committer.
+            let _ = fs::remove_dir_all(&self.directory).await;
+        }
+        result
+    }
+
+    async fn publish_inner(&self) -> Result<()> {
         let Some(target) = &self.target else {
             return Ok(());
         };
