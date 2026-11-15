@@ -1,6 +1,4 @@
-use crate::{
-    BlobPlacement, BlobWriter, Error, RecordBatch, Result, SchemaRef, WriteSummary, async_trait,
-};
+use crate::{BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
 
 /// One write session. Drop never commits; callers explicitly commit or abort.
 /// After a write error or cancellation, callers must abort or drop the writer.
@@ -19,9 +17,7 @@ pub trait Writer: Send {
 
     /// Start a native blob. An unfinished or failed blob poisons the write session.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Err(Error::Unsupported(
-            "sink does not support streaming blobs".into(),
-        ))
+        Err(crate::error::unsupported_blob_streams())
     }
 
     /// Attach native blobs to empty, non-null cells of blob-marked binary columns.
@@ -34,9 +30,7 @@ pub trait Writer: Send {
         if blobs.is_empty() {
             return self.write(batch).await;
         }
-        Err(Error::Unsupported(
-            "sink does not support streaming blobs".into(),
-        ))
+        Err(crate::error::unsupported_blob_streams())
     }
 
     /// Finish buffered writes and commit using the backend's documented semantics.

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct NativeStorage {
-    storage: Storage,
+    pub storage: Storage,
     pub url: Url,
     session: Arc<Session>,
     reserved: bool,
@@ -28,15 +28,6 @@ impl NativeStorage {
             session,
             reserved: false,
         })
-    }
-    pub fn local_path(&self) -> Result<std::path::PathBuf> {
-        let info = self.storage.operator().info();
-        if info.scheme() != "fs" {
-            return Err(open_arrow_sink_core::Error::Unsupported(
-                "streaming blobs require filesystem storage".into(),
-            ));
-        }
-        Ok(std::path::PathBuf::from(info.root()).join(self.storage.path(&self.url)?))
     }
     pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
         if mode == WriteMode::Append {

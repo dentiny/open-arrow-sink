@@ -1,7 +1,9 @@
+#![cfg(feature = "http")]
+
 use std::{sync::Arc, time::Duration};
 
 use futures::TryStreamExt;
-use open_arrow_sink_layer::DownloadPool;
+use open_arrow_sink_storage::DownloadPool;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,

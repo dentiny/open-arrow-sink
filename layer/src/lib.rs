@@ -1,11 +1,10 @@
 //! Composable sink decorators.
 mod error;
 mod ordering;
+mod validation;
 pub use ordering::{OrderingLayer, OrderingSink};
 
-mod download_pool;
-pub use download_pool::DownloadPool;
-mod validation;
+pub use open_arrow_sink_storage::DownloadPool;
 
 mod unordered;
 pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};

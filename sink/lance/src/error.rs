@@ -92,3 +92,48 @@ pub(crate) fn empty_writer_session() -> Error {
 pub(crate) fn different_dataset_versions() -> Error {
     Error::Unsupported("Lance writers observed different dataset versions".into())
 }
+
+pub(crate) fn invalid_blob(message: &'static str) -> Error {
+    Error::Unsupported(message.into())
+}
+pub(crate) fn invalid_blob_column(column: &str) -> Error {
+    Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
+}
+pub(crate) fn blob_failed() -> Error {
+    invalid_blob("blob session failed; abort or drop it")
+}
+pub(crate) fn unfinished_blobs() -> Error {
+    backend(io::Error::other(
+        "writer failed or has unfinished blobs; session aborted",
+    ))
+}
+pub(crate) fn parallel_blobs() -> Error {
+    invalid_blob("parallel sessions do not support blob-marked columns")
+}
+pub(crate) fn schema_mismatch() -> Error {
+    Error::SchemaMismatch
+}
+
+pub(crate) fn blob_column_out_of_bounds() -> Error {
+    invalid_blob("blob column out of bounds")
+}
+
+pub(crate) fn blob_cell() -> Error {
+    invalid_blob("blob placement must target a blob-marked cell")
+}
+
+pub(crate) fn blob_placeholder() -> Error {
+    invalid_blob("blob placement must replace an empty non-null payload")
+}
+
+pub(crate) fn foreign_blob() -> Error {
+    invalid_blob("foreign blob handle")
+}
+
+pub(crate) fn blob_owner() -> Error {
+    invalid_blob("blob handle belongs to another session")
+}
+
+pub(crate) fn duplicate_blob_placement() -> Error {
+    invalid_blob("duplicate blob placement")
+}

@@ -1,9 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
-use futures::{
-    TryStreamExt,
-    stream::{self, BoxStream},
-};
+use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
 use once_cell::sync::OnceCell;
 use open_arrow_sink_core::{BlobChunk, Error, Result};
@@ -12,7 +9,11 @@ use opendal::{
 };
 use tokio::sync::Semaphore;
 
-use crate::{error::backend, validation};
+use crate::{
+    HttpConcurrencyLimitLayer,
+    error::{self, backend},
+    validation,
+};
 
 // Default maximum number of active download streams across the process.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -28,6 +29,7 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug)]
 pub struct DownloadPool {
     operator: Operator,
+    // Bound lazy streams separately from the common transport's HTTP requests.
     requests: Arc<Semaphore>,
     concurrency: NonZeroUsize,
     buffers: Arc<Semaphore>,
@@ -41,16 +43,21 @@ impl DownloadPool {
     /// unset or invalid; subsequent pools reuse that limit regardless of their
     /// `concurrency` argument.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
-        static REQUESTS: OnceCell<(NonZeroUsize, Arc<Semaphore>)> = OnceCell::new();
+        static REQUESTS: OnceCell<(NonZeroUsize, Arc<Semaphore>, HttpConcurrencyLimitLayer)> =
+            OnceCell::new();
         validation::validate_download_limit(max_buffered_bytes)?;
-        let (concurrency, requests) = REQUESTS.get_or_try_init(|| {
-            let limit = env_or("OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY", concurrency);
-            validation::validate_download_limit(limit)?;
-            Ok::<_, Error>((limit, Arc::new(Semaphore::new(limit.get()))))
+        let (concurrency, requests, http_limit) = REQUESTS.get_or_try_init(|| {
+            let limit = validation::download_concurrency(concurrency)?;
+            Ok::<_, Error>((
+                limit,
+                Arc::new(Semaphore::new(limit.get())),
+                HttpConcurrencyLimitLayer::new(limit.get())?,
+            ))
         })?;
         opendal::install_default();
-        let operator =
-            Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
+        let operator = Operator::new(Http::default().endpoint("https://download.invalid"))
+            .map_err(backend)?
+            .layer(http_limit.clone());
         Ok(Self {
             operator,
             requests: requests.clone(),
@@ -136,13 +143,6 @@ impl DownloadPool {
     }
 }
 
-fn env_or(name: &str, default: NonZeroUsize) -> NonZeroUsize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
 // The HTTP service encodes object paths. Replace its synthetic object URI with
 // the complete source URL so signed queries, escaped slashes, and redirects work.
 struct UrlTransport {
@@ -154,15 +154,6 @@ impl HttpTransport for UrlTransport {
     async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
         *request.uri_mut() = self.uri.clone();
         let response = self.inner.fetch(request).await?;
-        if response.status().is_success() {
-            return Ok(response);
-        }
-        // OpenDAL classifies errors after collecting their bodies. Discard that
-        // diagnostic body so an arbitrarily large error cannot be collected.
-        let (parts, _) = response.into_parts();
-        Ok(Response::from_parts(
-            parts,
-            HttpBody::new(stream::empty(), Some(0)),
-        ))
+        Ok(error::download_response(response))
     }
 }

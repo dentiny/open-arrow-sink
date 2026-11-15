@@ -1,8 +1,4 @@
-use std::{
-    io,
-    path::PathBuf,
-    sync::{Arc, atomic::Ordering},
-};
+use std::sync::{Arc, atomic::Ordering};
 
 use lance::Dataset;
 use open_arrow_sink_core::{
@@ -13,7 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, failed, worker_stopped},
+    error::{backend, worker_stopped},
     index::build_indexes,
     parallel::{ChannelReader, Message},
     storage::NativeStorage,
@@ -22,7 +18,6 @@ use crate::{
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    path: PathBuf,
     storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<Message>>,
@@ -48,11 +43,10 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        if self.failed || self.blob_session.failed.load(Ordering::Relaxed) {
-            return Err(failed());
-        }
+        crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
         self.failed = true;
-        let blob = crate::blob::create_blob(&self.path, self.blob_session.clone()).await?;
+        let blob =
+            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
         self.failed = false;
         Ok(blob)
     }
@@ -62,9 +56,7 @@ impl Writer for BlobDatasetWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        if self.failed || self.blob_session.failed.load(Ordering::Relaxed) {
-            return Err(failed());
-        }
+        crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
@@ -83,14 +75,14 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed
-            || self.blob_session.failed.load(Ordering::Relaxed)
-            || self.blob_session.active.load(Ordering::Relaxed) != 0
+        if let Err(error) = crate::validation::validate_blob_commit(self.failed, &self.blob_session)
         {
             let _ = self.abort().await;
-            return Err(backend(io::Error::other(
-                "writer failed or has unfinished blobs; session aborted",
-            )));
+            return Err(error);
+        }
+        if let Err(error) = self.blob_session.cleanup().await {
+            let _ = self.abort().await;
+            return Err(error);
         }
         let sender = self.sender.take().unwrap();
         // Channel closure is an error; only this marker permits native publication.
@@ -106,12 +98,14 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.blob_session.failed.store(true, Ordering::Relaxed);
+        self.blob_session.failed.store(true, Ordering::Release);
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
         let _ = self.task.await;
         if self.options.cleanup_on_error {
-            self.destination.cleanup().await?;
+            let blobs = self.blob_session.cleanup().await;
+            let directory = self.destination.cleanup().await;
+            return blobs.and(directory);
         }
         Ok(())
     }
@@ -123,7 +117,6 @@ impl BlobDatasetWriter {
         storage_schema: SchemaRef,
         encoding_schema: SchemaRef,
         destination: NativeStorage,
-        path: PathBuf,
         options: WriteOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
@@ -140,8 +133,7 @@ impl BlobDatasetWriter {
             schema,
             storage_schema,
             encoding_schema,
-            blob_session: Arc::new(crate::blob::BlobSession::default()),
-            path,
+            blob_session: Arc::new(crate::blob::BlobSession::new(destination.storage.clone())),
             sender: Some(sender),
             task,
             rows: 0,

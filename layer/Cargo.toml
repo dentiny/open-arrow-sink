@@ -7,14 +7,7 @@ repository.workspace = true
 description = "Composable layers for Arrow RecordBatch sinks"
 
 [dependencies]
-async-stream = "0.3"
-once_cell = "1"
-tokio = { workspace = true, features = ["sync"] }
-http = { version = "1" }
-url = { version = "2" }
-opendal = { version = "0.59.5", default-features = false, features = [
-  "services-http", "http-transport-reqwest", "executors-tokio", "layers-timeout", "layers-retry",
-] }
+open-arrow-sink-storage = { workspace = true, features = ["http"] }
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true

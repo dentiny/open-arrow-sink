@@ -1,90 +1,82 @@
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
+use crate::{error::backend, validation};
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
-use arrow_schema::{DataType, Schema};
-use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder, DedicatedBlobWriter};
-use lance_io::object_store::ObjectStore;
-use object_store::path::Path;
+use arrow_schema::Schema;
+use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, RecordBatch,
-    Result, SchemaRef, async_trait,
+    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result,
+    SchemaRef, async_trait,
 };
+use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
-use crate::error::backend;
-
-#[derive(Default)]
 pub(crate) struct BlobSession {
     pub failed: AtomicBool,
     pub active: AtomicUsize,
+    storage: Storage,
+    unattached: Mutex<HashSet<Url>>,
 }
-
-struct NativeBlob {
-    session: Arc<BlobSession>,
-    descriptor: BlobDescriptor,
-    path: std::path::PathBuf,
-    attached: AtomicBool,
-}
-
-impl Drop for NativeBlob {
-    fn drop(&mut self) {
-        if !self.attached.load(Ordering::Relaxed) {
-            let _ = std::fs::remove_file(&self.path);
+impl BlobSession {
+    pub fn new(storage: Storage) -> Self {
+        Self {
+            failed: AtomicBool::new(false),
+            active: AtomicUsize::new(0),
+            storage,
+            unattached: Mutex::default(),
         }
+    }
+    pub async fn cleanup(&self) -> Result<()> {
+        let files: Vec<_> = self.unattached.lock().unwrap().drain().collect();
+        for url in files {
+            self.storage.delete(&url).await?;
+        }
+        Ok(())
     }
 }
 
+pub(crate) struct NativeBlob {
+    pub session: Arc<BlobSession>,
+    pub descriptor: BlobDescriptor,
+    url: Url,
+}
+
 struct NativeBlobWriter {
-    inner: Option<DedicatedBlobWriter>,
+    inner: StorageWriter,
     session: Arc<BlobSession>,
-    path: std::path::PathBuf,
+    url: Url,
     relative: String,
     finished: bool,
     failed: bool,
 }
-
 impl Drop for NativeBlobWriter {
     fn drop(&mut self) {
-        self.session.active.fetch_sub(1, Ordering::Relaxed);
         if !self.finished {
-            self.session.failed.store(true, Ordering::Relaxed);
-            let _ = std::fs::remove_file(&self.path);
+            self.session.failed.store(true, Ordering::Release);
         }
+        self.session.active.fetch_sub(1, Ordering::Release);
     }
 }
-
 #[async_trait]
 impl BlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        if self.failed || self.session.failed.load(Ordering::Relaxed) {
-            return Err(Error::Unsupported(
-                "blob session failed; abort or drop it".into(),
-            ));
-        }
+        validation::validate_blob_state(self.failed, &self.session)?;
         self.failed = true;
-        if let Err(error) = self.inner.as_mut().unwrap().write(chunk.as_ref()).await {
-            self.session.failed.store(true, Ordering::Relaxed);
-            return Err(backend(error));
+        if let Err(error) = self.inner.write(chunk.bytes().clone()).await {
+            self.session.failed.store(true, Ordering::Release);
+            return Err(error);
         }
         self.failed = false;
         Ok(())
     }
-
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
-        if self.failed || self.session.failed.load(Ordering::Relaxed) {
-            return Err(Error::Unsupported(
-                "blob session failed; abort or drop it".into(),
-            ));
-        }
-        let descriptor = self.inner.take().unwrap().finish().await.map_err(backend)?;
-        let BlobDescriptor::Dedicated { size, .. } = descriptor else {
-            unreachable!()
-        };
+        validation::validate_blob_state(self.failed, &self.session)?;
+        let size = self.inner.close().await?;
         self.finished = true;
         Ok(BlobHandle::new(NativeBlob {
             session: self.session.clone(),
@@ -94,40 +86,30 @@ impl BlobWriter for NativeBlobWriter {
                 offset: 0,
                 size,
             },
-            path: self.path.clone(),
-            attached: AtomicBool::new(false),
+            url: self.url.clone(),
         }))
     }
-
-    async fn abort(self: Box<Self>) -> Result<()> {
-        drop(self);
-        Ok(())
+    async fn abort(mut self: Box<Self>) -> Result<()> {
+        let upload = self.inner.abort().await;
+        let file = self.session.storage.delete(&self.url).await;
+        upload.and(file)
     }
 }
 
 pub(crate) async fn create_blob(
-    root: &std::path::Path,
+    directory: &Url,
     session: Arc<BlobSession>,
 ) -> Result<Box<dyn BlobWriter>> {
-    let data_path = root
-        .join("_blobs")
-        .join(format!("{}.lance", uuid::Uuid::new_v4()));
-    let data_path = Path::from_absolute_path(data_path).map_err(backend)?;
-    let inner = DedicatedBlobWriter::try_new(ObjectStore::local(), data_path, 1)
-        .await
-        .map_err(backend)?;
-    let path = std::path::PathBuf::from("/").join(inner.path().as_ref());
-    let relative = path
-        .strip_prefix(root)
-        .map_err(backend)?
-        .to_str()
-        .ok_or_else(|| Error::Unsupported("blob path must be UTF-8".into()))?
-        .replace('\\', "/");
+    let relative = format!("_blobs/{}.blob", uuid::Uuid::new_v4());
+    let url = directory.join(&relative).unwrap();
+    // Retain ownership before opening: cancellation can leave an object behind.
+    session.unattached.lock().unwrap().insert(url.clone());
+    let inner = session.storage.writer(&url).await?;
     session.active.fetch_add(1, Ordering::Relaxed);
     Ok(Box::new(NativeBlobWriter {
-        inner: Some(inner),
+        inner,
         session,
-        path,
+        url,
         relative,
         finished: false,
         failed: false,
@@ -135,6 +117,7 @@ pub(crate) async fn create_blob(
 }
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
+    crate::validation::validate_blob_schema(schema)?;
     let mut has_blobs = false;
     let fields = schema
         .fields()
@@ -142,12 +125,6 @@ pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
         .map(|field| {
             if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
                 return Ok(field.clone());
-            }
-            if field.data_type() != &DataType::LargeBinary {
-                return Err(Error::Unsupported(format!(
-                    "blob column must be LargeBinary: {}",
-                    field.name()
-                )));
             }
             has_blobs = true;
             let native = BlobDescriptorArrayBuilder::new(field.name())
@@ -175,44 +152,7 @@ pub(crate) fn storage_batch(
     blobs: Vec<BlobPlacement>,
     session: &Arc<BlobSession>,
 ) -> Result<RecordBatch> {
-    let mut placements = HashMap::new();
-    for blob in blobs {
-        let Some(field) = batch.schema_ref().fields().get(blob.column) else {
-            return Err(Error::Unsupported("blob column out of bounds".into()));
-        };
-        if blob.row >= batch.num_rows()
-            || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
-        {
-            return Err(Error::Unsupported(
-                "blob placement must target a blob-marked cell".into(),
-            ));
-        }
-        let array = batch
-            .column(blob.column)
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .ok_or_else(|| Error::Unsupported("blob column must be LargeBinary".into()))?;
-        if array.is_null(blob.row) || !array.value(blob.row).is_empty() {
-            return Err(Error::Unsupported(
-                "blob placement must replace an empty non-null payload".into(),
-            ));
-        }
-        let native = blob
-            .blob
-            .downcast_ref::<NativeBlob>()
-            .ok_or_else(|| Error::Unsupported("foreign blob handle".into()))?;
-        if !Arc::ptr_eq(&native.session, session) {
-            return Err(Error::Unsupported(
-                "blob handle belongs to another session".into(),
-            ));
-        }
-        if placements
-            .insert((blob.column, blob.row), blob.blob)
-            .is_some()
-        {
-            return Err(Error::Unsupported("duplicate blob placement".into()));
-        }
-    }
+    let placements = crate::validation::validate_blob_placements(&batch, blobs, session)?;
     let columns = batch
         .columns()
         .iter()
@@ -250,11 +190,8 @@ pub(crate) fn storage_batch(
     let output =
         RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(backend)?;
     for handle in placements.values() {
-        handle
-            .downcast_ref::<NativeBlob>()
-            .unwrap()
-            .attached
-            .store(true, Ordering::Relaxed);
+        let native = handle.downcast_ref::<NativeBlob>().unwrap();
+        session.unattached.lock().unwrap().remove(&native.url);
     }
     Ok(output)
 }

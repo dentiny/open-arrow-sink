@@ -4189,15 +4189,11 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
- "async-stream",
  "async-trait",
  "futures",
- "http",
- "once_cell",
  "open-arrow-sink-core",
- "opendal",
+ "open-arrow-sink-storage",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -4221,9 +4217,11 @@ dependencies = [
 name = "open-arrow-sink-storage"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "bytes",
  "futures",
  "http",
+ "once_cell",
  "open-arrow-sink-core",
  "opendal",
  "percent-encoding",

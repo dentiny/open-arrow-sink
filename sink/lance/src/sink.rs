@@ -71,14 +71,12 @@ impl Sink for LanceDatasetSink {
             let encoding_schema =
                 crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
             let mut destination = self.resolve(url)?;
-            let path = destination.local_path()?;
             destination.prepare(&encoding_schema, options.mode).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
                 storage_schema,
                 encoding_schema,
                 destination,
-                path,
                 options,
             )));
         }
@@ -101,11 +99,7 @@ impl ParallelSink for LanceDatasetSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
-        if crate::blob::storage_schema(&schema)? != schema {
-            return Err(open_arrow_sink_core::Error::Unsupported(
-                "parallel sessions do not support blob-marked columns".into(),
-            ));
-        }
+        crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = writer_schema(&schema, &options.compression);
         let mut destination = self.resolve(url)?;
         destination.prepare(&encoding_schema, options.mode).await?;
