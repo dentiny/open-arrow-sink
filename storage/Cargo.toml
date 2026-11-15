@@ -15,6 +15,8 @@ azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
 [dependencies]
 bytes = "1"
 futures.workspace = true
+http = "1"
+tokio = { workspace = true, features = ["sync"] }
 open-arrow-sink-core.workspace = true
 opendal = { version = "0.59.2", default-features = false, features = [
   "auto-register-services",
