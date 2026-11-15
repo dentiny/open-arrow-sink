@@ -29,46 +29,29 @@ impl OpenDalStorageFactory {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
     }
 }
-#[derive(Clone, Debug)]
-struct OpenDalStorage {
-    storage: Storage,
-}
 
 // Operators can contain live credentials, custom layers, or shared memory state.
 // Reconstructing a fresh operator on deserialize would silently change storage.
-macro_rules! runtime_only {
-    ($type:ty) => {
-        impl serde::Serialize for $type {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                _: S,
-            ) -> std::result::Result<S::Ok, S::Error> {
-                Err(crate::error::operator_serialization())
-            }
-        }
-        impl<'de> serde::Deserialize<'de> for $type {
-            fn deserialize<D: serde::Deserializer<'de>>(
-                _: D,
-            ) -> std::result::Result<Self, D::Error> {
-                Err(crate::error::operator_deserialization())
-            }
-        }
-    };
+impl serde::Serialize for OpenDalStorageFactory {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
+        Err(crate::error::operator_serialization())
+    }
 }
-runtime_only!(OpenDalStorageFactory);
-runtime_only!(OpenDalStorage);
+impl<'de> serde::Deserialize<'de> for OpenDalStorageFactory {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> std::result::Result<Self, D::Error> {
+        Err(crate::error::operator_deserialization())
+    }
+}
 
 #[typetag::serde(name = "open-arrow-sink-opendal-factory")]
 impl StorageFactory for OpenDalStorageFactory {
     fn build(&self, _: &StorageConfig) -> Result<Arc<dyn IcebergStorage>> {
-        Ok(Arc::new(OpenDalStorage {
-            storage: self.storage.clone(),
-        }))
+        Ok(Arc::new(self.clone()))
     }
 }
 #[async_trait]
 #[typetag::serde(name = "open-arrow-sink-opendal")]
-impl IcebergStorage for OpenDalStorage {
+impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
         self.storage.exists(&location(path)?).await.map_err(backend)
     }
