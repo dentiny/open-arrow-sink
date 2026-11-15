@@ -13,3 +13,6 @@ mod download_pool;
 mod error;
 #[cfg(feature = "download-blob")]
 pub use download_pool::DownloadPool;
+
+#[cfg(feature = "download-blob")]
+mod validation;

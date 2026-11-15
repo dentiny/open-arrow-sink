@@ -8,16 +8,22 @@ use futures::{
     stream::{self, BoxStream},
 };
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Error, Result};
+use open_arrow_sink_core::{BlobChunk, Result};
 use opendal::{
     Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, raw::Layer, services::Http,
 };
 use tokio::sync::Semaphore;
 
-use crate::error::{backend, failure};
+use crate::{error::backend, validation};
 
+// These are tuning defaults, not benchmark-established optimal values.
+// Default maximum number of active download streams across the shared pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+// Default shared transfer-buffer budget: 64 MiB, including consumer-held chunks.
+// Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
 const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+// Maximum buffer allocated for each read: 64 KiB, capped by the pool budget.
+// Smaller chunks trade more read/allocation overhead for finer buffering granularity.
 const CHUNK_BYTES: usize = 64 * 1024;
 
 /// Shared streaming downloads with concurrency and payload-buffer budgets.
@@ -39,13 +45,7 @@ pub struct DownloadPool {
 
 impl DownloadPool {
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
-        if concurrency.get() > Semaphore::MAX_PERMITS
-            || max_buffered_bytes.get() > Semaphore::MAX_PERMITS
-        {
-            return Err(Error::Unsupported(
-                "download pool limits exceed semaphore capacity".into(),
-            ));
-        }
+        validation::validate_download_pool_limits(concurrency, max_buffered_bytes)?;
         opendal::install_default();
         let operator =
             Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
@@ -90,15 +90,7 @@ impl DownloadPool {
         self: &Arc<Self>,
         source: &str,
     ) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let mut url = url::Url::parse(source).map_err(|_| failure("invalid blob URL"))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(failure("blob URL must use HTTP or HTTPS"));
-        }
-        url.set_fragment(None);
-        let uri: Uri = url
-            .as_str()
-            .parse()
-            .map_err(|_| failure("invalid blob URL"))?;
+        let uri = validation::validate_download_url(source)?;
         let request = self
             .requests
             .clone()
