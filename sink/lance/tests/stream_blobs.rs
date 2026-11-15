@@ -120,3 +120,50 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up() {
         }
     }
 }
+
+#[tokio::test]
+async fn overwrite_abort_removes_attached_session_blobs() {
+    let storage = storage();
+    let url = storage.url("existing/").unwrap();
+    let sink = LanceDatasetSink::new(storage.clone());
+    sink.open(url.clone(), input().schema(), options())
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let mut writer = sink
+        .open(
+            url.clone(),
+            input().schema(),
+            WriteOptions {
+                mode: open_arrow_sink_core::WriteMode::Overwrite,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new("payload")).await.unwrap();
+    writer
+        .write_with_blobs(
+            input(),
+            vec![BlobPlacement {
+                column: 0,
+                row: 0,
+                blob: blob.finish().await.unwrap(),
+            }],
+        )
+        .await
+        .unwrap();
+    writer.abort().await.unwrap();
+    assert!(
+        storage
+            .list(&url.join("_blobs/").unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 0);
+}

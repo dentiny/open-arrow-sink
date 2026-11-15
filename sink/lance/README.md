@@ -128,7 +128,9 @@ buffering the full payload to select inline or packed storage. Materialized bina
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session. Abort or a rejected commit removes a freshly reserved dataset
-when `cleanup_on_error` is enabled; existing datasets are preserved.
+when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
+owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
+streamed blobs when appending to or overwriting an existing dataset.
 
 ## Compression
 
