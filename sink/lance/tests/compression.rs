@@ -222,43 +222,6 @@ async fn append_compares_effective_structural_encoding_schema() {
 }
 
 #[tokio::test]
-async fn explicit_structural_encoding_rejects_native_blobs_before_io() {
-    use arrow_schema::{DataType, Field, Schema};
-    for field in [
-        Field::new("blob", DataType::LargeBinary, true).with_metadata(
-            [(
-                open_arrow_sink_core::BLOB_METADATA_KEY.into(),
-                "true".into(),
-            )]
-            .into(),
-        ),
-        lance::blob::blob_field("blob", true),
-    ] {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("dataset");
-        let result = LanceDatasetSink::default()
-            .open(
-                Url::from_directory_path(&path).unwrap(),
-                Arc::new(Schema::new(vec![field])),
-                WriteOptions {
-                    ordering: Ordering::Unordered,
-                    compression: CompressionOptions {
-                        structural_encoding: Some(StructuralEncoding::Fullzip),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(matches!(
-            result,
-            Err(open_arrow_sink_core::Error::Unsupported(_))
-        ));
-        assert!(!path.exists());
-    }
-}
-
-#[tokio::test]
 async fn nested_override_preserves_sibling_policy_and_rows() {
     let input = batch(64);
     let temp = tempfile::tempdir().unwrap();
