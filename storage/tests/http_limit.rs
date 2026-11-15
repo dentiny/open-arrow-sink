@@ -153,8 +153,9 @@ async fn eof_errors_and_cancellation_release_capacity() {
     assert!(transport.fetch(request("/")).await.is_ok());
 }
 
-#[test]
-fn invalid_budgets_are_rejected() {
-    assert!(HttpConcurrencyLimitLayer::new(0).is_err());
-    assert!(HttpConcurrencyLimitLayer::new(tokio::sync::Semaphore::MAX_PERMITS + 1).is_err());
+#[rstest::rstest]
+#[case::zero(0)]
+#[case::above_capacity(tokio::sync::Semaphore::MAX_PERMITS + 1)]
+fn invalid_budgets_are_rejected(#[case] limit: usize) {
+    assert!(HttpConcurrencyLimitLayer::new(limit).is_err());
 }

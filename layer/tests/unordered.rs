@@ -214,49 +214,45 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
     assert_eq!((state.committed, state.rows, state.finished), (1, 9, 3));
 }
 
+#[rstest::rstest]
+#[case::preserve_input(WriteOptions::default())]
+#[case::zero_target(WriteOptions { target_file_size: Some(0), ..options() })]
 #[tokio::test]
-async fn rejects_preserve_order_and_invalid_size_before_open() {
+async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: WriteOptions) {
     let state = Arc::new(Mutex::new(State::default()));
-    for options in [
-        WriteOptions::default(),
-        WriteOptions {
-            target_file_size: Some(0),
-            ..options()
-        },
-    ] {
-        assert!(
-            sink(&state)
-                .open((), batch().schema(), options)
-                .await
-                .is_err()
-        );
-    }
+    assert!(
+        sink(&state)
+            .open((), batch().schema(), options)
+            .await
+            .is_err()
+    );
     assert_eq!(state.lock().unwrap().opened, 0);
 }
 
+#[rstest::rstest]
+#[case::commit(false)]
+#[case::abort(true)]
 #[tokio::test]
-async fn commit_drains_writes_and_abort_discards_them() {
-    for abort in [false, true] {
-        let state = Arc::new(Mutex::new(State::default()));
-        let batch = batch();
-        let mut writer = sink(&state)
-            .open((), batch.schema(), options())
-            .await
-            .unwrap();
-        writer.write(batch).await.unwrap();
-        release(&state);
-        if abort {
-            writer.abort().await.unwrap();
-        } else {
-            assert_eq!(writer.commit().await.unwrap().rows_written, 3);
-        }
-        let state = state.lock().unwrap();
-        assert_eq!(state.finished, 1);
-        assert_eq!(
-            (state.committed, state.aborted),
-            if abort { (0, 2) } else { (1, 0) }
-        );
+async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
+    let state = Arc::new(Mutex::new(State::default()));
+    let batch = batch();
+    let mut writer = sink(&state)
+        .open((), batch.schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    release(&state);
+    if abort {
+        writer.abort().await.unwrap();
+    } else {
+        assert_eq!(writer.commit().await.unwrap().rows_written, 3);
     }
+    let state = state.lock().unwrap();
+    assert_eq!(state.finished, 1);
+    assert_eq!(
+        (state.committed, state.aborted),
+        if abort { (0, 2) } else { (1, 0) }
+    );
 }
 
 #[tokio::test]
@@ -407,25 +403,28 @@ async fn finish_failure_aborts_even_successfully_finished_writers_without_public
     );
 }
 
+#[rstest::rstest]
+#[case::wrong_schema(false)]
+#[case::wrong_count(true)]
 #[tokio::test]
-async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted() {
-    for wrong_count in [false, true] {
-        let state = Arc::new(Mutex::new(State {
-            wrong_count,
-            wrong_schema: !wrong_count,
-            ..Default::default()
-        }));
-        assert!(
-            sink(&state)
-                .open((), batch().schema(), options())
-                .await
-                .is_err()
-        );
-        let state = state.lock().unwrap();
-        assert_eq!(state.aborted, state.opened);
-        assert_eq!(state.session_aborted, 1);
-        assert_eq!(state.commit_attempts, 0);
-    }
+async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted(
+    #[case] wrong_count: bool,
+) {
+    let state = Arc::new(Mutex::new(State {
+        wrong_count,
+        wrong_schema: !wrong_count,
+        ..Default::default()
+    }));
+    assert!(
+        sink(&state)
+            .open((), batch().schema(), options())
+            .await
+            .is_err()
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.aborted, state.opened);
+    assert_eq!(state.session_aborted, 1);
+    assert_eq!(state.commit_attempts, 0);
 }
 
 #[tokio::test]
@@ -486,41 +485,44 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
     assert_eq!(state.lock().unwrap().opened, opened);
 }
 
+#[rstest::rstest]
+#[case::preserving_sink_preserve_input(false, Ordering::PreserveInput)]
+#[case::preserving_sink_unordered(false, Ordering::Unordered)]
+#[case::unordered_sink_preserve_input(true, Ordering::PreserveInput)]
+#[case::unordered_sink_unordered(true, Ordering::Unordered)]
 #[tokio::test]
-async fn ordering_layer_parallel_open_respects_inner_ordering_capability() {
-    for unordered in [false, true] {
-        for requested in [Ordering::PreserveInput, Ordering::Unordered] {
-            let state = Arc::new(Mutex::new(State {
-                unordered,
-                ..State::default()
-            }));
-            let sink =
-                TestSink(state.clone()).layer(open_arrow_sink_layer::OrderingLayer::new(requested));
-            let result = sink
-                .open_writers(
-                    (),
-                    Arc::new(arrow_schema::Schema::empty()),
-                    WriteOptions {
-                        ordering: if requested == Ordering::PreserveInput {
-                            Ordering::Unordered
-                        } else {
-                            Ordering::PreserveInput
-                        },
-                        ..WriteOptions::default()
-                    },
-                    NonZeroUsize::MIN,
-                )
-                .await;
-            let supported = !unordered || requested == Ordering::Unordered;
-            assert_eq!(result.is_ok(), supported, "{unordered:?}, {requested:?}");
-            assert_eq!(state.lock().unwrap().opened, usize::from(supported));
-            if let Ok(session) = result {
-                assert_eq!(state.lock().unwrap().requested_ordering, Some(requested));
-                for writer in session.writers {
-                    writer.abort().await.unwrap();
-                }
-                session.committer.abort().await.unwrap();
-            }
+async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
+    #[case] unordered: bool,
+    #[case] requested: Ordering,
+) {
+    let state = Arc::new(Mutex::new(State {
+        unordered,
+        ..State::default()
+    }));
+    let sink = TestSink(state.clone()).layer(open_arrow_sink_layer::OrderingLayer::new(requested));
+    let result = sink
+        .open_writers(
+            (),
+            Arc::new(arrow_schema::Schema::empty()),
+            WriteOptions {
+                ordering: if requested == Ordering::PreserveInput {
+                    Ordering::Unordered
+                } else {
+                    Ordering::PreserveInput
+                },
+                ..WriteOptions::default()
+            },
+            NonZeroUsize::MIN,
+        )
+        .await;
+    let supported = !unordered || requested == Ordering::Unordered;
+    assert_eq!(result.is_ok(), supported, "{unordered:?}, {requested:?}");
+    assert_eq!(state.lock().unwrap().opened, usize::from(supported));
+    if let Ok(session) = result {
+        assert_eq!(state.lock().unwrap().requested_ordering, Some(requested));
+        for writer in session.writers {
+            writer.abort().await.unwrap();
         }
+        session.committer.abort().await.unwrap();
     }
 }

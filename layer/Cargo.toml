@@ -15,5 +15,5 @@ async-trait.workspace = true
 futures.workspace = true
 
 [dev-dependencies]
-futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "net", "io-util", "time"] }
+rstest.workspace = true

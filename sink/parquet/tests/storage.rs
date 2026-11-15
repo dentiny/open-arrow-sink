@@ -28,30 +28,31 @@ fn options() -> WriteOptions {
     }
 }
 
+#[rstest::rstest]
+#[case::cleanup(true)]
+#[case::keep(false)]
 #[tokio::test]
-async fn shared_storage_abort_and_keep_policy() {
-    for cleanup_on_error in [true, false] {
-        let storage = storage();
-        let directory = storage.url("output/").unwrap();
-        let mut writer = ParquetDirectorySink::new(storage.clone())
-            .open(
-                directory.clone(),
-                batch().schema(),
-                WriteOptions {
-                    cleanup_on_error,
-                    ..options()
-                },
-            )
-            .await
-            .unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.write(batch()).await.unwrap();
-        writer.abort().await.unwrap();
-        assert_eq!(
-            storage.list(&directory).await.unwrap().is_empty(),
-            cleanup_on_error
-        );
-    }
+async fn shared_storage_abort_and_keep_policy(#[case] cleanup_on_error: bool) {
+    let storage = storage();
+    let directory = storage.url("output/").unwrap();
+    let mut writer = ParquetDirectorySink::new(storage.clone())
+        .open(
+            directory.clone(),
+            batch().schema(),
+            WriteOptions {
+                cleanup_on_error,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.abort().await.unwrap();
+    assert_eq!(
+        storage.list(&directory).await.unwrap().is_empty(),
+        cleanup_on_error
+    );
 }
 
 #[tokio::test]

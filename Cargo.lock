@@ -3867,6 +3867,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "more-asserts"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fafa6961cabd9c63bcd77a45d7e3b7f3b552b70417831fb0f56db717e72407e"
+
+[[package]]
 name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4175,6 +4181,7 @@ dependencies = [
  "lance-io",
  "lance-linalg",
  "lance-table",
+ "more-asserts",
  "object_store 0.14.2",
  "object_store_opendal",
  "open-arrow-sink-core",
@@ -4196,6 +4203,7 @@ dependencies = [
  "futures",
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
+ "rstest",
  "tokio",
 ]
 
@@ -4224,10 +4232,12 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "more-asserts",
  "once_cell",
  "open-arrow-sink-core",
  "opendal",
  "percent-encoding",
+ "rstest",
  "tempfile",
  "tokio",
  "url",
