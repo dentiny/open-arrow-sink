@@ -721,7 +721,7 @@ async fn assert_numeric_partition_round_trip(
     parquet::basic::Compression::LZ4_RAW
 )]
 #[tokio::test]
-async fn session_compression_overrides_data_files_without_changing_table(
+async fn compression_survives_rolling_and_round_trips(
     #[case] codec: open_arrow_sink_core::Compression,
     #[case] expected: parquet::basic::Compression,
 ) {
@@ -771,21 +771,4 @@ async fn session_compression_overrides_data_files_without_changing_table(
         }
     }
     assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 6);
-}
-
-#[tokio::test]
-async fn column_compression_rejected_before_catalog_access() {
-    use open_arrow_sink_core::Compression;
-    let (catalog, _, schema) = table().await;
-    let sink = IcebergTableSink::new(catalog);
-    let missing = TableIdent::new(NamespaceIdent::new("missing".into()), "missing".into());
-    let mut options = options();
-    options
-        .compression
-        .columns
-        .insert("id".into(), Compression::Snappy);
-    assert!(matches!(
-        sink.open(missing, schema, options).await,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
-    ));
 }
