@@ -17,12 +17,12 @@ pub(crate) async fn validate_append_directory(
 ) -> Result<()> {
     let mut exact = directory.clone();
     exact.path_segments_mut().unwrap().pop_if_empty();
-    let exact_exists = storage.exists(&exact).await?;
-    if exact_exists && !storage.stat(&exact).await?.is_dir() {
+    let metadata = storage.stat_optional(&exact).await?;
+    if metadata.as_ref().is_some_and(|metadata| !metadata.is_dir()) {
         return Err(error::not_directory());
     }
     let files = storage.list(directory).await?;
-    if !exact_exists && files.is_empty() && !storage.exists(directory).await? {
+    if metadata.is_none() && files.is_empty() && !storage.exists(directory).await? {
         return Err(error::missing_directory());
     }
     for file in files {
