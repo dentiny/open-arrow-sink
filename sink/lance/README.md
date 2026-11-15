@@ -219,3 +219,18 @@ existing manifest's format for an existing dataset. An explicit version is passe
 to Lance for create, append, and overwrite, including parallel and blob writers.
 Appending with an explicit version affects the new files and preserves the manifest's
 default version. This selects the file format, independently of the dataset's commit version.
+
+## Upload buffering
+
+Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
+sink to control the native data-file and sidecar multipart upload buffers, as
+well as streamed blob uploads through the shared storage writer. A 16 MiB part
+size matches the conversion service's default. Conditional manifest writes retain
+the ordinary OpenDAL adapter; multipart parts preserve their submission order.
+
+Native logical blob fields built with `lance::blob::blob_field_with_options`
+and `BlobArrayBuilder` are also accepted as ordinary Arrow input. This exposes
+Lance's inline and dedicated size thresholds without a sink-specific schema
+option. Native per-field metadata, including
+`lance-encoding:structural-encoding` (`miniblock` or `fullzip`), is preserved.
+Managed blob streams retain their dedicated streaming-storage behavior.

@@ -29,7 +29,7 @@ fn write_options() -> WriteOptions {
 #[tokio::test]
 async fn shared_operator_commit_indexes_and_read_back() {
     use lance::index::DatasetIndexExt;
-    let storage = storage();
+    let storage = storage().with_upload_part_size(NonZeroUsize::new(16 * 1024 * 1024).unwrap());
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("雪 output%20/").unwrap();
     let options = WriteOptions {

@@ -4167,6 +4167,8 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "bytes",
+ "futures",
  "lance",
  "lance-file",
  "lance-index",

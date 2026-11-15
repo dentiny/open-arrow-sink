@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{num::NonZeroUsize, ops::Range};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -19,6 +19,7 @@ pub struct Storage {
     operator: Operator,
     base_url: Url,
     http_concurrency_limit: HttpConcurrencyLimitLayer,
+    upload_part_size: Option<NonZeroUsize>,
 }
 
 impl Storage {
@@ -35,6 +36,7 @@ impl Storage {
             operator,
             base_url,
             http_concurrency_limit: HttpConcurrencyLimitLayer::default(),
+            upload_part_size: None,
         })
     }
 
@@ -88,6 +90,17 @@ impl Storage {
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
         self.http_concurrency_limit = limit;
         self
+    }
+
+    /// Configure buffering for streaming uploads. OpenDAL applies the backend's
+    /// part-size limits; clones and sink adapters retain this setting.
+    pub fn with_upload_part_size(mut self, size: NonZeroUsize) -> Self {
+        self.upload_part_size = Some(size);
+        self
+    }
+
+    pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
+        self.upload_part_size
     }
 
     pub fn base_url(&self) -> &Url {
@@ -195,7 +208,10 @@ impl Storage {
         let operator = self.operator();
         let writer = operator
             .writer_with(&path)
-            .chunk(5 * 1024 * 1024)
+            .chunk(
+                self.upload_part_size
+                    .map_or(5 * 1024 * 1024, NonZeroUsize::get),
+            )
             .concurrent(1)
             .await
             .map_err(|error| map_error("open", &path, error))?;
