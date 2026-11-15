@@ -322,7 +322,7 @@ let sink = LanceDatasetSink::default().layer(
 # }
 ```
 
-Enable both `sink-lance` and `layer-download-blob` for this example. Input batch
+`DownloadBlobLayer` is always available. Enable `sink-lance` for this example. Input batch
 boundaries, row order, nulls, and metadata are preserved by the layer; the final
 sink's ordering guarantee still applies. There is no per-blob size limit or
 separate output batch size. Payloads larger than the shared buffer budget stream

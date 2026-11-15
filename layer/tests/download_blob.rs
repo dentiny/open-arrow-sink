@@ -1,5 +1,3 @@
-#![cfg(feature = "download-blob")]
-
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},

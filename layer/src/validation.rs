@@ -25,7 +25,6 @@ pub(crate) fn validate_writer_state(failed: bool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "download-blob")]
 pub(crate) fn validate_download_config(
     schema: &arrow_schema::Schema,
     columns: &std::collections::HashSet<String>,
@@ -57,14 +56,12 @@ pub(crate) fn validate_download_config(
     Ok(indices)
 }
 
-#[cfg(feature = "download-blob")]
 pub(crate) fn validate_download_support(selected: bool, supported: bool) -> Result<()> {
     if selected && !supported {
         return Err(error::streaming_blobs_required());
     }
     Ok(())
 }
-#[cfg(feature = "download-blob")]
 pub(crate) fn validate_download_writer(failed: bool) -> Result<()> {
     if failed {
         return Err(error::download_failed());
