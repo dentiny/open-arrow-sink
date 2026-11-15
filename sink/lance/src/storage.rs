@@ -5,7 +5,7 @@ use lance::{
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -16,12 +16,20 @@ pub(crate) struct NativeStorage {
     reserved: bool,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, url: Url) -> Result<Self> {
+    pub fn new(storage: Storage, url: Url, sources: StorageResolver) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
-        session
-            .store_registry()
-            .insert(url.scheme(), Arc::new(Provider(storage.clone())));
+        let provider = Arc::new(Provider {
+            destination: storage.clone(),
+            sources: sources.clone(),
+        });
+        for scheme in ["file", "s3", "http", "https", "gs", "az", "abfs", "abfss"]
+            .into_iter()
+            .chain(sources.schemes())
+            .chain(std::iter::once(url.scheme()))
+        {
+            session.store_registry().insert(scheme, provider.clone());
+        }
         Ok(Self {
             storage,
             url,

@@ -88,7 +88,7 @@ async fn streaming_limits_and_cleanup() {
         }
         drop(download);
         assert_eq!(body, BODY);
-        for source in ["not a URL", "file:///tmp/blob"] {
+        for source in ["not a URL", "unsupported:///tmp/blob"] {
             assert!(first.stream(source).await.is_err());
         }
         let mut missing = first.stream(&format!("{url}/missing")).await.unwrap();
@@ -126,6 +126,19 @@ async fn streaming_limits_and_cleanup() {
         }
         assert_eq!(bytes, BODY);
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        drop(retried);
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("source.bin");
+        std::fs::write(&file, BODY).unwrap();
+        let uri = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
+        let mut local = first.stream(uri.as_str()).await.unwrap();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = local.try_next().await.unwrap() {
+            assert_le!(chunk.as_ref().len(), 8);
+            bytes.extend_from_slice(chunk.as_ref());
+        }
+        assert_eq!(bytes, BODY);
+        assert_eq!(first.buffered_bytes(), 0);
     })
     .await
     .expect("download pool test stalled");

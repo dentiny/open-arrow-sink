@@ -282,3 +282,18 @@ the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 [Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
 [Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
 [Extend a sink](../../docs/extending-sinks.md)
+
+### Independent blob sources
+
+Native URI ingestion resolves source stores independently of the destination.
+URL-configured file, HTTP(S), and enabled cloud sources are cached for the session.
+Use `LanceDatasetSink::with_source_storage(storage)` for each source requiring a
+custom endpoint, credentials, or operator. The destination store takes precedence
+inside its own namespace; source stores use the most specific configured root.
+Credentials are never copied from the destination to an unrelated bucket/host.
+Signed HTTP URLs should use `DownloadBlobLayer`, which preserves their query.
+
+`DownloadPool::with_source_storage` also configures non-HTTP source stores.
+Its `stream` method accepts file and enabled cloud URLs in addition to HTTP(S),
+with the same transfer-buffer budget and active-stream limit. Policies on
+explicit source stores are retained; `with_layer` configures the HTTP downloader.

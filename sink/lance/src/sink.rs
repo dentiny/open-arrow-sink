@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
@@ -13,20 +13,27 @@ use crate::{storage::NativeStorage, validation::validate_options, write_options}
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
+    sources: StorageResolver,
 }
 
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
+            sources: StorageResolver::default(),
         }
+    }
+    /// Configure an independent source namespace for native external blob ingestion.
+    pub fn with_source_storage(mut self, storage: Storage) -> Self {
+        self.sources = self.sources.with_storage(storage);
+        self
     }
     fn resolve(&self, url: Url) -> Result<NativeStorage> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         };
-        NativeStorage::new(storage, url)
+        NativeStorage::new(storage, url, self.sources.clone())
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
