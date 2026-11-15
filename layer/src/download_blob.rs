@@ -136,6 +136,11 @@ fn url_value(array: &dyn Array, row: usize) -> &str {
         _ => unreachable!("validated at open"),
     }
 }
+struct DownloadedBlob {
+    placement: BlobPlacement,
+    bytes_read: u64,
+}
+
 async fn download(
     pool: Arc<DownloadPool>,
     url: String,
@@ -143,7 +148,7 @@ async fn download(
     name: String,
     column: usize,
     row: usize,
-) -> Result<(BlobPlacement, u64)> {
+) -> Result<DownloadedBlob> {
     let result = async {
         let mut stream = pool.stream(&url).await?;
         let mut bytes = 0;
@@ -152,18 +157,18 @@ async fn download(
             bytes += chunk.as_ref().len() as u64;
             native.write(chunk).await?;
         }
-        Ok((native.finish().await?, bytes))
+        Ok(DownloadedBlob {
+            placement: BlobPlacement {
+                column,
+                row,
+                blob: native.finish().await?,
+            },
+            bytes_read: bytes,
+        })
     }
     .await
     .map_err(|error| error::download_context(&name, row, error))?;
-    Ok((
-        BlobPlacement {
-            column,
-            row,
-            blob: result.0,
-        },
-        result.1,
-    ))
+    Ok(result)
 }
 #[async_trait]
 impl Writer for DownloadBlobWriter {
@@ -213,9 +218,9 @@ impl Writer for DownloadBlobWriter {
                 }
                 match active.next().await {
                     Some(result) => {
-                        let (blob, bytes) = result?;
-                        self.bytes_downloaded += bytes;
-                        blobs.push(blob);
+                        let downloaded = result?;
+                        self.bytes_downloaded += downloaded.bytes_read;
+                        blobs.push(downloaded.placement);
                     }
                     None => break,
                 }
