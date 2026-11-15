@@ -257,41 +257,29 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows() {
 }
 
 #[tokio::test]
-async fn request_timeout_and_cancellation_prevent_commit() {
+async fn cancellation_prevents_commit() {
     let server = server(
         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
         Duration::from_secs(60),
     )
     .await;
-    for cancel in [false, true] {
-        let capture = Capture::default();
-        let batch = batch(vec![Some(&server.url)]);
-        let timeout = if cancel {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_millis(20)
-        };
-        let mut writer = capture
-            .clone()
-            .layer(
-                DownloadBlobLayer::new(["url"].map(str::to_owned).into_iter().collect())
-                    .with_timeout(timeout),
-            )
-            .open((), batch.schema(), WriteOptions::default())
+    let capture = Capture::default();
+    let batch = batch(vec![Some(&server.url)]);
+    let mut writer = capture
+        .clone()
+        .layer(DownloadBlobLayer::new(
+            ["url"].map(str::to_owned).into_iter().collect(),
+        ))
+        .open((), batch.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), writer.write(batch))
             .await
-            .unwrap();
-        if cancel {
-            assert!(
-                tokio::time::timeout(Duration::from_millis(20), writer.write(batch))
-                    .await
-                    .is_err()
-            );
-        } else {
-            assert!(writer.write(batch).await.is_err());
-        }
-        assert!(writer.commit().await.is_err());
-        assert!(capture.0.lock().unwrap().aborted);
-    }
+            .is_err()
+    );
+    assert!(writer.commit().await.is_err());
+    assert!(capture.0.lock().unwrap().aborted);
 }
 
 #[tokio::test]

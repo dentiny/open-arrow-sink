@@ -1,4 +1,4 @@
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{
     Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
@@ -24,7 +24,6 @@ pub struct DownloadBlobLayer {
     columns: HashSet<String>,
     max_blob_bytes: NonZeroUsize,
     rows_per_batch: NonZeroUsize,
-    timeout: Duration,
 }
 
 impl DownloadBlobLayer {
@@ -34,7 +33,6 @@ impl DownloadBlobLayer {
             columns,
             max_blob_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
             rows_per_batch: NonZeroUsize::new(16).unwrap(),
-            timeout: Duration::from_secs(30),
         }
     }
 
@@ -46,12 +44,6 @@ impl DownloadBlobLayer {
     /// Bounds output buffering by rows, independently of the caller's batch size.
     pub fn with_rows_per_batch(mut self, rows: NonZeroUsize) -> Self {
         self.rows_per_batch = rows;
-        self
-    }
-
-    /// Total timeout for each request, including the response body. Must be positive.
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
         self
     }
 }
@@ -88,7 +80,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     ) -> Result<Box<dyn Writer>> {
         // Inner layers may override options (for example OrderingLayer), so leave
         // shared option validation to the inner sink, as RebatchLayer does.
-        let indices = validate_download_config(&schema, &self.config.columns, self.config.timeout)?;
+        let indices = validate_download_config(&schema, &self.config.columns)?;
         let mut fields = schema.fields().to_vec();
         for &index in &indices {
             let field = schema.field(index);
@@ -104,10 +96,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             );
         }
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
-        let client = reqwest::Client::builder()
-            .timeout(self.config.timeout)
-            .build()
-            .map_err(backend)?;
+        let client = reqwest::Client::builder().build().map_err(backend)?;
         let inner = self
             .inner
             .open(request, output_schema.clone(), options)

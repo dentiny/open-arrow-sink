@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{Error, Result};
@@ -8,13 +8,7 @@ use crate::error::failure;
 pub(crate) fn validate_download_config(
     schema: &Schema,
     columns: &HashSet<String>,
-    timeout: Duration,
 ) -> Result<Vec<usize>> {
-    if timeout.is_zero() {
-        return Err(Error::Unsupported(
-            "download timeout must be positive".into(),
-        ));
-    }
     let mut indices = Vec::new();
     for name in columns {
         let matches: Vec<_> = schema

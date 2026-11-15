@@ -88,9 +88,9 @@ into Lance-owned storage. Other sinks receive ordinary `LargeBinary` values with
 the marker. Ordinary unmarked binary columns retain their existing behavior.
 
 Downloads run sequentially on a Tokio runtime, following HTTP redirects, with no
-retries. Defaults are a 30-second total request timeout, a 16 MiB limit per blob,
-and at most 16 rows per forwarded batch. Configure these with `with_timeout`,
-`with_max_blob_bytes`, and `with_rows_per_batch` (the latter two take
+retries or a request timeout. Defaults are a 16 MiB limit per blob
+and at most 16 rows per forwarded batch. Configure these with
+`with_max_blob_bytes` and `with_rows_per_batch` (both take
 `NonZeroUsize`). The size limit is checked while reading, including responses
 without a content length. Buffering scales with output rows × selected columns ×
 maximum blob size, plus a response and Arrow allocation overhead; slices can retain
