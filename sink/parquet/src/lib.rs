@@ -4,6 +4,7 @@ mod committer;
 mod compression;
 mod destination;
 mod error;
+mod file_writer;
 mod reader;
 mod sink;
 mod validation;

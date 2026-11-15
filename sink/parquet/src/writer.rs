@@ -6,8 +6,9 @@ use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
 
 use crate::{
-    destination::{Destination, FileWriter},
+    destination::Destination,
     error::{backend, closed},
+    file_writer::FileWriter,
 };
 
 pub(crate) struct ParquetDirectoryWriter {

@@ -1,11 +1,9 @@
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, StorageWriter, Url};
-use parquet::{
-    arrow::{AsyncArrowWriter, async_writer::AsyncFileWriter},
-    file::properties::WriterProperties,
-};
+use open_arrow_sink_storage::{Storage, Url};
+use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
+
+use crate::file_writer::FileWriter;
 
 const RESERVATION: &str = ".open-arrow-sink";
 
@@ -162,31 +160,5 @@ impl Destination {
             let _ = self.storage.remove_all(&backup).await;
         }
         Ok(())
-    }
-}
-
-pub(crate) struct FileWriter(StorageWriter);
-impl FileWriter {
-    pub(crate) async fn abort(&mut self) -> Result<()> {
-        self.0.abort().await
-    }
-}
-impl AsyncFileWriter for FileWriter {
-    fn write(&mut self, bytes: Bytes) -> BoxFuture<'_, parquet::errors::Result<()>> {
-        Box::pin(async move {
-            self.0
-                .write(bytes)
-                .await
-                .map_err(crate::error::parquet_backend)
-        })
-    }
-    fn complete(&mut self) -> BoxFuture<'_, parquet::errors::Result<()>> {
-        Box::pin(async move {
-            self.0
-                .close()
-                .await
-                .map(|_| ())
-                .map_err(crate::error::parquet_backend)
-        })
     }
 }
