@@ -1,3 +1,4 @@
+use crate::error::native_storage as native;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
@@ -6,7 +7,7 @@ use lance_io::object_store::{ObjectStore, ObjectStoreParams, providers::ObjectSt
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use object_store::path::Path;
 use object_store_opendal::OpendalStore;
-use open_arrow_sink_core::{Error, Result, async_trait};
+use open_arrow_sink_core::{Result, async_trait};
 use open_arrow_sink_storage::{Storage, Url};
 use std::sync::Arc;
 
@@ -18,11 +19,7 @@ pub(crate) struct NativeStorage {
 }
 impl NativeStorage {
     pub fn new(storage: Storage, mut url: Url) -> Result<Self> {
-        if storage.path(&url)?.trim_matches('/').is_empty() {
-            return Err(Error::Unsupported(
-                "dataset must have a nonempty path".into(),
-            ));
-        }
+        crate::validation::validate_destination_path(&storage, &url)?;
         if !url.path().ends_with('/') {
             url.path_segments_mut().unwrap().push("");
         }
@@ -37,17 +34,7 @@ impl NativeStorage {
         })
     }
     pub async fn reserve(&self) -> Result<()> {
-        let mut exact = self.url.clone();
-        exact.path_segments_mut().unwrap().pop_if_empty();
-        if self.storage.exists(&exact).await?
-            || self.storage.exists(&self.url).await?
-            || !self.storage.list(&self.url).await?.is_empty()
-        {
-            return Err(crate::error::backend(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "destination exists",
-            )));
-        }
+        crate::validation::validate_fresh_destination(&self.storage, &self.url).await?;
         self.storage
             .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
             .await
@@ -77,9 +64,6 @@ impl NativeStorage {
 
 #[derive(Debug)]
 struct Provider(Storage);
-fn native(error: impl std::fmt::Display) -> lance::Error {
-    lance::Error::invalid_input(error.to_string())
-}
 #[async_trait]
 impl ObjectStoreProvider for Provider {
     async fn new_store(

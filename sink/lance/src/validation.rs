@@ -1,4 +1,4 @@
-//! Configuration validation before destination creation.
+//! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
     Compression, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
@@ -95,4 +95,59 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_destination_path(
+    storage: &open_arrow_sink_storage::Storage,
+    url: &open_arrow_sink_storage::Url,
+) -> Result<()> {
+    if storage.path(url)?.trim_matches('/').is_empty() {
+        return Err(error::empty_destination());
+    }
+    Ok(())
+}
+
+/// Preflight only; conditional marker creation still arbitrates concurrent opens.
+pub(crate) async fn validate_fresh_destination(
+    storage: &open_arrow_sink_storage::Storage,
+    url: &open_arrow_sink_storage::Url,
+) -> Result<()> {
+    let mut exact = url.clone();
+    exact.path_segments_mut().unwrap().pop_if_empty();
+    if storage.exists(&exact).await?
+        || storage.exists(url).await?
+        || !storage.list(url).await?.is_empty()
+    {
+        return Err(error::destination_exists());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
+    if failed {
+        return Err(error::failed());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_fragment_write_state(failed: bool, sender_open: bool) -> Result<()> {
+    if failed || !sender_open {
+        return Err(error::failed());
+    }
+    Ok(())
+}
+
+pub(crate) fn create_fragments(
+    operation: &mut lance::dataset::transaction::Operation,
+) -> Result<&mut Vec<lance_table::format::Fragment>> {
+    match operation {
+        lance::dataset::transaction::Operation::Overwrite { fragments, .. } => Ok(fragments),
+        _ => Err(error::invalid_create_fragments()),
+    }
+}
+
+pub(crate) fn validate_session_transaction(
+    transaction: Option<lance::dataset::transaction::Transaction>,
+) -> Result<lance::dataset::transaction::Transaction> {
+    transaction.ok_or_else(error::empty_writer_session)
 }

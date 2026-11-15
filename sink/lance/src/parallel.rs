@@ -62,9 +62,7 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed || self.sender.is_none() {
-            return Err(failed());
-        }
+        crate::validation::validate_fragment_write_state(self.failed, self.sender.is_some())?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
@@ -80,9 +78,7 @@ impl DataWriter for FragmentWriter {
         Ok(())
     }
     async fn finish(&mut self) -> Result<Output> {
-        if self.failed {
-            return Err(failed());
-        }
+        crate::validation::validate_write_state(self.failed)?;
         self.failed = true;
         let sender = self.sender.take().ok_or_else(failed)?;
         let _ = sender.send(Message::Commit).await;

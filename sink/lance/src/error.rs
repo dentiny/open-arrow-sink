@@ -69,3 +69,26 @@ pub(crate) fn index_refresh(
         message: format!("refreshing dataset after index construction: {error}"),
     }
 }
+
+pub(crate) fn empty_destination() -> Error {
+    Error::Unsupported("dataset must have a nonempty path".into())
+}
+
+pub(crate) fn destination_exists() -> Error {
+    backend(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "destination exists",
+    ))
+}
+
+pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
+    lance::Error::invalid_input(error.to_string())
+}
+
+pub(crate) fn invalid_create_fragments() -> Error {
+    Error::Unsupported("expected uncommitted Lance create fragments".into())
+}
+
+pub(crate) fn empty_writer_session() -> Error {
+    Error::Unsupported("empty Lance writer session".into())
+}

@@ -1,7 +1,5 @@
-use lance::dataset::transaction::{Operation, Transaction};
-use open_arrow_sink_core::{
-    Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
-};
+use lance::dataset::transaction::Transaction;
+use open_arrow_sink_core::{Result, SessionCommitter, WriteOptions, WriteSummary, async_trait};
 
 use crate::{error::backend, index::build_indexes, storage::NativeStorage};
 
@@ -17,29 +15,17 @@ impl SessionCommitter<Output> for LanceCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<Output>) -> Result<WriteSummary> {
         let mut rows_written = 0;
         let mut combined: Option<Transaction> = None;
-        for (rows, transaction) in outputs {
+        for (rows, mut transaction) in outputs {
             rows_written += rows;
             if let Some(target) = &mut combined {
-                match (&mut target.operation, transaction.operation) {
-                    (
-                        Operation::Overwrite { fragments, .. },
-                        Operation::Overwrite {
-                            fragments: incoming,
-                            ..
-                        },
-                    ) => fragments.extend(incoming),
-                    _ => {
-                        return Err(Error::Unsupported(
-                            "expected uncommitted Lance create fragments".into(),
-                        ));
-                    }
-                }
+                let fragments = crate::validation::create_fragments(&mut target.operation)?;
+                let incoming = crate::validation::create_fragments(&mut transaction.operation)?;
+                fragments.append(incoming);
             } else {
                 combined = Some(transaction);
             }
         }
-        let transaction =
-            combined.ok_or_else(|| Error::Unsupported("empty Lance writer session".into()))?;
+        let transaction = crate::validation::validate_session_transaction(combined)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut dataset = self

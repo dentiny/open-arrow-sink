@@ -8,7 +8,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, failed, worker_stopped},
+    error::{aborted, backend, worker_stopped},
     index::build_indexes,
     storage::NativeStorage,
 };
@@ -70,9 +70,7 @@ impl Writer for LanceWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(failed());
-        }
+        crate::validation::validate_write_state(self.failed)?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
@@ -89,9 +87,7 @@ impl Writer for LanceWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
-            return Err(failed());
-        }
+        crate::validation::validate_write_state(self.failed)?;
         let sender = self.sender.take().unwrap();
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
