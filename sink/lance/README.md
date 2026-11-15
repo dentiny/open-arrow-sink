@@ -146,3 +146,21 @@ let compression = CompressionOptions {
     columns: [("raw_payload".into(), Compression::Uncompressed)].into(),
 };
 ```
+
+## Concurrent writing
+
+Wrap `LanceDatasetSink` in `UnorderedWriteLayer::new(concurrency)` and explicitly
+allow `Ordering::Unordered`. The sink reserves one new directory and returns
+independent fragment writers plus one session committer. Each worker feeds a
+capacity-one queue into Lance's `InsertBuilder::execute_uncommitted_stream`;
+workers write fragments but never publish a manifest. The file-size target applies
+to every worker, and a worker can produce multiple fragments.
+
+After every writer finishes, the committer combines the create transactions'
+fragments and publishes one data manifest through `CommitBuilder`. Lance assigns
+unique fragment IDs at this point. Empty sessions still create a readable empty
+dataset. Requested indexes are built once against the combined dataset afterward;
+index construction can publish additional versions, with the failure semantics
+above. Before publication, abort first stops every worker, then removes the reserved
+directory only when `cleanup_on_error` is enabled. Publication failures retain files
+because the dataset may already have been committed. Drop never publishes.
