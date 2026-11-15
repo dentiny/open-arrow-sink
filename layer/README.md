@@ -1,0 +1,112 @@
+# Write layers
+
+A write layer wraps a `Sink` without I/O and preserves its typed request.
+Import `SinkExt` to use `.layer(...)`. All built-in layers are always available
+through `open_arrow_sink::layer`; no facade feature is needed for the layer API.
+Enable a backend feature to construct that backend.
+
+| Layer | Changes | Required inner contract |
+| --- | --- | --- |
+| `OrderingLayer` | Overrides `WriteOptions.ordering`; does not sort or start workers | `Sink`; also forwards `ParallelSink` when implemented |
+| `CompressionLayer` | Replaces the entire compression policy, including column overrides | `Sink`; also forwards `ParallelSink` when implemented |
+| `UnorderedWriteLayer` | Dispatches whole batches to a fixed set of independent data writers | `ParallelSink` |
+| `DownloadBlobLayer` | Streams selected URL columns into native managed blobs | `Sink` whose writer supports blobs; currently Lance single-writer sessions |
+
+## Order of composition
+
+The last installed layer is outermost. Operations in
+`sink.layer(a).layer(b)` reach b → a → sink. Option changes must happen before a
+layer validates/opens the inner session. Install one ordering and one compression
+layer per stack to keep precedence clear.
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use open_arrow_sink::{Ordering, SinkExt, parquet::ParquetDirectorySink,
+    layer::{OrderingLayer, UnorderedWriteLayer}};
+
+let sink = ParquetDirectorySink::default()
+    .layer(UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()))
+    .layer(OrderingLayer::new(Ordering::Unordered));
+// The outer layer overrides ordering before the concurrent layer validates it.
+```
+
+The opposite order would let the concurrent layer validate the caller's original
+options before the inner ordering override. Directly passing unordered options
+also works. Capabilities are guarantees, not a record of overridden options:
+permission to reorder cannot create a preserve-input guarantee.
+
+## Compression
+
+`CompressionLayer::new(policy)` replaces `WriteOptions.compression` for each
+session, retaining all other options. It configures the encoder, not an outer byte
+compression stream. Enable the requested Parquet codec feature separately; Lance
+supports Zstd and Uncompressed; Iceberg accepts global settings only. See
+[compression options](../docs/options.md#compression) for complete precedence and
+column-name rules.
+
+## Concurrent writes
+
+`UnorderedWriteLayer::new(NonZeroUsize)` reserves one backend session with N
+writers and one committer. Explicit unordered permission is required even for
+N = 1. A writer receives the next whole nonempty batch when available; no shuffle,
+round-robin, or directory scan ordering is promised.
+
+At most one batch per data writer is in flight. When all writers are busy,
+`write` waits for capacity. This is a batch bound, not a byte bound; use sensible
+batch sizes and account for every backend's encoding buffers. Empty batches are
+validated and otherwise ignored. The layer spawns no tasks; pending futures are
+polled during write/commit/abort. Native backends may have workers of their own.
+
+A write error or cancellation makes the session terminal. Commit drains accepted
+writes and finishes every data writer before passing all outputs to one committer.
+A finish failure aborts all writers, including finished ones, before aborting the
+session. Abort waits for in-flight writes and attempts every cleanup even if one
+fails. Once publication begins, the committer owns uncertain outcomes; the layer
+does not delete potentially committed output. Drop performs no async cleanup.
+
+Ordering and compression decorators forward `ParallelSink`. The concurrent sink
+itself exposes `Sink`, not `ParallelSink`. `DownloadBlobLayer` also does not expose
+`ParallelSink`; placing concurrency outside it will not compile. Placing download
+outside concurrency cannot supply native blob methods either. Use blob ingestion
+with a supported single writer.
+
+## Download URL columns
+
+```rust,ignore
+use std::{num::NonZeroUsize, sync::Arc};
+use open_arrow_sink::{SinkExt, lance::LanceDatasetSink,
+    layer::{DownloadBlobLayer, DownloadPool}};
+
+let pool = Arc::new(DownloadPool::new(
+    NonZeroUsize::new(16).unwrap(),
+    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+)?);
+let sink = LanceDatasetSink::default().layer(
+    DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
+        .with_download_pool(pool),
+);
+// Open with the URL input schema and Ordering::Unordered.
+```
+
+Enable `sink-lance`. Select exact, unique top-level `Utf8`, `LargeUtf8`, or
+`Utf8View` columns. The public writer retains the URL input schema; the inner
+schema uses blob-marked `LargeBinary` fields. Native handles carry the payloads,
+with empty binary placeholders in batches. Nulls, row order within each batch,
+batch boundaries, and unrelated metadata are preserved; the final sink's scan
+ordering still applies.
+
+The pool streams owned, budgeted chunks directly to the native writer. Payloads
+can exceed the transfer-buffer budget; retaining chunks holds their reservations.
+Request concurrency is process-wide, initialized by the first pool (with
+`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` overriding its fallback). Byte budgets are
+per pool, and exclude SDK/HTTP/encoding buffers. Share an `Arc<DownloadPool>` when
+writers should share one transfer budget. No retry or timeout is installed by
+default; OpenDAL I/O policies can be applied to the pool.
+
+A failed or cancelled write poisons the session and cancels remaining downloads;
+commit then aborts the inner writer. Existing accepted batches may have created
+output. Cleanup follows the native writer's guarantees. See the
+[complete download contracts](../docs/options.md#streaming-download-pool) and
+[Lance blob guide](../sink/lance/README.md#streaming-native-blobs).
+
+To build your own decorator, follow [extend a layer](../docs/extending-layers.md).
