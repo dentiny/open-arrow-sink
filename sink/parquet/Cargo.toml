@@ -4,16 +4,25 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Minimal local Parquet directory sink"
+description = "URL-based Parquet directory sink"
 
 [features]
 default = []
+aws = ["object_store/aws"]
+gcp = ["object_store/gcp"]
+azure = ["object_store/azure"]
 snappy = ["parquet/snap"]
 gzip = ["parquet/flate2-zlib-rs"]
 zstd = ["parquet/zstd"]
 lz4 = ["parquet/lz4"]
 
 [dependencies]
+bytes = "1"
+futures.workspace = true
+object_store = { version = "0.13.2", default-features = false, features = [
+  "tokio",
+] }
+url = "2"
 open-arrow-sink-core.workspace = true
 parquet = { workspace = true, features = ["arrow", "async"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
@@ -22,6 +31,5 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-futures.workspace = true
 arrow-array.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

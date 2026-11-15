@@ -1,25 +1,26 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, WriteOptions};
-use open_arrow_sink_parquet::ParquetDirectorySink;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .ok_or("usage: write_directory NEW_DIRECTORY")?,
-    );
+    let argument = std::env::args()
+        .nth(1)
+        .ok_or("usage: write_directory NEW_DIRECTORY_OR_URL")?;
+    let directory = match Url::parse(&argument) {
+        Ok(url) => url,
+        Err(_) => Url::from_directory_path(std::path::absolute(argument)?)
+            .map_err(|_| "invalid directory")?,
+    };
     let batch = RecordBatch::try_from_iter([(
         "value",
         Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
     )])?;
     let mut writer = ParquetDirectorySink
         .open(
-            directory.clone(),
+            directory,
             batch.schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
@@ -27,12 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .await?;
-    writer.write(batch.clone()).await?;
+    writer.write(batch).await?;
     let summary = writer.commit().await?;
-    let file = tokio::fs::File::open(directory.join("part-00000.parquet")).await?;
-    let mut reader = ParquetRecordBatchStreamBuilder::new(file).await?.build()?;
-    assert_eq!(reader.try_next().await?.as_ref(), Some(&batch));
-    assert!(reader.try_next().await?.is_none());
-    println!("Wrote and read back {} rows", summary.rows_written);
+    println!("Wrote {} rows", summary.rows_written);
     Ok(())
 }

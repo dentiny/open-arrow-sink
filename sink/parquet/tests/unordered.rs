@@ -4,7 +4,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
-use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
 #[tokio::test]
@@ -27,7 +27,7 @@ async fn unordered_commit_preserves_all_rows() {
     let mut writer = ParquetDirectorySink
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
         .open(
-            directory.clone(),
+            Url::from_directory_path(&directory).unwrap(),
             make_batch(0).schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,

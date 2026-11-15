@@ -63,6 +63,9 @@ before destination I/O, including requests to disable compression.
 Parquet compression dependencies are opt-in: enable facade features
 `parquet-snappy`, `parquet-gzip`, `parquet-zstd`, or `parquet-lz4` for the codecs
 you need. `sink-parquet` alone supports uncompressed output.
+Parquet destinations take `url::Url`, including `file://` for local directories.
+Enable `parquet-aws`, `parquet-gcp`, or `parquet-azure` for remote object-store
+URLs; see the [Parquet sink](sink/parquet/README.md) for configuration and cleanup.
 
 Backend support is declared by each sink; consult its README before selecting
 a scope or codec. The shared interface does not promise that every sink supports
