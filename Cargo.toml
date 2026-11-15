@@ -1,5 +1,12 @@
 [workspace]
-members = ["core", "layer", "sink/parquet", "sink/iceberg", "sink/lance"]
+members = [
+  "core",
+  "layer",
+  "storage",
+  "sink/parquet",
+  "sink/iceberg",
+  "sink/lance",
+]
 resolver = "2"
 
 [workspace.package]
@@ -9,6 +16,13 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
+async-stream = "0.3"
+once_cell = "1"
+bytes = "1"
+serde = "1"
+typetag = "0.2"
+iceberg = "0.11"
+uuid = "1"
 more-asserts = "0.3"
 rstest = { version = "0.28", default-features = false }
 tempfile = "3"
@@ -19,6 +33,7 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 parquet = { version = "58.4", default-features = false }
 tokio = "1"
 thiserror = "2"
+open-arrow-sink-storage = { path = "storage", version = "0.1.0" }
 open-arrow-sink-core = { path = "core", version = "0.1.0" }
 open-arrow-sink-layer = { path = "layer", version = "0.1.0" }
 open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
@@ -34,14 +49,24 @@ description = "Composable, independent Arrow RecordBatch sinks"
 [features]
 default = []
 sink-lance = ["dep:open-arrow-sink-lance"]
+lance-aws = ["sink-lance", "open-arrow-sink-lance/aws"]
+lance-gcp = ["sink-lance", "open-arrow-sink-lance/gcp"]
+lance-azure = ["sink-lance", "open-arrow-sink-lance/azure"]
 sink-iceberg = ["dep:open-arrow-sink-iceberg"]
 layer-download-blob = ["open-arrow-sink-layer/download-blob"]
-layer-rebatch = ["open-arrow-sink-layer/rebatch"]
 sink-parquet = ["dep:open-arrow-sink-parquet"]
+parquet-aws = ["sink-parquet", "open-arrow-sink-parquet/aws"]
+parquet-gcp = ["sink-parquet", "open-arrow-sink-parquet/gcp"]
+parquet-azure = ["sink-parquet", "open-arrow-sink-parquet/azure"]
+parquet-snappy = ["sink-parquet", "open-arrow-sink-parquet/snappy"]
+parquet-gzip = ["sink-parquet", "open-arrow-sink-parquet/gzip"]
+parquet-zstd = ["sink-parquet", "open-arrow-sink-parquet/zstd"]
+parquet-lz4 = ["sink-parquet", "open-arrow-sink-parquet/lz4"]
 
 [dependencies]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
+open-arrow-sink-storage.workspace = true
 open-arrow-sink-iceberg = { path = "sink/iceberg", version = "0.1.0", optional = true }
 open-arrow-sink-parquet = { workspace = true, optional = true }
 

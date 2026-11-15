@@ -6,13 +6,13 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, RecordBatch, Result, SchemaRef,
-    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, RecordBatch, Result, SchemaRef, Sink,
+    SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::{
     DownloadPool,
-    error::{backend, failure},
+    error::{self, backend},
     validation::validate_download_config,
 };
 
@@ -86,11 +86,12 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             .inner
             .open(request, output_schema.clone(), options)
             .await?;
-        if !indices.is_empty() && !inner.supports_blob_streams() {
+        if let Err(error) = crate::validation::validate_download_support(
+            !indices.is_empty(),
+            inner.supports_blob_streams(),
+        ) {
             let _ = inner.abort().await;
-            return Err(Error::Unsupported(
-                "download layer requires a sink with streaming blob support".into(),
-            ));
+            return Err(error);
         }
         Ok(Box::new(DownloadBlobWriter {
             inner,
@@ -147,7 +148,7 @@ async fn download(
         native.finish().await
     }
     .await
-    .map_err(|error| failure(format!("download column {name} row {row}: {error}")))?;
+    .map_err(|error| error::download_context(&name, row, error))?;
     Ok(BlobPlacement {
         column,
         row,
@@ -160,9 +161,7 @@ impl Writer for DownloadBlobWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(failure("blob writer failed; abort or drop it"));
-        }
+        crate::validation::validate_download_writer(self.failed)?;
         self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
@@ -215,9 +214,9 @@ impl Writer for DownloadBlobWriter {
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
+        if crate::validation::validate_download_writer(self.failed).is_err() {
             let _ = self.inner.abort().await;
-            return Err(failure("blob writer failed; session aborted"));
+            return Err(error::download_aborted());
         }
         self.inner.commit().await
     }

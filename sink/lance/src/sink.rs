@@ -1,24 +1,53 @@
-use std::{io, path::PathBuf};
+use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_storage::{Storage, Url};
+use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
-    IndexType, Ordering, Result, SchemaRef, Sink, SinkCapability, WriteOptions, Writer,
-    async_trait, validation,
+    CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
+    SchemaRef, Sink, SinkCapability, SinkExt, WriteMode, WriteOptions, WriteSession, Writer,
+    async_trait,
 };
 
-use crate::{error::backend, validation::validate_indexes, writer::LanceWriter};
+use crate::{compression::writer_schema, storage::NativeStorage, validation::validate_options};
 
-/// Creates a new local dataset directory. Existing paths are always rejected.
+/// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LanceDatasetSink;
+#[derive(Debug, Clone, Default)]
+pub struct LanceDatasetSink {
+    storage: Option<Storage>,
+}
+
+impl LanceDatasetSink {
+    pub fn new(storage: Storage) -> Self {
+        Self {
+            storage: Some(storage),
+        }
+    }
+    fn resolve(&self, url: Url) -> Result<NativeStorage> {
+        let storage = match &self.storage {
+            Some(storage) => storage.clone(),
+            None => Storage::from_url(&url)?,
+        };
+        NativeStorage::new(storage, url)
+    }
+    /// Configure native Lance reads with the same shared operator as writes.
+    pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
+        Ok(self.resolve(url)?.dataset_builder())
+    }
+}
 
 #[async_trait]
 impl Sink for LanceDatasetSink {
-    type Request = PathBuf;
+    type Request = Url;
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
+            supported_modes: &[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite],
             ordering: Ordering::Unordered,
+            compression: CompressionCapability {
+                global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
+                per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
+            },
             supported_partitions: vec![],
             supported_indexes: &[
                 IndexType::Scalar,
@@ -31,34 +60,65 @@ impl Sink for LanceDatasetSink {
 
     async fn open(
         &self,
-        path: PathBuf,
+        url: Url,
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        validation::validate_options(&options, self.capability())?;
         let storage_schema = crate::blob::storage_schema(&schema)?;
-        validate_indexes(&schema, &options.indexes)?;
-        // Reserve a fresh destination. The caller must keep exclusive ownership of
-        // this directory until commit/abort; no existing dataset is overwritten.
-        // TODO: Use OpenDAL to support remote storage beyond local paths.
-        let path = std::path::absolute(path).map_err(backend)?;
-        let uri = path
-            .to_str()
-            .ok_or_else(|| {
-                backend(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Lance requires a UTF-8 path",
-                ))
-            })?
-            .to_owned();
-        tokio::fs::create_dir(&path).await.map_err(backend)?;
-        Ok(Box::new(LanceWriter::new(
-            schema,
-            storage_schema,
-            path,
-            uri,
-            options.target_file_size,
-            options.indexes,
-        )))
+        if storage_schema != schema {
+            validate_options(&schema, &options, self.capability())?;
+            // Apply compression before constructing the native descriptor fields.
+            let encoding_schema =
+                crate::blob::storage_schema(&writer_schema(&schema, &options.compression))?;
+            let mut destination = self.resolve(url)?;
+            destination.prepare(&encoding_schema, options.mode).await?;
+            return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
+                schema,
+                storage_schema,
+                encoding_schema,
+                destination,
+                options,
+            )));
+        }
+        // Use the same fragment writing and publication path for every session.
+        self.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::MIN))
+            .open(url, schema, options)
+            .await
+    }
+}
+
+#[async_trait]
+impl ParallelSink for LanceDatasetSink {
+    type Output = (u64, lance::dataset::transaction::Transaction);
+    async fn open_writers(
+        &self,
+        url: Url,
+        schema: SchemaRef,
+        options: WriteOptions,
+        count: NonZeroUsize,
+    ) -> Result<WriteSession<Self::Output>> {
+        validate_options(&schema, &options, self.capability())?;
+        crate::validation::validate_parallel_blob_schema(&schema)?;
+        let encoding_schema = writer_schema(&schema, &options.compression);
+        let mut destination = self.resolve(url)?;
+        destination.prepare(&encoding_schema, options.mode).await?;
+        let writers = (0..count.get())
+            .map(|_| {
+                Box::new(crate::parallel::FragmentWriter::new(
+                    schema.clone(),
+                    encoding_schema.clone(),
+                    destination.clone(),
+                    &options,
+                )) as Box<dyn DataWriter<Output = Self::Output>>
+            })
+            .collect();
+        Ok(WriteSession {
+            writers,
+            committer: Box::new(crate::committer::LanceCommitter {
+                destination,
+                options,
+            }),
+        })
     }
 }

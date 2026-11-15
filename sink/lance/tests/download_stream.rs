@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
 use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
-use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_layer::{DownloadBlobLayer, DownloadPool};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -89,14 +89,18 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
     ])
     .unwrap();
     let budget = pool();
-    let sink = LanceDatasetSink.layer(
+    let sink = LanceDatasetSink::default().layer(
         DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
             .with_download_pool(budget.clone()),
     );
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let mut writer = sink
-        .open(path.clone(), input.schema(), options())
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input.schema(),
+            options(),
+        )
         .await
         .unwrap();
     writer.write(input).await.unwrap();
@@ -147,14 +151,18 @@ async fn download_errors_and_cancellation_abort_native_storage() {
         )])
         .unwrap();
         let budget = pool();
-        let sink = LanceDatasetSink.layer(
+        let sink = LanceDatasetSink::default().layer(
             DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
                 .with_download_pool(budget.clone()),
         );
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dataset");
         let mut writer = sink
-            .open(destination.clone(), input.schema(), options())
+            .open(
+                Url::from_directory_path(&destination).unwrap(),
+                input.schema(),
+                options(),
+            )
             .await
             .unwrap();
         if path == "/stall" {

@@ -17,6 +17,11 @@ impl BlobChunk {
         }
     }
 
+    /// Borrow the payload while retaining this chunk's accounting reservation.
+    pub fn bytes(&self) -> &bytes::Bytes {
+        &self.data
+    }
+
     /// Attach an accounting reservation. It is released when this chunk drops.
     pub fn with_guard(data: impl Into<bytes::Bytes>, guard: impl Send + Sync + 'static) -> Self {
         Self {

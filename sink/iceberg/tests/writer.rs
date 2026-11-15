@@ -13,9 +13,10 @@ use iceberg::spec::{
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{
-    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions,
+    Ordering, PartitionOptions, PartitionType, SchemaRef, Sink, WriteMode, WriteOptions,
 };
-use open_arrow_sink_iceberg::{IcebergTableSink, iceberg};
+use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
+use open_arrow_sink_storage::opendal;
 
 type Row = (Option<i32>, Option<i64>);
 
@@ -35,6 +36,13 @@ async fn table_with_value_type(
 ) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
     let catalog: Arc<dyn Catalog> = Arc::new(
         MemoryCatalogBuilder::default()
+            .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
+                Storage::new(
+                    opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+                    "memory:///".parse().unwrap(),
+                )
+                .unwrap(),
+            )))
             .load(
                 "test",
                 HashMap::from([(
@@ -99,6 +107,7 @@ fn batch(schema: SchemaRef) -> RecordBatch {
 
 fn options() -> WriteOptions {
     WriteOptions {
+        mode: open_arrow_sink_core::WriteMode::Append,
         ordering: Ordering::Unordered,
         ..WriteOptions::default()
     }
@@ -696,5 +705,149 @@ async fn assert_numeric_partition_round_trip(
             task.partition_spec().unwrap().as_ref(),
             table.metadata().default_partition_spec().as_ref()
         );
+    }
+}
+
+#[rstest::rstest]
+#[case(
+    open_arrow_sink_core::Compression::Uncompressed,
+    parquet::basic::Compression::UNCOMPRESSED
+)]
+#[case(
+    open_arrow_sink_core::Compression::Snappy,
+    parquet::basic::Compression::SNAPPY
+)]
+#[case(
+    open_arrow_sink_core::Compression::Gzip,
+    parquet::basic::Compression::GZIP(Default::default())
+)]
+#[case(
+    open_arrow_sink_core::Compression::Zstd { level: None },
+    parquet::basic::Compression::ZSTD(Default::default())
+)]
+#[case(
+    open_arrow_sink_core::Compression::Lz4Raw,
+    parquet::basic::Compression::LZ4_RAW
+)]
+#[tokio::test]
+async fn compression_survives_rolling_and_round_trips(
+    #[case] codec: open_arrow_sink_core::Compression,
+    #[case] expected: parquet::basic::Compression,
+) {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let (catalog, identifier, schema) = table().await;
+    let before = catalog.load_table(&identifier).await.unwrap();
+    let sink = IcebergTableSink::new(catalog.clone());
+    let mut options = options();
+    options.compression.global = Some(codec);
+    options.target_file_size = Some(1);
+    let mut writer = sink
+        .open(identifier.clone(), schema.clone(), options)
+        .await
+        .unwrap();
+    writer.write(batch(schema.clone())).await.unwrap();
+    writer.write(batch(schema)).await.unwrap();
+    writer.commit().await.unwrap();
+    let table = catalog.load_table(&identifier).await.unwrap();
+    assert_eq!(
+        table.metadata().properties(),
+        before.metadata().properties()
+    );
+    let files: Vec<_> = table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert!(!files.is_empty());
+    for file in files {
+        let bytes = table
+            .file_io()
+            .new_input(file.data_file_path())
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        let reader = SerializedFileReader::new(bytes).unwrap();
+        for group in reader.metadata().row_groups() {
+            for column in group.columns() {
+                assert_eq!(column.compression(), expected);
+            }
+        }
+    }
+    assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 6);
+}
+
+#[tokio::test]
+async fn unordered_commit_preserves_all_rows() {
+    use open_arrow_sink_core::SinkExt;
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+
+    let (catalog, identifier, schema) = table().await;
+    let mut writer = IcebergTableSink::new(catalog.clone())
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .open(identifier.clone(), schema.clone(), options())
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for id in 0..8 {
+        let input = [
+            (Some(id * 2), Some(i64::from(id))),
+            (Some(id * 2 + 1), None),
+            (None, Some(-1)),
+        ];
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(
+                    input.iter().map(|row| row.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    input.iter().map(|row| row.1).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap();
+        writer.write(batch).await.unwrap();
+        expected.extend(input);
+    }
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        expected.len() as u64
+    );
+    expected.sort_unstable();
+    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+}
+
+#[rstest::rstest]
+#[case::create(WriteMode::Create)]
+#[case::append(WriteMode::Append)]
+#[case::overwrite(WriteMode::Overwrite)]
+#[tokio::test]
+async fn write_mode(#[case] mode: WriteMode) {
+    let (catalog, identifier, schema) = table().await;
+    let sink = IcebergTableSink::new(catalog.clone());
+    let result = sink
+        .open(
+            identifier.clone(),
+            schema.clone(),
+            WriteOptions { mode, ..options() },
+        )
+        .await;
+    if mode == WriteMode::Append {
+        let mut writer = result.unwrap();
+        writer.write(batch(schema)).await.unwrap();
+        writer.commit().await.unwrap();
+        assert_eq!(rows(catalog.as_ref(), &identifier).await.len(), 3);
+    } else {
+        assert!(matches!(
+            result,
+            Err(open_arrow_sink_core::Error::Unsupported(_))
+        ));
     }
 }

@@ -1,4 +1,18 @@
-use crate::{IndexSpec, PartitionType};
+use crate::{CompressionOptions, IndexSpec, PartitionType};
+
+/// How a session treats its destination. Support is declared by each sink.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Create a new destination; fail if it already exists.
+    #[default]
+    Create,
+    /// Add rows to an existing destination; fail if it does not exist.
+    Append,
+    /// Replace all rows, or create the destination if it does not exist.
+    /// This is a full replacement, not a partition overwrite. Atomicity is
+    /// backend-specific; consult the sink documentation.
+    Overwrite,
+}
 
 /// Input-order policy or guarantee; this does not sort rows by column values.
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
@@ -30,7 +44,12 @@ impl Default for PartitionOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
+    /// Destination policy. Defaults to Create for every sink. Unsupported modes,
+    /// including the default, fail before destination I/O.
+    pub mode: WriteMode,
     pub ordering: Ordering,
+    /// Global default and top-level column overrides; empty preserves backend defaults.
+    pub compression: CompressionOptions,
     /// None disables partition routing; Some uses the destination partition spec.
     pub partition: Option<PartitionOptions>,
     /// Indexes to construct after writing. Empty by default; unsupported sinks
@@ -47,7 +66,9 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
+            mode: WriteMode::default(),
             ordering: Ordering::default(),
+            compression: CompressionOptions::default(),
             partition: None,
             indexes: Vec::new(),
             target_file_size: None,

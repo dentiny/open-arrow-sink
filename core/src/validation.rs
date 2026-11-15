@@ -1,37 +1,118 @@
 //! Mandatory shared contracts, separate from optional business validation layers.
 use std::collections::HashSet;
 
-use crate::{Error, IndexSpec, Ordering, RecordBatch, Result, SinkCapability, WriteOptions};
+use crate::error::{
+    duplicate_index, invalid_target_file_size, missing_index_column, preserve_input_unsupported,
+    unsupported_index, unsupported_partition,
+};
+use crate::{
+    CompressionCapability, CompressionOptions, Error, IndexSpec, IndexType, Ordering,
+    PartitionOptions, PartitionType, RecordBatch, Result, SinkCapability, WriteOptions,
+};
 use arrow_schema::Schema;
 
-/// Check declared capabilities before opening a destination or producing side effects.
-pub fn validate_options(options: &WriteOptions, capability: SinkCapability) -> Result<()> {
-    if let Some(partition) = options.partition
-        && !capability
-            .supported_partitions
-            .contains(&partition.partition_type)
+/// Check declared capabilities and compression column names before destination I/O.
+/// Backends must additionally validate codec-specific parameters, such as Zstd levels.
+pub fn validate_options(
+    schema: &Schema,
+    options: &WriteOptions,
+    capability: SinkCapability,
+) -> Result<()> {
+    validate_mode_options(options.mode, capability.supported_modes)?;
+    validate_compression_options(schema, &options.compression, capability.compression)?;
+    validate_partition_options(options.partition, &capability.supported_partitions)?;
+    validate_index_options(&options.indexes, capability.supported_indexes)?;
+    validate_target_file_size_options(options.target_file_size)?;
+    validate_ordering_options(options.ordering, capability.ordering)?;
+    Ok(())
+}
+
+/// Reject unsupported modes, including the default, before destination I/O.
+pub fn validate_mode_options(
+    mode: crate::WriteMode,
+    supported_modes: &[crate::WriteMode],
+) -> Result<()> {
+    if !supported_modes.contains(&mode) {
+        return Err(Error::Unsupported(format!("write mode: {mode:?}")));
+    }
+    Ok(())
+}
+
+/// Check compression scopes, codecs, and exact top-level column names.
+/// Backends additionally validate levels.
+pub fn validate_compression_options(
+    schema: &Schema,
+    options: &CompressionOptions,
+    capability: CompressionCapability,
+) -> Result<()> {
+    if let Some(compression) = options.global
+        && !capability.global.contains(&compression.codec())
     {
         return Err(Error::Unsupported(format!(
-            "partitioned writes with {:?}",
-            partition.partition_type
+            "global compression: {compression:?}"
         )));
     }
-    for index in &options.indexes {
-        if !capability.supported_indexes.contains(&index.index_type) {
+    for (column, compression) in &options.columns {
+        if !capability.per_column.contains(&compression.codec()) {
             return Err(Error::Unsupported(format!(
-                "{:?} index construction on column {}",
-                index.index_type, index.column
+                "compression {compression:?} on column {column}"
             )));
         }
     }
-    if options.target_file_size == Some(0) {
-        return Err(Error::Unsupported(
-            "target_file_size must be greater than zero".into(),
-        ));
+    for column in options.columns.keys() {
+        if schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() == column)
+            .count()
+            != 1
+        {
+            return Err(Error::Unsupported(format!(
+                "compression column must identify one top-level field: {column}"
+            )));
+        }
     }
-    if options.ordering == Ordering::PreserveInput && capability.ordering != Ordering::PreserveInput
+    Ok(())
+}
+
+/// Check that the sink supports the requested partition transform.
+pub fn validate_partition_options(
+    options: Option<PartitionOptions>,
+    supported_partitions: &[PartitionType],
+) -> Result<()> {
+    if let Some(partition) = options
+        && !supported_partitions.contains(&partition.partition_type)
     {
-        return Err(Error::Unsupported("preserving input row order".into()));
+        return Err(unsupported_partition(partition.partition_type));
+    }
+    Ok(())
+}
+
+/// Check index types. Schema and column-type checks are performed separately.
+pub fn validate_index_options(
+    indexes: &[IndexSpec],
+    supported_indexes: &[IndexType],
+) -> Result<()> {
+    for index in indexes {
+        if !supported_indexes.contains(&index.index_type) {
+            return Err(unsupported_index(index));
+        }
+    }
+    Ok(())
+}
+
+/// Check that an explicit target file size is positive.
+pub fn validate_target_file_size_options(target_file_size: Option<usize>) -> Result<()> {
+    if target_file_size == Some(0) {
+        return Err(invalid_target_file_size());
+    }
+    Ok(())
+}
+
+/// Check that the sink can provide the requested input-order guarantee.
+pub fn validate_ordering_options(ordering: Ordering, supported_ordering: Ordering) -> Result<()> {
+    if ordering == Ordering::PreserveInput && supported_ordering != Ordering::PreserveInput {
+        return Err(preserve_input_unsupported());
     }
     Ok(())
 }
@@ -51,14 +132,11 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     let mut columns = HashSet::new();
     for index in indexes {
         if !columns.insert(&index.column) {
-            return Err(Error::Unsupported(format!(
-                "multiple indexes requested for column {}",
-                index.column
-            )));
+            return Err(duplicate_index(&index.column));
         }
         schema
             .field_with_name(&index.column)
-            .map_err(|_| Error::Unsupported(format!("index column not found: {}", index.column)))?;
+            .map_err(|_| missing_index_column(&index.column))?;
     }
     Ok(())
 }

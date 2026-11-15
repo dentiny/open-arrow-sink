@@ -1,22 +1,19 @@
-//! Optional sink decorators.
+//! Composable sink decorators.
+mod error;
 mod ordering;
+mod validation;
 pub use ordering::{OrderingLayer, OrderingSink};
 
-#[cfg(feature = "rebatch")]
-mod rebatch;
-#[cfg(feature = "rebatch")]
-pub use rebatch::{RebatchLayer, RebatchSink};
+pub use open_arrow_sink_storage::DownloadPool;
 
-#[cfg(feature = "download-blob")]
-mod download_pool;
-#[cfg(feature = "download-blob")]
-mod error;
-#[cfg(feature = "download-blob")]
-pub use download_pool::DownloadPool;
+mod unordered;
+pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};
+
+mod compression;
+pub use compression::{CompressionLayer, CompressionSink};
+pub use open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE;
 
 #[cfg(feature = "download-blob")]
 mod download_blob;
-#[cfg(feature = "download-blob")]
-mod validation;
 #[cfg(feature = "download-blob")]
 pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};
