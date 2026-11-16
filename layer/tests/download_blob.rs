@@ -21,7 +21,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-// Every test shares the common process-wide request budget.
+// Legacy test serialization; pool budgets are now independent.
 // A 4 MiB buffer budget admits two of the common downloader's 2 MiB chunks.
 static REQUEST_BUDGET: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn download_layer(columns: std::collections::HashSet<String>) -> DownloadBlobLayer {

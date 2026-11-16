@@ -118,7 +118,8 @@ adapters retain that storage so data, metadata, reads, and cleanup use the same
 credentials and namespace. Iceberg injects it through the catalog's
 `OpenDalStorageFactory`; table metadata still selects the locations.
 
-`DownloadPool` uses a process-wide request limiter and a per-pool transfer-buffer
-budget. Chunks retain accounting reservations until dropped. It streams blobs
+`DownloadPool` owns explicit stream and transfer-buffer budgets. Callers share
+an `Arc<DownloadPool>` for a common budget, or install clones of an explicit
+`HttpConcurrencyLimitLayer` to share HTTP capacity across independent pools. Chunks retain accounting reservations until dropped. It streams blobs
 larger than the budget; the budget does not include all SDK or encoding memory.
 See [layers](../layer/README.md) and [storage](../storage/README.md).
