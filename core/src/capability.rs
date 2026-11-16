@@ -31,10 +31,10 @@ pub enum PartitionType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SinkCapability {
-    /// Supports native logical blob inputs and explicit per-write blob configuration.
+    /// Supports native logical blob inputs and backend-specific blob configuration.
     /// Writer/schema and parallel-session restrictions still apply.
     pub supports_blob_handle: bool,
-    /// Supports `Writer::create_blob` and `Writer::write_with_blobs` for compatible
+    /// Supports the `open-arrow-sink-blob` streaming extension for compatible
     /// schemas. Independent of native logical blob input/configuration support.
     pub supports_blob_streaming: bool,
     /// Explicit destination modes accepted by this sink.

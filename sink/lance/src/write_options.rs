@@ -1,5 +1,6 @@
 //! Translate shared write options into Lance schema metadata and native parameters.
 //! This module performs no destination I/O and owns the configuration conversion order.
+use crate::{BlobHandleConfig, ExternalBlobMode};
 use std::sync::Arc;
 
 use arrow_schema::Schema;
@@ -7,22 +8,22 @@ use lance::{
     blob::{BlobFieldOptions, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
-use open_arrow_sink_core::{
-    BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode, WriteOptions,
-};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode, WriteOptions};
 
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.
-pub(crate) fn writer_schema(schema: &SchemaRef, options: &WriteOptions) -> Result<SchemaRef> {
+pub(crate) fn writer_schema(
+    schema: &SchemaRef,
+    options: &WriteOptions,
+    blob: &BlobHandleConfig,
+) -> Result<SchemaRef> {
     let compressed = crate::compression::writer_schema(schema, &options.compression);
     let prepared = crate::blob::storage_schema(&compressed)?;
-    Ok(blob_schema(&prepared, options.blob_handle.as_ref()))
+    Ok(blob_schema(&prepared, Some(blob)))
 }
 
-pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
+pub(crate) fn write_params(options: &WriteOptions, blob: &BlobHandleConfig) -> Result<WriteParams> {
     let defaults = WriteParams::default();
-    let default_blob = BlobHandleConfig::default();
-    let blob = options.blob_handle.as_ref().unwrap_or(&default_blob);
     Ok(WriteParams {
         external_blob_mode: match blob.external_blob_mode {
             ExternalBlobMode::Reference => LanceBlobMode::Reference,

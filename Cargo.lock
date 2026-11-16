@@ -4188,6 +4188,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "open-arrow-sink"
 version = "0.1.0"
 dependencies = [
+ "open-arrow-sink-blob",
  "open-arrow-sink-core",
  "open-arrow-sink-iceberg",
  "open-arrow-sink-lance",
@@ -4197,13 +4198,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-arrow-sink-blob"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "open-arrow-sink-core",
+]
+
+[[package]]
 name = "open-arrow-sink-core"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
- "bytes",
  "thiserror",
  "tokio",
 ]
@@ -4247,6 +4255,7 @@ dependencies = [
  "more-asserts",
  "object_store 0.14.2",
  "object_store_opendal",
+ "open-arrow-sink-blob",
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
  "open-arrow-sink-storage",
@@ -4265,6 +4274,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "futures",
+ "open-arrow-sink-blob",
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
  "open-arrow-sink-test-support",
@@ -4299,6 +4309,7 @@ dependencies = [
  "futures",
  "http",
  "more-asserts",
+ "open-arrow-sink-blob",
  "open-arrow-sink-core",
  "opendal",
  "percent-encoding",

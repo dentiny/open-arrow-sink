@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "core",
+  "blob",
   "test-support",
   "layer",
   "storage",
@@ -17,6 +18,7 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
+open-arrow-sink-blob = { path = "blob", version = "0.1.0" }
 open-arrow-sink-test-support = { path = "test-support" }
 async-stream = "0.3"
 bytes = "1"
@@ -67,6 +69,7 @@ parquet-zstd = ["sink-parquet", "open-arrow-sink-parquet/zstd"]
 parquet-lz4 = ["sink-parquet", "open-arrow-sink-parquet/lz4"]
 
 [dependencies]
+open-arrow-sink-blob.workspace = true
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
 open-arrow-sink-storage.workspace = true

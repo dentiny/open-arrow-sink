@@ -65,10 +65,6 @@ pub struct WriteOptions {
     /// Optional shared I/O observer. Layers forward it; instrumented backends
     /// record measured payloads independently of commit success.
     pub io_metrics: Option<crate::IoMetrics>,
-    /// Native blob options for this session. None uses BlobHandleConfig defaults
-    /// on supporting backends, including Ingest for external blob URIs.
-    /// Explicit configuration requires `SinkCapability.supports_blob_handle`.
-    pub blob_handle: Option<crate::BlobHandleConfig>,
     /// Destination policy. Defaults to Create for every sink. Unsupported modes,
     /// including the default, fail before destination I/O.
     pub mode: WriteMode,
@@ -95,7 +91,6 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             io_metrics: None,
-            blob_handle: None,
             mode: WriteMode::default(),
             ordering: Ordering::default(),
             compression: CompressionOptions::default(),
@@ -112,11 +107,6 @@ impl WriteOptions {
     /// Set `io_metrics` while preserving all other options.
     pub fn with_io_metrics(mut self, io_metrics: Option<crate::IoMetrics>) -> Self {
         self.io_metrics = io_metrics;
-        self
-    }
-    /// Set `blob_handle` while preserving all other options.
-    pub fn with_blob_handle(mut self, blob_handle: Option<crate::BlobHandleConfig>) -> Self {
-        self.blob_handle = blob_handle;
         self
     }
     /// Set `mode` while preserving all other options.

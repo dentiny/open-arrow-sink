@@ -1,3 +1,4 @@
+use open_arrow_sink_blob::{BlobPlacement, BlobSessionWriter, BlobSink, BlobWriter};
 use std::{collections::HashSet, sync::Arc};
 
 use arrow_array::{
@@ -6,14 +7,14 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, Poison, RecordBatch, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, Error, Layer, Poison, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::{DownloadPool, error, validation::validate_download_config};
 
 /// Stream selected URL columns into native blobs and attach their descriptors.
-/// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
+/// Requires `open_arrow_sink_blob::BlobSink` and streaming capability.
 /// Input batch boundaries, row order, nulls, and unselected columns are preserved.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
@@ -37,7 +38,7 @@ pub struct DownloadBlobSink<S> {
     inner: S,
     config: DownloadBlobLayer,
 }
-impl<S: Sink> Layer<S> for DownloadBlobLayer {
+impl<S: BlobSink> Layer<S> for DownloadBlobLayer {
     type Layered = DownloadBlobSink<S>;
     fn layer(&self, inner: S) -> Self::Layered {
         DownloadBlobSink {
@@ -47,7 +48,7 @@ impl<S: Sink> Layer<S> for DownloadBlobLayer {
     }
 }
 #[async_trait]
-impl<S: Sink> Sink for DownloadBlobSink<S> {
+impl<S: BlobSink> Sink for DownloadBlobSink<S> {
     type Request = S::Request;
     fn capability(&self) -> SinkCapability {
         // This writer consumes native streams internally but does not expose
@@ -79,6 +80,9 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
                     .with_metadata(metadata),
             );
         }
+        if indices.is_empty() {
+            return self.inner.open(request, schema, options).await;
+        }
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let pool = match &self.config.download_pool {
             Some(pool) => pool.clone(),
@@ -87,7 +91,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         let io_metrics = options.io_metrics.clone();
         let inner = self
             .inner
-            .open(request, output_schema.clone(), options)
+            .open_blobs(request, output_schema.clone(), options)
             .await?;
         Ok(Box::new(DownloadBlobWriter {
             inner,
@@ -102,7 +106,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
 }
 
 struct DownloadBlobWriter {
-    inner: Box<dyn Writer>,
+    inner: Box<dyn BlobSessionWriter>,
     schema: SchemaRef,
     output_schema: SchemaRef,
     indices: Vec<usize>,
@@ -227,3 +231,6 @@ impl Writer for DownloadBlobWriter {
         self.inner.abort().await
     }
 }
+
+#[async_trait]
+impl<S: BlobSink> BlobSink for DownloadBlobSink<S> {}

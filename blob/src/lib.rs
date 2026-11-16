@@ -1,31 +1,8 @@
-use std::{any::Any, fmt, num::NonZeroUsize};
-
-use crate::{Result, async_trait};
-
-/// Strategy for external blob URIs, matching Lance's write options.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ExternalBlobMode {
-    /// Keep the source URI as an external reference.
-    Reference,
-    /// Copy the source bytes into destination-owned storage.
-    #[default]
-    Ingest,
-}
-
-/// Per-write blob handle configuration. Currently follows Lance blob options.
-/// These options govern native logical blob inputs; streamed handles already
-/// belong to the destination session and do not need external ingestion.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BlobHandleConfig {
-    pub external_blob_mode: ExternalBlobMode,
-    /// Maximum payload size in bytes kept inline before using packed storage.
-    /// Matches Lance BlobFieldOptions; None keeps field metadata or Lance's default.
-    pub inline_size_threshold: Option<usize>,
-    /// Maximum payload size in bytes kept in packed storage before using a
-    /// dedicated object. Lance selects dedicated storage strictly above this size.
-    /// None keeps field metadata or Lance's default; zero is not valid.
-    pub dedicated_size_threshold: Option<NonZeroUsize>,
-}
+//! Opt-in streaming blob protocol, separate from the core batch writer contract.
+use open_arrow_sink_core::{
+    Error, RecordBatch, Result, SchemaRef, Sink, WriteOptions, Writer, async_trait,
+};
+use std::{any::Any, fmt};
 
 /// A download chunk and the resources accounting for its buffered bytes.
 /// Keep the chunk alive until its bytes have been consumed by the blob writer.
@@ -63,7 +40,7 @@ impl AsRef<[u8]> for BlobChunk {
 }
 
 /// A completed blob owned by one backend write session.
-/// Handles can be attached to a batch using `Writer::write_with_blobs`.
+/// Handles can be attached to a batch using `BlobSessionWriter::write_with_blobs`.
 pub struct BlobHandle(Box<dyn Any + Send + Sync>);
 
 impl BlobHandle {
@@ -98,4 +75,35 @@ pub trait BlobWriter: Send {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()>;
     async fn finish(self: Box<Self>) -> Result<BlobHandle>;
     async fn abort(self: Box<Self>) -> Result<()>;
+}
+
+/// A batch writer that additionally accepts streaming native blobs.
+/// An unfinished or failed blob poisons the session. Foreign-session handles,
+/// duplicate placements, and nonempty/null placeholder cells must be rejected.
+#[async_trait]
+pub trait BlobSessionWriter: Writer {
+    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>>;
+    async fn write_with_blobs(
+        &mut self,
+        batch: RecordBatch,
+        blobs: Vec<BlobPlacement>,
+    ) -> Result<()>;
+}
+
+/// Explicit opt-in to native blob sessions. Ordinary `Sink::open` remains usable
+/// for batch writes. Layers must implement this extension to forward streaming.
+#[async_trait]
+pub trait BlobSink: Sink {
+    /// Validate blob schemas/options before destination I/O, as for `Sink::open`.
+    /// The default rejects streaming without opening the destination.
+    async fn open_blobs(
+        &self,
+        _request: Self::Request,
+        _schema: SchemaRef,
+        _options: WriteOptions,
+    ) -> Result<Box<dyn BlobSessionWriter>> {
+        Err(Error::Unsupported(
+            "sink does not support streaming blobs".into(),
+        ))
+    }
 }

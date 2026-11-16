@@ -1,10 +1,11 @@
 use arrow_array::cast::AsArray;
+use open_arrow_sink_blob::{BlobChunk, BlobPlacement, BlobSink};
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
-use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_storage::opendal;
 
@@ -37,7 +38,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
     let sink = LanceDatasetSink::new(storage);
     let io = open_arrow_sink_core::IoMetrics::default();
     let mut writer = sink
-        .open(
+        .open_blobs(
             url.clone(),
             input().schema(),
             options().with_io_metrics(Some(io.clone())),
@@ -94,14 +95,14 @@ async fn overwrite_abort_removes_attached_session_blobs() {
     let storage = storage();
     let url = storage.url("existing/").unwrap();
     let sink = LanceDatasetSink::new(storage.clone());
-    sink.open(url.clone(), input().schema(), options())
+    sink.open_blobs(url.clone(), input().schema(), options())
         .await
         .unwrap()
         .commit()
         .await
         .unwrap();
     let mut writer = sink
-        .open(
+        .open_blobs(
             url.clone(),
             input().schema(),
             options().with_mode(open_arrow_sink_core::WriteMode::Overwrite),
@@ -144,7 +145,7 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
     let url = storage.url("failed/").unwrap();
     let sink = LanceDatasetSink::new(storage.clone());
     let mut writer = sink
-        .open(url.clone(), input().schema(), options())
+        .open_blobs(url.clone(), input().schema(), options())
         .await
         .unwrap();
     let mut blob = Some(writer.create_blob().await.unwrap());
@@ -173,7 +174,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
     let url = storage.url("existing/").unwrap();
     let sink = LanceDatasetSink::new(storage);
     if mode == WriteMode::Append {
-        sink.open(url.clone(), input().schema(), options())
+        sink.open_blobs(url.clone(), input().schema(), options())
             .await
             .unwrap()
             .commit()
@@ -181,7 +182,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
             .unwrap();
     }
     let mut writer = sink
-        .open(url.clone(), input().schema(), options().with_mode(mode))
+        .open_blobs(url.clone(), input().schema(), options().with_mode(mode))
         .await
         .unwrap();
     writer.write(input()).await.unwrap();
@@ -198,7 +199,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
     let storage = storage();
     let io = open_arrow_sink_core::IoMetrics::default();
     let mut writer = LanceDatasetSink::new(storage.clone())
-        .open(
+        .open_blobs(
             storage.url("io-failure").unwrap(),
             input().schema(),
             options().with_io_metrics(Some(io.clone())),

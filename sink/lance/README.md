@@ -121,9 +121,10 @@ cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 
 Blob-marked schemas require a single writer; blob bytes use the configured shared storage.
 Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
-value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
+value, import `open_arrow_sink_blob::BlobSink`, open the session with `open_blobs`,
+then call `BlobSessionWriter::create_blob`, pass chunks to the returned `BlobWriter`, and
 finish it to obtain a session-owned `BlobHandle`. Attach handles with
-`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
+`BlobSessionWriter::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
 non-null binary placeholders. Null cells remain null. Ordinary materialized
 binary values can still be written through `Writer::write`.
 
@@ -139,20 +140,20 @@ streamed blobs when appending to or overwriting an existing dataset.
 
 ## External blob ingestion
 
-Lance advertises `SinkCapability.supports_blob_handle`. Configure each session
-through `WriteOptions.blob_handle`; the storage thresholds match Lance `BlobFieldOptions`:
+Lance advertises `SinkCapability.supports_blob_handle`. Configure the sink before
+composing layers; clone and override it for an individual session. The storage
+thresholds match Lance `BlobFieldOptions`:
 
 ```rust
-use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Ordering, WriteOptions};
+use open_arrow_sink_lance::{BlobHandleConfig, ExternalBlobMode, LanceDatasetSink};
 use std::num::NonZeroUsize;
 
-let options = WriteOptions::default()
-    .with_ordering(Ordering::Unordered)
-    .with_blob_handle(Some(BlobHandleConfig {
+let sink = LanceDatasetSink::default()
+    .with_blob_handle(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
-    }));
+    });
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with
@@ -167,8 +168,8 @@ or Lance defaults (64 KiB inline, 4 MiB dedicated). Values strictly above each
 threshold move to the next storage class. Dedicated selection takes precedence.
 They control native logical blob writes, including ingested URIs. Already prepared
 streaming handles retain their chosen dedicated storage layout.
-The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
-or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
+The default is `ExternalBlobMode::Ingest`, including `BlobHandleConfig::default()`.
+Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
 `DownloadBlobLayer` already creates destination-owned managed streams directly.
 

@@ -1,3 +1,6 @@
+use open_arrow_sink_blob::{
+    BlobChunk, BlobHandle, BlobPlacement, BlobSessionWriter, BlobSink, BlobWriter,
+};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -9,9 +12,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Ordering, RecordBatch,
-    Result, SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer,
-    async_trait, validation,
+    BLOB_METADATA_KEY, Ordering, RecordBatch, Result, SchemaRef, Sink, SinkCapability, SinkExt,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use open_arrow_sink_layer::DownloadBlobLayer;
 use open_arrow_sink_test_support::http::{HttpStatus, Reply, Server, serve};
@@ -83,38 +85,6 @@ impl Sink for Capture {
 impl Writer for CaptureWriter {
     fn schema(&self) -> &SchemaRef {
         &self.schema
-    }
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Ok(Box::new(CaptureBlob(Vec::new())))
-    }
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        let mut columns = batch.columns().to_vec();
-        for (column, array) in batch.columns().iter().enumerate() {
-            if !blobs.iter().any(|blob| blob.column == column) {
-                continue;
-            }
-            let array = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
-            let mut builder = arrow_array::builder::LargeBinaryBuilder::new();
-            for row in 0..array.len() {
-                if let Some(blob) = blobs
-                    .iter()
-                    .find(|blob| blob.column == column && blob.row == row)
-                {
-                    builder.append_value(blob.blob.downcast_ref::<Vec<u8>>().unwrap());
-                } else if array.is_null(row) {
-                    builder.append_null();
-                } else {
-                    builder.append_value(array.value(row));
-                }
-            }
-            columns[column] = Arc::new(builder.finish());
-        }
-        self.write(RecordBatch::try_new(batch.schema(), columns).unwrap())
-            .await
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         validation::validate_batch(&self.schema, &batch)?;
@@ -766,6 +736,7 @@ async fn rejects_missing_streaming_capability_before_open() {
             panic!("unsupported sink must not be opened");
         }
     }
+    impl BlobSink for UnsupportedSink {}
     let input = batch(vec![Some("https://example.invalid/blob")]);
     let result = UnsupportedSink
         .layer(download_layer(["url".to_owned()].into_iter().collect()))
@@ -874,4 +845,57 @@ async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: 
     assert!(writer.commit().await.is_err());
     assert_eq!(metrics.snapshot().bytes_read, 3);
     assert_eq!(metrics.snapshot().rows_committed, 0);
+}
+
+#[async_trait]
+impl BlobSessionWriter for CaptureWriter {
+    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
+        Ok(Box::new(CaptureBlob(Vec::new())))
+    }
+    async fn write_with_blobs(
+        &mut self,
+        batch: RecordBatch,
+        blobs: Vec<BlobPlacement>,
+    ) -> Result<()> {
+        let mut columns = batch.columns().to_vec();
+        for (column, array) in batch.columns().iter().enumerate() {
+            if !blobs.iter().any(|blob| blob.column == column) {
+                continue;
+            }
+            let array = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            let mut builder = arrow_array::builder::LargeBinaryBuilder::new();
+            for row in 0..array.len() {
+                if let Some(blob) = blobs
+                    .iter()
+                    .find(|blob| blob.column == column && blob.row == row)
+                {
+                    builder.append_value(blob.blob.downcast_ref::<Vec<u8>>().unwrap());
+                } else if array.is_null(row) {
+                    builder.append_null();
+                } else {
+                    builder.append_value(array.value(row));
+                }
+            }
+            columns[column] = Arc::new(builder.finish());
+        }
+        self.write(RecordBatch::try_new(batch.schema(), columns).unwrap())
+            .await
+    }
+}
+
+#[async_trait]
+impl BlobSink for Capture {
+    async fn open_blobs(
+        &self,
+        _: (),
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<dyn BlobSessionWriter>> {
+        validation::validate_options(&schema, &options, self.capability())?;
+        self.0.lock().unwrap().schema = Some(schema.clone());
+        Ok(Box::new(CaptureWriter {
+            state: self.clone(),
+            schema,
+        }))
+    }
 }

@@ -9,7 +9,7 @@ For a new destination, follow [extend a sink](extending-sinks.md).
 
 [custom_layer.rs](../layer/examples/custom_layer.rs) implements `MaxBatchRows`,
 a wrapping sink, and a wrapping writer. It rejects oversized batches, forwards
-accepted batches and native blob methods, and aborts a poisoned session instead
+accepted batches, and aborts a poisoned session instead
 of committing earlier accepted rows.
 
 ```sh
@@ -33,8 +33,10 @@ let sink = backend.layer(MaxBatchRows(1024));
 `capability()` should preserve only guarantees your wrapper actually retains. An
 option-override layer forwards capabilities because it changes policy, not what
 the backend can guarantee. A reordering execution layer must advertise Unordered.
-If the wrapper forwards `supports_blob_streaming`, it must forward/implement
-the blob writer methods too; inheriting their unsupported defaults would contradict capabilities.
+If the wrapper forwards `supports_blob_streaming`, implement the separate
+`open_arrow_sink_blob::BlobSink` extension and return a `BlobSessionWriter` that
+forwards/adapts its blob methods. Ordinary `Writer` implementations have no blob
+methods. A wrapper that consumes or disables streams must clear the capability.
 
 ## 2. Validate and open the inner session
 

@@ -82,3 +82,16 @@ impl<S: ParallelSink> ParallelSink for OptionsSink<S> {
             .await
     }
 }
+
+#[async_trait]
+impl<S: open_arrow_sink_blob::BlobSink> open_arrow_sink_blob::BlobSink for OptionsSink<S> {
+    async fn open_blobs(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        mut options: WriteOptions,
+    ) -> Result<Box<dyn open_arrow_sink_blob::BlobSessionWriter>> {
+        (self.policy)(&mut options, self.inner.capability())?;
+        self.inner.open_blobs(request, schema, options).await
+    }
+}

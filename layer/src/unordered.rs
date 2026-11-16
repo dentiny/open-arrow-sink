@@ -213,3 +213,6 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
         self.cleanup().await
     }
 }
+
+#[async_trait]
+impl<S: ParallelSink> open_arrow_sink_blob::BlobSink for UnorderedWriteSink<S> {}

@@ -6,9 +6,8 @@ use lance::{
     datatypes::BlobKind,
 };
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{
-    BlobHandleConfig, IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions,
-};
+use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_lance::BlobHandleConfig;
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::opendal;
@@ -165,12 +164,13 @@ async fn ingests_blob_with_configured_layout(
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let options = write_options().with_blob_handle(Some(BlobHandleConfig {
+    let options = write_options();
+    let blob_config = BlobHandleConfig {
         inline_size_threshold: Some(1),
         dedicated_size_threshold: NonZeroUsize::new(2),
         ..Default::default()
-    }));
-    let sink = LanceDatasetSink::new(storage.clone());
+    };
+    let sink = LanceDatasetSink::new(storage.clone()).with_blob_handle(blob_config);
     let url = storage.url("ingested/").unwrap();
     let mut writer = if parallel {
         sink.clone()

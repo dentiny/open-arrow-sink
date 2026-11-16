@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct NativeStorage {
     pub storage: Storage,
+    pub blob_handle: crate::BlobHandleConfig,
     pub url: Url,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
@@ -36,6 +37,7 @@ impl NativeStorage {
         }
         Ok(Self {
             storage,
+            blob_handle: crate::BlobHandleConfig::default(),
             url,
             session,
             io_tracker,

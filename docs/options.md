@@ -131,7 +131,7 @@ let summary = writer.commit().await?;
 The unordered layer advertises `supports_blob_streaming: false`: its data writers
 have no native streaming blob interface. An outer `DownloadBlobLayer` selecting
 URL columns is rejected before opening writers. Native logical blob inputs and
-`WriteOptions.blob_handle` configuration remain backend-controlled.
+Lance sink configuration remain backend-controlled.
 
 The inner sink implements `ParallelSink`. It reserves a single destination and
 returns a `WriteSession` containing independent `DataWriter`s and one
@@ -287,7 +287,8 @@ releases its request slot; dropping its yielded chunks releases their byte budge
 
 ## Download URL columns into native blobs
 
-Compose `DownloadBlobLayer` with a sink advertising `SinkCapability.supports_blob_streaming` (currently
+Compose `DownloadBlobLayer` with a sink implementing `open_arrow_sink_blob::BlobSink`
+and advertising `SinkCapability.supports_blob_streaming` (currently
 `LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
 columns by name. The layer passes budgeted chunks directly from OpenDAL into the
 sink's native blob writer; it never collects a complete blob or a batch of payloads.
@@ -296,7 +297,7 @@ The download layer consumes native streams internally and advertises
 `supports_blob_streaming: false` to callers. Select all URL columns in one layer;
 nesting download layers is rejected before opening the destination.
 `supports_blob_handle` separately governs native logical blob inputs and
-`WriteOptions.blob_handle` configuration.
+Lance sink configuration.
 
 ```rust,no_run
 use std::{num::NonZeroUsize, sync::Arc};
@@ -335,15 +336,13 @@ the writer's abort/drop guarantees.
 
 ### Blob handle configuration
 
-`WriteOptions.blob_handle: Option<BlobHandleConfig>` configures each write session.
-The configuration follows Lance's `BlobFieldOptions`: `inline_size_threshold`
-(inline to packed) and `dedicated_size_threshold` (packed to dedicated), plus
-`external_blob_mode` (`Ingest` by default or explicit `Reference`). Thresholds
-apply to top-level native blob fields; omitted thresholds preserve field metadata
-or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
-`SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
-configuration before destination I/O. Native schema and parallel-session restrictions
-still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
+`open_arrow_sink_lance::{BlobHandleConfig, ExternalBlobMode}` configure native
+Lance ingestion and layout through `LanceDatasetSink::with_blob_handle(config)`.
+Clone the sink and override this configuration for an individual session; configure
+it before composing layers. Shared `WriteOptions` contain no Lance blob settings.
+The default remains `Ingest`. Omitted thresholds preserve field metadata or Lance
+defaults. Native schema and parallel-session restrictions still apply. See the
+[Lance blob options](../sink/lance/README.md#external-blob-ingestion).
 
 ### Existing indexes
 

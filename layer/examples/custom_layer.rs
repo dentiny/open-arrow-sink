@@ -5,8 +5,8 @@ mod counting_sink;
 use arrow_array::{ArrayRef, Int64Array};
 use counting_sink::CountingSink;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Layer, Ordering, RecordBatch, Result, SchemaRef, Sink,
-    SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
+    Error, Layer, Ordering, RecordBatch, Result, SchemaRef, Sink, SinkCapability, SinkExt,
+    WriteOptions, WriteSummary, Writer, async_trait,
 };
 use std::sync::{
     Arc,
@@ -35,7 +35,7 @@ impl<S: Sink> Layer<S> for MaxBatchRows {
 impl<S: Sink> Sink for LimitedSink<S> {
     type Request = S::Request;
     fn capability(&self) -> SinkCapability {
-        self.inner.capability()
+        self.inner.capability().with_supports_blob_streaming(false)
     }
     async fn open(
         &self,
@@ -78,24 +78,6 @@ impl Writer for LimitedWriter {
         self.state.begin()?;
         self.check_batch(&batch)?;
         self.inner.write(batch).await?;
-        self.state.complete();
-        Ok(())
-    }
-    // Forward blob methods too, since capabilities were forwarded unchanged.
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.state.begin()?;
-        let blob = self.inner.create_blob().await?;
-        self.state.complete();
-        Ok(blob)
-    }
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        self.state.begin()?;
-        self.check_batch(&batch)?;
-        self.inner.write_with_blobs(batch, blobs).await?;
         self.state.complete();
         Ok(())
     }

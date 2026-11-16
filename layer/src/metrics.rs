@@ -1,8 +1,8 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
+use open_arrow_sink_blob::{BlobPlacement, BlobSessionWriter, BlobSink, BlobWriter};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, Layer, ParallelSink, Poison, RecordBatch, Result,
-    SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary,
-    Writer, async_trait,
+    DataWriter, Layer, ParallelSink, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
+    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
 };
 use std::{
     num::NonZeroUsize,
@@ -167,52 +167,25 @@ impl<S: Sink> Sink for MetricsSink<S> {
         }))
     }
 }
-struct MetricsWriter {
-    inner: Box<dyn Writer>,
+struct MetricsWriter<W: Writer + ?Sized> {
+    inner: Box<W>,
     metrics: WriteMetrics,
     state: Poison,
 }
-impl MetricsWriter {
-    async fn accept(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Option<Vec<BlobPlacement>>,
-    ) -> Result<()> {
-        self.state.begin()?;
-        let observation = Observation::new(&self.metrics, Operation::Write);
-        let rows = batch.num_rows() as u64;
-        match blobs {
-            Some(blobs) => self.inner.write_with_blobs(batch, blobs).await?,
-            None => self.inner.write(batch).await?,
-        }
-        self.metrics.accepted(rows);
-        self.state.complete();
-        observation.success();
-        Ok(())
-    }
-}
 #[async_trait]
-impl Writer for MetricsWriter {
+impl<W: Writer + ?Sized> Writer for MetricsWriter<W> {
     fn schema(&self) -> &SchemaRef {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.accept(batch, None).await
-    }
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        self.accept(batch, Some(blobs)).await
-    }
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         self.state.begin()?;
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        let blob = self.inner.create_blob().await?;
+        let observation = Observation::new(&self.metrics, Operation::Write);
+        let rows = batch.num_rows() as u64;
+        self.inner.write(batch).await?;
+        self.metrics.accepted(rows);
         self.state.complete();
         observation.success();
-        Ok(blob)
+        Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
@@ -327,5 +300,52 @@ impl<S: ParallelSink> ParallelSink for MetricsSink<S> {
                 metrics: self.metrics.clone(),
             }),
         })
+    }
+}
+
+#[async_trait]
+impl<W: BlobSessionWriter + ?Sized> BlobSessionWriter for MetricsWriter<W> {
+    async fn write_with_blobs(
+        &mut self,
+        batch: RecordBatch,
+        blobs: Vec<BlobPlacement>,
+    ) -> Result<()> {
+        self.state.begin()?;
+        let observation = Observation::new(&self.metrics, Operation::Write);
+        let rows = batch.num_rows() as u64;
+        self.inner.write_with_blobs(batch, blobs).await?;
+        self.metrics.accepted(rows);
+        self.state.complete();
+        observation.success();
+        Ok(())
+    }
+    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
+        self.state.begin()?;
+        let observation = Observation::new(&self.metrics, Operation::Other);
+        let blob = self.inner.create_blob().await?;
+        self.state.complete();
+        observation.success();
+        Ok(blob)
+    }
+}
+
+#[async_trait]
+impl<S: BlobSink> BlobSink for MetricsSink<S> {
+    async fn open_blobs(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        mut options: WriteOptions,
+    ) -> Result<Box<dyn BlobSessionWriter>> {
+        self.metrics.observe_io(&mut options);
+        let observation = Observation::new(&self.metrics, Operation::Other);
+        let inner = self.inner.open_blobs(request, schema, options).await?;
+        self.metrics.update(|s| s.sessions_opened += 1);
+        observation.success();
+        Ok(Box::new(MetricsWriter {
+            inner,
+            metrics: self.metrics.clone(),
+            state: Poison::default(),
+        }))
     }
 }

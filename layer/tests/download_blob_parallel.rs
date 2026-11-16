@@ -8,12 +8,12 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
-fn sink(state: &Arc<Mutex<State>>) -> impl Sink<Request = ()> {
+fn sink(state: &Arc<Mutex<State>>) -> impl open_arrow_sink_blob::BlobSink<Request = ()> {
     TestSink(state.clone()).layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
 }
 
 #[tokio::test]
-async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
+async fn unordered_layer_preserves_blob_capability_but_rejects_streaming() {
     use arrow_array::StringArray;
     use open_arrow_sink_layer::DownloadBlobLayer;
 
@@ -33,17 +33,13 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
         Arc::new(StringArray::from(vec!["https://example.invalid/blob"])) as _,
     )])
     .unwrap();
-    // Native logical blob options remain valid for parallel data writers.
-    sink.open(
-        (),
-        input.schema(),
-        options().with_blob_handle(Some(Default::default())),
-    )
-    .await
-    .unwrap()
-    .abort()
-    .await
-    .unwrap();
+    // Native logical blob inputs remain supported by parallel data writers.
+    sink.open((), input.schema(), options())
+        .await
+        .unwrap()
+        .abort()
+        .await
+        .unwrap();
     let opened = state.lock().unwrap().count(Operation::Open);
     assert_eq!(opened, 2);
     assert!(

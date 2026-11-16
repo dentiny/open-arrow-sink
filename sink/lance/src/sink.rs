@@ -14,6 +14,7 @@ use crate::{storage::NativeStorage, validation::validate_options, write_options}
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
     sources: StorageResolver,
+    blob_handle: crate::BlobHandleConfig,
 }
 
 impl LanceDatasetSink {
@@ -21,7 +22,14 @@ impl LanceDatasetSink {
         Self {
             storage: Some(storage),
             sources: StorageResolver::default(),
+            blob_handle: crate::BlobHandleConfig::default(),
         }
+    }
+    /// Configure native blob ingestion and layout for sessions opened by this sink.
+    /// Clone the sink and override this configuration for an individual write.
+    pub fn with_blob_handle(mut self, config: crate::BlobHandleConfig) -> Self {
+        self.blob_handle = config;
+        self
     }
     /// Configure an independent source namespace for native external blob ingestion.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
@@ -37,7 +45,9 @@ impl LanceDatasetSink {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         };
-        NativeStorage::new(storage, url, self.sources.clone(), metrics)
+        let mut destination = NativeStorage::new(storage, url, self.sources.clone(), metrics)?;
+        destination.blob_handle = self.blob_handle.clone();
+        Ok(destination)
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
@@ -83,24 +93,7 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         let storage_schema = crate::blob::storage_schema(&schema)?;
         if storage_schema != schema {
-            validate_options(&schema, &options, self.capability())?;
-            let encoding_schema = write_options::writer_schema(&schema, &options)?;
-            let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
-            destination
-                .prepare(
-                    &crate::blob::logical_schema(&encoding_schema),
-                    options.mode,
-                    options.storage_version.as_deref(),
-                )
-                .await?;
-            destination.validate_index_requests(&options).await?;
-            return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
-                schema,
-                storage_schema,
-                encoding_schema,
-                destination,
-                options,
-            )?));
+            return Ok(self.open_blob_writer(url, schema, options).await?);
         }
         // Use the same fragment writing and publication path for every session.
         self.open_writers(url, schema, options, NonZeroUsize::MIN)
@@ -122,7 +115,7 @@ impl ParallelSink for LanceDatasetSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
-        let encoding_schema = write_options::writer_schema(&schema, &options)?;
+        let encoding_schema = write_options::writer_schema(&schema, &options, &self.blob_handle)?;
         let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
         destination
             .prepare(
@@ -150,5 +143,50 @@ impl ParallelSink for LanceDatasetSink {
                 options,
             }),
         })
+    }
+}
+
+impl LanceDatasetSink {
+    async fn open_blob_writer(
+        &self,
+        url: Url,
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<crate::blob_writer::BlobDatasetWriter>> {
+        let storage_schema = crate::blob::storage_schema(&schema)?;
+        if storage_schema == schema {
+            return Err(open_arrow_sink_core::Error::Unsupported(
+                "streaming blobs require a blob-marked binary column".into(),
+            ));
+        }
+        validate_options(&schema, &options, self.capability())?;
+        let encoding_schema = write_options::writer_schema(&schema, &options, &self.blob_handle)?;
+        let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
+        destination
+            .prepare(
+                &crate::blob::logical_schema(&encoding_schema),
+                options.mode,
+                options.storage_version.as_deref(),
+            )
+            .await?;
+        destination.validate_index_requests(&options).await?;
+        Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
+            schema,
+            storage_schema,
+            encoding_schema,
+            destination,
+            options,
+        )?))
+    }
+}
+#[async_trait]
+impl open_arrow_sink_blob::BlobSink for LanceDatasetSink {
+    async fn open_blobs(
+        &self,
+        url: Url,
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<dyn open_arrow_sink_blob::BlobSessionWriter>> {
+        Ok(self.open_blob_writer(url, schema, options).await?)
     }
 }

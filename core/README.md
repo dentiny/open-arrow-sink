@@ -13,7 +13,10 @@ and storage dependencies.
 | `DataWriter` | Physical output; `finish(&mut self)` returns metadata; abort remains possible after finish |
 | `SessionCommitter<T>` | Publish every output once, or clean up session resources after writer aborts |
 | `Layer<S>` / `SinkExt` | Construct decorators without I/O, preserving the request type |
-| `BlobWriter` / `BlobHandle` / `BlobPlacement` | Stream bytes and attach completed session-owned native blob descriptors |
+
+Streaming blob contracts live in the separate [blob crate](../blob/README.md).
+Lance ingestion/layout configuration lives in `open-arrow-sink-lance`; ordinary
+`Writer` and `WriteOptions` contain no streaming protocol or Lance blob options.
 
 `validation::validate_options` checks shared capabilities, compression names,
 positive file sizes, modes, and ordering before destination I/O. It does not

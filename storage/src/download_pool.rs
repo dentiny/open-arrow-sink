@@ -1,8 +1,9 @@
+use open_arrow_sink_blob::BlobChunk;
 use std::{num::NonZeroUsize, sync::Arc};
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Error, Result};
+use open_arrow_sink_core::{Error, Result};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, services::Http};
 use tokio::sync::Semaphore;
 

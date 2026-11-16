@@ -1,0 +1,11 @@
+[package]
+name = "open-arrow-sink-blob"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming blob extensions for Arrow RecordBatch sinks"
+
+[dependencies]
+open-arrow-sink-core.workspace = true
+bytes.workspace = true

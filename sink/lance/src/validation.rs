@@ -246,9 +246,9 @@ pub(crate) fn validate_blob_commit(
 }
 pub(crate) fn validate_blob_placements(
     batch: &open_arrow_sink_core::RecordBatch,
-    blobs: Vec<open_arrow_sink_core::BlobPlacement>,
+    blobs: Vec<open_arrow_sink_blob::BlobPlacement>,
     session: &std::sync::Arc<crate::blob::BlobSession>,
-) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
+) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_blob::BlobHandle>> {
     use crate::blob::NativeBlob;
     use arrow_array::{Array, LargeBinaryArray};
     use open_arrow_sink_core::BLOB_METADATA_KEY;

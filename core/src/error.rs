@@ -86,7 +86,3 @@ pub(crate) fn invalid_index_column(column: &str) -> Error {
         "index column must identify one top-level field: {column}"
     ))
 }
-
-pub(crate) fn unsupported_blob_streams() -> Error {
-    Error::Unsupported("sink does not support streaming blobs".into())
-}

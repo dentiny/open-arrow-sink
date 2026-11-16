@@ -1,3 +1,4 @@
+use open_arrow_sink_blob::{BlobChunk, BlobHandle, BlobPlacement, BlobWriter};
 use std::{
     collections::HashSet,
     sync::{
@@ -11,8 +12,7 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison,
-    RecordBatch, Result, SchemaRef, async_trait,
+    BLOB_METADATA_KEY, Error, Poison, RecordBatch, Result, SchemaRef, async_trait,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 

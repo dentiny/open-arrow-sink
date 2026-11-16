@@ -31,7 +31,7 @@ metadata or assume where batches originated.
 
 Return a complete `SinkCapability`: supported modes, actual read-order guarantee,
 global/per-column codecs, partition transform categories, index kinds, blob
-configuration support (`supports_blob_handle`), streaming blob interfaces
+input support (`supports_blob_handle`), streaming blob interfaces
 (`supports_blob_streaming`), and storage-version support. Empty codec/index/partition collections mean
 unsupported. A permission to reorder is not a guarantee of preserved order.
 Directory file numbering alone cannot establish scan order.
@@ -101,8 +101,7 @@ Build a `WriteSession { writers, committer }`. For ordinary `Sink::open`, return
 exactly one data writer and adapt it using `session.into_writer().await`. The
 adapter handles poisoned writes, finish errors, and pre-publication aborts.
 A backend can implement `Writer` directly for a specialized lifecycle, but must
-provide all equivalent failure, cancellation, consuming commit/abort, and optional
-blob-method behavior itself.
+provide all equivalent failure, cancellation, and consuming commit/abort behavior itself.
 
 For `ParallelSink::open_writers`, return **exactly** the requested nonzero count,
 all with the requested schema, disjoint output names/ownership, and one committer.
@@ -119,11 +118,12 @@ flowchart LR
     OB --> Commit
 ```
 
-Adding native blobs also requires `Writer::create_blob` and `write_with_blobs`.
+To add streaming blobs, depend on `open-arrow-sink-blob` and implement `BlobSink::open_blobs`
+and `BlobSessionWriter::{create_blob, write_with_blobs}` alongside the ordinary batch API.
 Keep `BlobChunk` accounting alive until bytes are consumed; return session-owned
 handles only after the blob finishes. Reject foreign/duplicate placements,
 nonempty or null placeholder cells, and invalid blob columns. An unfinished or
-failed blob poisons its session. See the [blob contracts](../core/src/blob.rs) and
+failed blob poisons its session. See the [blob contracts](../blob/src/lib.rs) and
 [Lance implementation](../sink/lance/src/blob_writer.rs).
 
 ## 6. Integrate and verify

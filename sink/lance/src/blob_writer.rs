@@ -1,10 +1,11 @@
+use open_arrow_sink_blob::{BlobPlacement, BlobSessionWriter, BlobWriter};
 use std::sync::{Arc, atomic::Ordering};
 
 use datafusion_physical_plan::SendableRecordBatchStream;
 use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
-    WriteSummary, Writer, async_trait, validation,
+    Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer, async_trait,
+    validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -37,38 +38,6 @@ impl Writer for BlobDatasetWriter {
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.write_with_blobs(batch, Vec::new()).await
-    }
-
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
-        self.state.poison();
-        let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
-        self.state.complete();
-        Ok(blob)
-    }
-
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
-        self.state.poison();
-        validation::validate_batch(&self.schema, &batch)?;
-        let rows = batch.num_rows() as u64;
-        let batch =
-            crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
-            .send(Message::Batch(batch))
-            .await
-            .map_err(|_| worker_stopped())?;
-        self.rows += rows;
-        self.state.complete();
-        Ok(())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
@@ -127,7 +96,10 @@ impl BlobDatasetWriter {
             receiver,
             finished: false,
         }) as SendableRecordBatchStream;
-        let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
+        let params = destination.bind_write_params(crate::write_options::write_params(
+            &options,
+            &destination.blob_handle,
+        )?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -151,5 +123,40 @@ impl BlobDatasetWriter {
             destination,
             options,
         })
+    }
+}
+
+#[async_trait]
+impl BlobSessionWriter for BlobDatasetWriter {
+    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
+        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.poison();
+        let blob =
+            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+        self.state.complete();
+        Ok(blob)
+    }
+
+    async fn write_with_blobs(
+        &mut self,
+        batch: RecordBatch,
+        blobs: Vec<BlobPlacement>,
+    ) -> Result<()> {
+        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.poison();
+        validation::validate_batch(&self.schema, &batch)?;
+        let rows = batch.num_rows() as u64;
+        let batch =
+            crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
+        let batch = writer_batch(batch, &self.encoding_schema)?;
+        self.sender
+            .as_ref()
+            .unwrap()
+            .send(Message::Batch(batch))
+            .await
+            .map_err(|_| worker_stopped())?;
+        self.rows += rows;
+        self.state.complete();
+        Ok(())
     }
 }
