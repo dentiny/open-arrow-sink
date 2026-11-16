@@ -110,7 +110,7 @@ through Lance, potentially publishing another dataset version. Names are determi
 when one fails, and the original dataset handle is refreshed after they finish.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
-`Error::Backend` contains an `IndexCommitError` identifying the failed index type
+`Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
 than rewriting already committed rows. Dropping the commit future aborts
@@ -302,7 +302,8 @@ default version. This selects the file format, independently of the dataset's co
 
 The Lance `write_options` adapter translates shared configuration into native
 `WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression, prepared blob fields, then explicit layout overrides. Storage binds
+compression (`compression::apply_compression`), prepared blob fields, then explicit
+layout overrides (`write_options::writer_schema`). `LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 
@@ -335,8 +336,8 @@ requiring custom credentials, endpoints, or operators. The destination store
 always takes precedence inside its own namespace; sources use the most specific
 configured root. Destination credentials are never reused for unrelated sources.
 Unregistered sources use URL-configured storage cached by `StorageResolver`.
-The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
-adapts the selected storage to Lance.
+Lance’s `Provider` applies destination precedence and adapts the selected storage
+to Lance.
 
 Configure sources once and pass the same `Arc<StorageResolver>` to the download
 pool and native Lance sink. Both paths then use the same source operators,

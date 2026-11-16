@@ -17,7 +17,11 @@ pub(crate) fn validate_options(
     if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
         && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
     {
-        return Err(error::invalid_zstd_level(level));
+        return Err(Error::InvalidConfig(format!(
+            "Iceberg Zstd compression level must be between {} and {}: {level}",
+            ZSTD_COMPRESSION_LEVEL_RANGE.start(),
+            ZSTD_COMPRESSION_LEVEL_RANGE.end()
+        )));
     }
     Ok(())
 }
@@ -28,11 +32,13 @@ pub(crate) fn validate_table(
     partition: Option<PartitionOptions>,
 ) -> Result<()> {
     if table.readonly() {
-        return Err(error::read_only_table());
+        return Err(Error::Unsupported("read-only Iceberg table".into()));
     }
     let spec = table.metadata().default_partition_spec();
     if !spec.fields().is_empty() && partition.is_none() {
-        return Err(error::partition_required());
+        return Err(Error::InvalidConfig(
+            "partitioned tables require WriteOptions.partition".into(),
+        ));
     }
     if let Some(partition) = partition {
         for field in spec.fields() {
@@ -47,18 +53,17 @@ pub(crate) fn validate_table(
                 Transform::Truncate(width) if width > 0 => PartitionType::Truncate,
                 Transform::Void => PartitionType::Void,
                 transform => {
-                    return Err(error::unsupported_partition_transform(
-                        transform,
-                        &field.name,
-                    ));
+                    return Err(Error::Unsupported(format!(
+                        "Iceberg partition transform {transform:?} on field {}",
+                        field.name
+                    )));
                 }
             };
             if category != partition.partition_type {
-                return Err(error::partition_mismatch(
-                    partition.partition_type,
-                    &field.name,
-                    field.transform,
-                ));
+                return Err(Error::InvalidConfig(format!(
+                    "requested {:?} partitioning, but field {} uses {:?}",
+                    partition.partition_type, field.name, field.transform
+                )));
             }
         }
     }

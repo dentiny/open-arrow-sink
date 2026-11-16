@@ -84,7 +84,7 @@ impl Plan {
                 .map(|(i, _)| i)
                 .collect();
             if matches.len() != 1 || !seen.insert(remap.source.clone()) {
-                return Err(Error::Unsupported(format!(
+                return Err(Error::InvalidInput(format!(
                     "remap source must exist and be unique: {}",
                     remap.source
                 )));
@@ -95,7 +95,7 @@ impl Plan {
         }
         let mut names = HashSet::new();
         if fields.iter().any(|f| !names.insert(f.name())) {
-            return Err(Error::Unsupported("duplicate remapped field name".into()));
+            return Err(Error::InvalidInput("duplicate remapped field name".into()));
         }
         Ok(Self {
             source: source.clone(),

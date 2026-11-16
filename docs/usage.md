@@ -211,7 +211,7 @@ Construct `LanceDatasetSink::default()` with a URL, or `new(storage)` for a shar
 operator. Select unordered writes and a supported mode. Add `IndexSpec` entries
 to `WriteOptions.indexes` for supported column types. Index construction runs
 after the data commit and can publish additional versions; `IndexCommitError`
-inside `Error::Backend` means data is already committed. Do not replay those rows
+in `Error::IndexCommit` means data is already committed. Do not replay those rows
 in response to an index error.
 
 Use `sink.dataset_builder(url)?.load().await?` to read with the same storage.

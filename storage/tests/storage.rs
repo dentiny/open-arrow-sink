@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use open_arrow_sink_core::Error;
+
 use open_arrow_sink_storage::{
     DirectoryState, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
 };
@@ -53,9 +55,18 @@ async fn namespace_boundaries_and_conditional_creation() {
         "memory:///warehouse/file?x=y",
         "memory:///warehouse/%2e%2e%2ffile",
     ] {
-        assert!(storage.resolve(&url.parse().unwrap()).is_err(), "{url}");
+        assert!(
+            matches!(
+                storage.resolve(&url.parse().unwrap()),
+                Err(Error::InvalidInput(_))
+            ),
+            "{url}"
+        );
     }
-    assert!(storage.url("../outside").is_err());
+    assert!(matches!(
+        storage.url("../outside"),
+        Err(Error::InvalidInput(_))
+    ));
     let root = storage.resolve(storage.base_url()).unwrap();
     let repeated_root = storage
         .resolve(&"memory:///warehouse//".parse().unwrap())

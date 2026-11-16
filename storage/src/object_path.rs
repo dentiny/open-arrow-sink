@@ -1,6 +1,6 @@
-use open_arrow_sink_core::Result;
+use open_arrow_sink_core::{Error, Result};
 
-use crate::{error, validation};
+use crate::validation;
 
 /// A validated, decoded path relative to a Storage namespace.
 /// Resolve external URLs with `Storage::resolve` before performing I/O. Paths
@@ -39,15 +39,12 @@ impl ObjectPath {
     pub fn join(&self, child: &str) -> Result<Self> {
         validation::validate_path(child)?;
         if child.starts_with('/') {
-            return Err(error::invalid_path());
+            return Err(Error::InvalidInput("invalid storage path".into()));
         }
         Ok(Self(format!("{}{child}", self.as_dir().as_str())))
     }
 
     pub(crate) fn require_nonroot(&self) -> Result<()> {
-        if self.is_root() {
-            return Err(error::empty_path());
-        }
-        Ok(())
+        validation::validate_nonroot_path(self.as_str())
     }
 }

@@ -3,10 +3,10 @@ use open_arrow_sink_core::{
     Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
 };
 
-use crate::{LanceFragments, index::build_indexes, storage::NativeStorage};
+use crate::{LanceFragments, destination::LanceDestination, index::build_indexes};
 
 pub(crate) struct LanceCommitter {
-    pub destination: NativeStorage,
+    pub destination: LanceDestination,
     pub options: WriteOptions,
 }
 
@@ -43,9 +43,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         }
         let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
         let summary = WriteSummary { rows_written };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
+        build_indexes(&mut dataset, &self.options.indexes, &summary).await?;
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {

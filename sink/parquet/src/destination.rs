@@ -25,7 +25,9 @@ impl Destination {
     ) -> Result<Self> {
         let directory = storage.resolve(&directory)?.as_dir();
         if directory.is_root() {
-            return Err(crate::error::root_destination());
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
         }
         if mode == WriteMode::Create
             && storage.inspect_directory(&directory).await? != DirectoryState::Missing
@@ -38,7 +40,11 @@ impl Destination {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
                 (format!("part-{}-", uuid::Uuid::new_v4()), false)
             }
-            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
+            WriteMode::Overwrite => {
+                return Err(Error::Unsupported(
+                    "Parquet directory sink does not support Overwrite".into(),
+                ));
+            }
         };
         Ok(Self {
             storage,

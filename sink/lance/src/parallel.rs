@@ -8,7 +8,7 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    LanceFragments, compression::writer_batch, error::worker_stopped, storage::NativeStorage,
+    LanceFragments, compression::writer_batch, destination::LanceDestination, error::worker_stopped,
 };
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
@@ -25,7 +25,7 @@ impl FragmentWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        destination: LanceDestination,
         options: &WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);

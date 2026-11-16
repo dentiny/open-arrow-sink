@@ -11,7 +11,7 @@ use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
 
-pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> SchemaRef {
+pub(crate) fn apply_compression(schema: &SchemaRef, options: &CompressionOptions) -> SchemaRef {
     if options.global.is_none()
         && options.columns.is_empty()
         && options.nested_columns.is_empty()
@@ -185,9 +185,9 @@ mod tests {
         )]));
         assert!(Arc::ptr_eq(
             &schema,
-            &writer_schema(&schema, &Default::default())
+            &apply_compression(&schema, &Default::default())
         ));
-        let encoded = writer_schema(
+        let encoded = apply_compression(
             &schema,
             &CompressionOptions {
                 structural_encoding: Some(StructuralEncoding::Fullzip),
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(metadata[COMPRESSION_LEVEL_META_KEY], "7");
         assert_eq!(metadata[STRUCTURAL_ENCODING_META_KEY], "fullzip");
         assert_eq!(metadata["custom"], "preserved");
-        let codec_only = writer_schema(
+        let codec_only = apply_compression(
             &encoded,
             &CompressionOptions {
                 global: Some(Compression::Uncompressed),

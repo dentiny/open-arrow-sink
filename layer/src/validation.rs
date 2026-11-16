@@ -1,6 +1,4 @@
-use open_arrow_sink_core::{Result, SchemaRef, WriteSession};
-
-use crate::error;
+use open_arrow_sink_core::{Error, Result, SchemaRef, WriteSession};
 
 pub(crate) fn validate_session<T: Send + 'static>(
     session: &WriteSession<T>,
@@ -13,7 +11,9 @@ pub(crate) fn validate_session<T: Send + 'static>(
             .iter()
             .any(|writer| writer.schema() != schema)
     {
-        return Err(error::invalid_session());
+        return Err(Error::backend(std::io::Error::other(
+            "backend returned an invalid parallel writer session",
+        )));
     }
     Ok(())
 }
@@ -25,7 +25,9 @@ pub(crate) fn validate_download_config(
     let mut indices = Vec::new();
     for name in columns {
         let index = open_arrow_sink_core::validation::unique_column_index(schema, name)
-            .ok_or_else(|| error::download_column_unique(name))?;
+            .ok_or_else(|| {
+                Error::InvalidConfig(format!("download column must exist and be unique: {name}"))
+            })?;
         let field = schema.field(index);
         if !matches!(
             field.data_type(),
@@ -33,7 +35,9 @@ pub(crate) fn validate_download_config(
                 | arrow_schema::DataType::LargeUtf8
                 | arrow_schema::DataType::Utf8View
         ) {
-            return Err(error::download_column_type(name));
+            return Err(Error::InvalidConfig(format!(
+                "download column must be a string: {name}"
+            )));
         }
         indices.push(index);
     }
@@ -44,7 +48,9 @@ pub(crate) fn validate_download_config(
 
 pub(crate) fn validate_download_support(selected: bool, supported: bool) -> Result<()> {
     if selected && !supported {
-        return Err(error::streaming_blobs_required());
+        return Err(Error::Unsupported(
+            "download layer requires a sink with streaming blob support".into(),
+        ));
     }
     Ok(())
 }
