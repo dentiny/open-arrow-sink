@@ -4,13 +4,18 @@ use crate::{BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSumm
 /// After a write error or cancellation, callers must abort or drop the writer.
 #[async_trait]
 pub trait Writer: Send {
+    /// Return the fixed input schema established when this session was opened.
+    /// Every batch passed to [`Self::write`] or [`Self::write_with_blobs`] must
+    /// match this schema, including batches with no rows.
     fn schema(&self) -> &SchemaRef;
 
     /// Validate the batch against the session schema before accepting it.
     /// Success means accepted, not committed. Buffering must be bounded.
     async fn write(&mut self, batch: RecordBatch) -> Result<()>;
 
-    /// Start a native blob. An unfinished or failed blob poisons the write session.
+    /// Start a native blob. Dropping an unfinished blob or encountering destination
+    /// I/O failure poisons the session. A successful explicit [`BlobWriter::abort`]
+    /// of a healthy blob leaves the session usable.
     /// Sinks advertise this interface with `SinkCapability.supports_blob_streaming`.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         Err(crate::Error::Unsupported(

@@ -13,6 +13,11 @@ pub type DownloadStream = BoxStream<'static, Result<Bytes>>;
 /// BlobDownloader applies admission, payload limits, and accounting to every impl.
 #[async_trait]
 pub trait Downloader: Send + Sync {
+    /// Open `source` and return a stream of payload chunks in source order.
+    /// Use `context` to resolve storage and share HTTP concurrency limits; chunks
+    /// must not exceed [`DownloadContext::chunk_bytes`]. Keep request permits
+    /// until EOF or stream drop, and cancel pending I/O when the stream is dropped.
+    /// Return opening failures here and subsequent read failures through the stream.
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream>;
 }
 
