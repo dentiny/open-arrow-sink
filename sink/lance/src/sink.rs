@@ -178,7 +178,6 @@ impl ParallelSink for LanceDatasetSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         let storage_version = validate_options(&schema, &options, self.capability())?;
-        crate::validation::validate_blob_schema(&schema)?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);
         let mut destination = self.resolve(url, &options)?;
@@ -190,7 +189,7 @@ impl ParallelSink for LanceDatasetSink {
             .map(|_| {
                 Box::new(crate::parallel::FragmentWriter::new(
                     schemas.clone(),
-                    destination.clone(),
+                    &destination,
                     params.clone(),
                     &options,
                 )) as Box<dyn DataWriter<Output = Self::Output>>

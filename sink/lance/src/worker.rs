@@ -6,12 +6,14 @@ use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-pub(crate) struct FragmentWorker {
+// The enclosing writer guards all writes and finish with Poison. Once its
+// sender or task is taken, that writer is terminal.
+pub(crate) struct FragmentTask {
     rows: u64,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
 }
-impl FragmentWorker {
+impl FragmentTask {
     pub fn new(schema: SchemaRef, destination: &LanceDestination, params: WriteParams) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         // EOF only finishes fragments. Manifest publication belongs to the committer.
@@ -38,7 +40,7 @@ impl FragmentWorker {
         let rows = batch.num_rows() as u64;
         self.sender
             .as_ref()
-            .ok_or(Error::Poisoned)?
+            .expect("fragment task is open while its writer is usable")
             .send(batch)
             .await
             .map_err(|_| worker_stopped())?;
@@ -48,7 +50,11 @@ impl FragmentWorker {
     pub async fn finish(&mut self) -> Result<LanceFragments> {
         drop(self.sender.take());
         // Keep ownership across cancellation so abort/drop can still stop the task.
-        let result = self.task.as_mut().ok_or(Error::Poisoned)?.await;
+        let result = self
+            .task
+            .as_mut()
+            .expect("fragment task is present until its writer finishes")
+            .await;
         self.task.take();
         Ok(LanceFragments {
             rows_written: self.rows,
@@ -63,7 +69,7 @@ impl FragmentWorker {
         }
     }
 }
-impl Drop for FragmentWorker {
+impl Drop for FragmentTask {
     fn drop(&mut self) {
         if let Some(task) = &self.task {
             task.abort();

@@ -4,14 +4,13 @@ use open_arrow_sink_core::{
 };
 
 use crate::{
-    LanceFragments, compression::writer_batch, destination::LanceDestination,
-    worker::FragmentWorker,
+    LanceFragments, compression::writer_batch, destination::LanceDestination, worker::FragmentTask,
 };
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
     schemas: crate::write_options::LanceSchemas,
-    worker: FragmentWorker,
+    worker: FragmentTask,
     state: Poison,
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
     blob_mode: open_arrow_sink_core::ExternalBlobMode,
@@ -22,11 +21,11 @@ pub(crate) struct FragmentWriter {
 impl FragmentWriter {
     pub(crate) fn new(
         schemas: crate::write_options::LanceSchemas,
-        destination: LanceDestination,
+        destination: &LanceDestination,
         params: WriteParams,
         options: &WriteOptions,
     ) -> Self {
-        let worker = FragmentWorker::new(schemas.logical.clone(), &destination, params);
+        let worker = FragmentTask::new(schemas.logical.clone(), destination, params);
         Self {
             schemas,
             worker,

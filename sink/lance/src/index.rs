@@ -11,8 +11,7 @@ use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
     ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
 };
-use std::sync::Arc;
-use tokio::{sync::OnceCell, task::JoinSet};
+use tokio::sync::OnceCell;
 
 use crate::error::index_creation;
 
@@ -27,39 +26,14 @@ pub(crate) async fn build_indexes(
     if indexes.is_empty() {
         return Ok(());
     }
-    // Keep task cancellation/panic isolation, but bound index construction to one
-    // job: each native build can independently consume substantial memory.
-    let mut tasks = JoinSet::new();
-    let vector_rows = Arc::new(OnceCell::new());
+    let vector_rows = OnceCell::new();
     let mut first_error = None;
+    // Reuse the mutable dataset so each request sees preceding index commits.
+    // Attempt every request, retaining the first failure in input order.
     for spec in indexes {
-        let mut dataset = dataset.clone();
-        let spec = spec.clone();
-        let task_summary = summary.clone();
-        let rows = vector_rows.clone();
-        tasks.spawn(async move { create_index(&mut dataset, &spec, &rows, &task_summary).await });
-        // Await before starting the next request. Attempt every request after
-        // failures, and report the first failure in input order deterministically.
-        let result = tasks.join_next().await.expect("one index task was started");
-        let result = result.unwrap_or_else(|error| {
-            Err(IndexCommitError::new(
-                format!("index construction task failed: {error}"),
-                summary.clone(),
-            ))
-        });
-        if let Err(error) = result {
+        if let Err(error) = create_index(dataset, spec, &vector_rows, summary).await {
             first_error.get_or_insert(error);
         }
-    }
-    // Each task commits through its own handle. Refresh the caller's snapshot
-    // after all tasks finish, including when only some indexes succeeded.
-    if let Err(error) = dataset.checkout_latest().await {
-        first_error.get_or_insert_with(|| {
-            IndexCommitError::new(
-                format!("refreshing dataset after index construction: {error}"),
-                summary.clone(),
-            )
-        });
     }
     match first_error {
         Some(error) => Err(error),
@@ -89,7 +63,7 @@ async fn create_index(
             Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
         ),
         IndexType::Vector => {
-            // All handles start from the same post-data-commit snapshot. Cache
+            // Index commits do not change the data row count. Cache
             // the complete result so multiple vector requests also share failures.
             // Keep requests that find an existing index never initialize this cell.
             let rows = vector_rows
