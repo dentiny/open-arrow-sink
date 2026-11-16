@@ -1,3 +1,4 @@
+use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::Schema;
 use lance::{
@@ -68,9 +69,7 @@ async fn shared_operator_commit_indexes_and_read_back() {
     let actual = dataset.scan().try_into_batch().await.unwrap();
     let mut values = actual
         .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap()
+        .as_primitive::<arrow_array::types::Int64Type>()
         .values()
         .to_vec();
     values.sort_unstable();

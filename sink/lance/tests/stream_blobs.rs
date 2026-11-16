@@ -1,3 +1,4 @@
+use arrow_array::cast::AsArray;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
@@ -85,11 +86,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .try_into_batch()
         .await
         .unwrap();
-    let values = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
+    let values = actual.column(0).as_binary::<i64>();
     assert_eq!(values.value(0).len(), 17 * 1024 * 1024);
     assert!(values.value(0).iter().all(|&b| b == b'x'));
     assert!(values.is_null(1));

@@ -4309,7 +4309,9 @@ name = "open-arrow-sink-test-support"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-ord",
  "arrow-schema",
+ "arrow-select",
  "axum",
  "futures",
  "open-arrow-sink-core",
