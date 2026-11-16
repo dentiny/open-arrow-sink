@@ -1,5 +1,11 @@
-use arrow_array::RecordBatchReader;
-use arrow_schema::ArrowError;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
+use futures::Stream;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
@@ -19,35 +25,37 @@ pub(crate) enum Message {
     Commit,
 }
 
-pub(crate) struct ChannelReader {
+/// Async native input: an explicit Commit is the only successful EOF.
+/// Waiting for an upstream batch never occupies a blocking-pool thread.
+pub(crate) struct ChannelStream {
     pub(crate) schema: SchemaRef,
     pub(crate) receiver: mpsc::Receiver<Message>,
     pub(crate) finished: bool,
 }
 
-impl Iterator for ChannelReader {
-    type Item = std::result::Result<RecordBatch, ArrowError>;
+impl Stream for ChannelStream {
+    type Item = DataFusionResult<RecordBatch>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.finished {
-            return None;
+            return Poll::Ready(None);
         }
-        // Lance polls RecordBatchReader on its blocking background iterator.
-        match self.receiver.blocking_recv() {
-            Some(Message::Batch(batch)) => Some(Ok(batch)),
-            Some(Message::Commit) => {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(Message::Batch(batch))) => Poll::Ready(Some(Ok(batch))),
+            Poll::Ready(Some(Message::Commit)) => {
                 self.finished = true;
-                None
+                Poll::Ready(None)
             }
-            None => {
+            Poll::Ready(None) => {
                 self.finished = true;
-                Some(Err(aborted()))
+                Poll::Ready(Some(Err(DataFusionError::from(aborted()))))
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
 
-impl RecordBatchReader for ChannelReader {
+impl RecordBatchStream for ChannelStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -71,19 +79,17 @@ impl FragmentWriter {
         options: &WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
+        let stream = Box::pin(ChannelStream {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
-        };
+        }) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
-                .execute_uncommitted_stream(
-                    Box::new(reader) as Box<dyn arrow_array::RecordBatchReader + Send>
-                )
+                .execute_uncommitted_stream(stream)
                 .await
         });
         Ok(Self {

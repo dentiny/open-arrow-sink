@@ -4235,6 +4235,8 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "bytes",
+ "datafusion-common",
+ "datafusion-physical-plan",
  "futures",
  "lance",
  "lance-file",

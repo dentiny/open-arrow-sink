@@ -1,6 +1,7 @@
 use std::sync::{Arc, atomic::Ordering};
 
-use lance::Dataset;
+use datafusion_physical_plan::SendableRecordBatchStream;
+use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary,
     Writer, async_trait, validation,
@@ -11,7 +12,7 @@ use crate::{
     compression::writer_batch,
     error::{backend, worker_stopped},
     index::build_indexes,
-    parallel::{ChannelReader, Message},
+    parallel::{ChannelStream, Message},
     storage::NativeStorage,
 };
 
@@ -117,15 +118,19 @@ impl BlobDatasetWriter {
         options: WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
+        let stream = Box::pin(ChannelStream {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
-        };
+        }) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
         let uri = destination.url.to_string();
-        let task =
-            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
+        let task = tokio::spawn(async move {
+            InsertBuilder::new(uri.as_str())
+                .with_params(&params)
+                .execute_stream(stream)
+                .await
+        });
         Ok(Self {
             schema,
             storage_schema,
