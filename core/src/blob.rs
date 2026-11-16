@@ -1,6 +1,4 @@
-use std::{any::Any, fmt, num::NonZeroUsize};
-
-use crate::{Result, async_trait};
+use std::num::NonZeroUsize;
 
 /// Strategy for external blob URIs, matching Lance's write options.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -13,8 +11,7 @@ pub enum ExternalBlobMode {
 }
 
 /// Per-write blob handle configuration. Currently follows Lance blob options.
-/// These options govern native logical blob inputs; streamed handles already
-/// belong to the destination session and do not need external ingestion.
+/// These options govern native logical blob inputs. The backend SDK owns physical layout.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobHandleConfig {
     pub external_blob_mode: ExternalBlobMode,
@@ -28,7 +25,7 @@ pub struct BlobHandleConfig {
 }
 
 /// A download chunk and the resources accounting for its buffered bytes.
-/// Keep the chunk alive until its bytes have been consumed by the blob writer.
+/// Keep the chunk alive until its bytes have been consumed by the downloader.
 pub struct BlobChunk {
     data: bytes::Bytes,
     _guard: Option<Box<dyn Send + Sync>>,
@@ -60,49 +57,4 @@ impl AsRef<[u8]> for BlobChunk {
     fn as_ref(&self) -> &[u8] {
         &self.data
     }
-}
-
-/// A completed blob owned by one backend write session.
-/// Handles can be attached to a batch using `Writer::write_with_blobs`.
-pub struct BlobHandle(Box<dyn Any + Send + Sync>);
-
-impl BlobHandle {
-    /// Backend adapters use this to retain their native descriptor and ownership.
-    pub fn new(value: impl Any + Send + Sync) -> Self {
-        Self(Box::new(value))
-    }
-    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
-        self.0.downcast_ref()
-    }
-}
-
-impl fmt::Debug for BlobHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("BlobHandle(..)")
-    }
-}
-
-/// Attach a completed blob to one non-null cell in a blob-marked column.
-/// The cell's ordinary binary payload must be empty.
-#[derive(Debug)]
-pub struct BlobPlacement {
-    pub column: usize,
-    pub row: usize,
-    pub blob: BlobHandle,
-}
-
-/// One streaming blob. Drop/cancellation must never publish a partial object.
-#[async_trait]
-pub trait BlobWriter: Send {
-    /// Consume the chunk before returning, retaining its accounting guard until then.
-    async fn write(&mut self, chunk: BlobChunk) -> Result<()>;
-    /// Finish the blob and return a handle owned by the parent write session.
-    /// Attach the handle with [`crate::Writer::write_with_blobs`] before committing
-    /// that session; finishing the blob alone does not commit any rows.
-    /// Consumes the blob writer even on failure, which poisons the parent session.
-    async fn finish(self: Box<Self>) -> Result<BlobHandle>;
-    /// Discard this upload. A successful explicit abort of a healthy blob must
-    /// leave the enclosing session usable; cancellation/drop or destination I/O
-    /// failures may still make that session terminal. Never clear another failure.
-    async fn abort(self: Box<Self>) -> Result<()>;
 }

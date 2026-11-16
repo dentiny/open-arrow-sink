@@ -38,7 +38,6 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit(#[case] paral
     let input = input();
     let mut writer = sink.open((), input.schema(), options()).await.unwrap();
     assert_eq!(writer.schema(), &input.schema());
-    assert!(!sink.capability().supports_blob_streaming);
     writer.write(input.clone()).await.unwrap();
     writer.write(input.slice(0, 0)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);

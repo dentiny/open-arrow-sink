@@ -5,8 +5,8 @@ mod counting_sink;
 use arrow_array::{ArrayRef, Int64Array};
 use counting_sink::CountingSink;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, GuardedWriter, Layer, Ordering, RecordBatch, Result,
-    SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
+    Error, GuardedWriter, Layer, Ordering, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
+    SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
 };
 use std::sync::{
     Arc,
@@ -75,20 +75,6 @@ impl Writer for LimitedWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.check_batch(&batch)?;
         self.inner.write(batch).await?;
-        Ok(())
-    }
-    // Forward blob methods too, since capabilities were forwarded unchanged.
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        let blob = self.inner.create_blob().await?;
-        Ok(blob)
-    }
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        self.check_batch(&batch)?;
-        self.inner.write_with_blobs(batch, blobs).await?;
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {

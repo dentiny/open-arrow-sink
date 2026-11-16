@@ -70,7 +70,6 @@ impl Sink for IcebergTableSink {
                 PartitionType::Void,
             ])
             .with_supports_blob_handle(false)
-            .with_supports_blob_streaming(false)
             .with_supports_storage_version(false)
             .with_supported_indexes(&[])
     }

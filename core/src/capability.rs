@@ -34,9 +34,6 @@ pub struct SinkCapability {
     /// Supports native logical blob inputs and explicit per-write blob configuration.
     /// Writer/schema and parallel-session restrictions still apply.
     pub supports_blob_handle: bool,
-    /// Supports `Writer::create_blob` and `Writer::write_with_blobs` for compatible
-    /// schemas. Independent of native logical blob input/configuration support.
-    pub supports_blob_streaming: bool,
     /// Explicit destination modes accepted by this sink.
     pub supported_modes: &'static [crate::WriteMode],
     /// `PreserveInput` guarantees input row order in the target's documented
@@ -61,11 +58,6 @@ impl SinkCapability {
     /// Set `supports_blob_handle` while preserving all other options.
     pub fn with_supports_blob_handle(mut self, supports_blob_handle: bool) -> Self {
         self.supports_blob_handle = supports_blob_handle;
-        self
-    }
-    /// Set `supports_blob_streaming` while preserving all other options.
-    pub fn with_supports_blob_streaming(mut self, supports_blob_streaming: bool) -> Self {
-        self.supports_blob_streaming = supports_blob_streaming;
         self
     }
     /// Set `supported_modes` while preserving all other options.
@@ -111,7 +103,6 @@ impl Default for SinkCapability {
     fn default() -> Self {
         Self {
             supports_blob_handle: false,
-            supports_blob_streaming: false,
             supported_modes: &[],
             ordering: Ordering::Unordered,
             compression: CompressionCapability::default(),

@@ -63,7 +63,6 @@ impl Sink for ParquetDirectorySink {
             )
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(false)
-            .with_supports_blob_streaming(false)
             .with_supports_upload_options(true)
             .with_supports_storage_version(false)
             .with_supported_indexes(&[])

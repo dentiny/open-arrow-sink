@@ -156,14 +156,10 @@ async fn shared_handle_in_nested_layers_does_not_duplicate_io() {
 }
 
 #[rstest::rstest]
-#[case::write_error(false, false)]
-#[case::blob_open_error(true, false)]
-#[case::abort_after_write_error(false, true)]
+#[case::write_error(false)]
+#[case::abort_after_write_error(true)]
 #[tokio::test]
-async fn poisoned_writer_operations_do_not_change_metrics(
-    #[case] blob_error: bool,
-    #[case] abort: bool,
-) {
+async fn poisoned_writer_operations_do_not_change_metrics(#[case] abort: bool) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
     let backend = sink(config());
@@ -176,25 +172,13 @@ async fn poisoned_writer_operations_do_not_change_metrics(
         .insert(Failure::Write);
     let sink = backend.layer(layer);
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
-    if blob_error {
-        assert!(matches!(
-            writer.create_blob().await,
-            Err(Error::Unsupported(_))
-        ));
-    } else {
-        assert!(matches!(
-            writer.write(input()).await,
-            Err(Error::Unsupported(_))
-        ));
-    }
+    assert!(matches!(
+        writer.write(input()).await,
+        Err(Error::Unsupported(_))
+    ));
     let before = metrics.snapshot();
     assert_eq!(before.failed_operations, 1);
     assert!(matches!(writer.write(input()).await, Err(Error::Poisoned)));
-    assert!(matches!(
-        writer.write_with_blobs(input(), vec![]).await,
-        Err(Error::Poisoned)
-    ));
-    assert!(matches!(writer.create_blob().await, Err(Error::Poisoned)));
     assert_eq!(metrics.snapshot(), before);
     if abort {
         writer.abort().await.unwrap();
