@@ -301,9 +301,12 @@ default version. This selects the file format, independently of the dataset's co
 ## Configuration adaptation
 
 The Lance `write_options` adapter translates shared configuration into native
-`WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression (`compression::apply_compression`), prepared blob fields, then explicit
-layout overrides (`write_options::writer_schema`). `LanceDestination` binds
+`WriteParams` and encoding metadata. Both writer paths prepare one
+`write_options::LanceSchemas` containing the original input schema, the logical
+schema for dataset validation, and the encoded schema for native writes.
+Compression is applied first; logical blob fields and encoded descriptors are then
+derived together with the same metadata and explicit layout overrides.
+`LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 
