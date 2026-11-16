@@ -115,7 +115,8 @@ creating the destination. `level: None` uses the Parquet default.
 
 Create rejects existing destinations. Append validates the schemas of existing
 root-level Parquet files and writes UUID-prefixed parts, preserving old files and
-unrelated objects on abort. Schema validation uses range reads of Parquet metadata.
+unrelated objects on abort. Schema validation uses range reads of Parquet metadata,
+with at most 32 files checked concurrently, independently of the transport budget.
 These modes work through the shared filesystem or remote operator.
 
 Overwrite is staged on filesystem backends: old output stays visible until commit,
