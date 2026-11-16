@@ -8,7 +8,6 @@ use std::{
 
 use crate::validation;
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
-use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
     BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
@@ -143,35 +142,6 @@ pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|field| is_blob_field(field))
 }
 
-pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
-    crate::validation::validate_blob_schema(schema)?;
-    if !requires_streaming_writer(schema) {
-        return Ok(schema.clone());
-    }
-    let fields = schema
-        .fields()
-        .iter()
-        .map(|field| {
-            if !is_blob_field(field) {
-                return field.clone();
-            }
-            let native = BlobDescriptorArrayBuilder::new(field.name())
-                .field()
-                .clone();
-            let mut metadata = field.metadata().clone();
-            metadata.extend(native.metadata().clone());
-            Arc::new(
-                native
-                    .with_nullable(field.is_nullable())
-                    .with_metadata(metadata),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut metadata = schema.metadata().clone();
-    metadata.insert("lance.blob.managed".into(), "true".into());
-    Ok(Arc::new(Schema::new_with_metadata(fields, metadata)))
-}
-
 pub(crate) fn storage_batch(
     batch: RecordBatch,
     schema: &SchemaRef,
@@ -224,26 +194,4 @@ pub(crate) fn storage_batch(
         session.unattached.lock().unwrap().remove(&native.path);
     }
     Ok(output)
-}
-
-/// Lance persists logical blob fields, rather than the prepared descriptor shape.
-pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
-    let fields = schema
-        .fields()
-        .iter()
-        .map(|field| {
-            if is_blob_field(field) {
-                Arc::new(
-                    field.as_ref().clone().with_data_type(
-                        lance::blob::blob_field(field.name(), field.is_nullable())
-                            .data_type()
-                            .clone(),
-                    ),
-                )
-            } else {
-                field.clone()
-            }
-        })
-        .collect::<Vec<_>>();
-    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
