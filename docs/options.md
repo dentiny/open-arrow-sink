@@ -230,11 +230,14 @@ The former `DownloadPool::global()` and
 and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
 `DownloadBlobLayer` creates one default pool per opened writer.
 
-To share HTTP capacity across otherwise independent pools or with `Storage`,
-create one `HttpConcurrencyLimitLayer` and install its clones using the pool's
-`with_layer` and storage's `with_http_concurrency_limit`. Stream slots also cover
-non-HTTP sources; HTTP permits cover network requests until response-body release.
-These are separate budgets. There is no additional HTTP limiter unless configured.
+HTTP(S) downloads go through the pool's HTTP `Storage`. By default its request
+budget equals the pool's `concurrency`. To share HTTP capacity across otherwise
+independent pools or with other storage, create one `HttpConcurrencyLimitLayer`,
+install its clones with `with_http_concurrency_limit` on each `Storage` (including
+one built by `DownloadPool::http_storage`), and pass that storage to
+`DownloadPool::with_http_storage`. Stream slots also cover non-HTTP sources; HTTP
+permits cover network requests until response-body release. These are separate
+budgets.
 
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
@@ -251,9 +254,9 @@ it is not a process RSS limit. Error response bodies are discarded before OpenDA
 classifies the status to avoid collecting unbounded diagnostic payloads.
 
 HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
-retry policy is enabled by default. Apply OpenDAL policies with
-`DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
-attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+retry policy is enabled by default. Configure them with the same `StorageConfig`
+used by other storage: `DownloadPool::http_storage(config)` applies the timeout
+inside the retry so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
 
 ## Download URL columns into native blobs

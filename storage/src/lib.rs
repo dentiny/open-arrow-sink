@@ -3,7 +3,6 @@
 //! Formats and dataset publication belong to sink crates.
 mod backend;
 mod config;
-#[cfg(feature = "http")]
 mod download_pool;
 mod error;
 mod http_limit;
@@ -14,7 +13,6 @@ mod validation;
 
 pub use backend::{Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
-#[cfg(feature = "http")]
 pub use download_pool::DownloadPool;
 pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
