@@ -4,11 +4,18 @@ use crate::{GuardedWriter, RecordBatch, Result, SchemaRef, WriteSummary, async_t
 /// metadata. Errors are returned without deleting output or invoking abort.
 #[async_trait]
 pub trait DataWriter: Send {
+    /// Backend metadata produced by finishing this writer, passed to the
+    /// session's [`SessionCommitter`] for publication.
     type Output: Send + 'static;
+
+    /// Return the fixed input schema accepted by this physical writer.
+    /// Every batch passed to [`Self::write`] must match it, even if empty.
     fn schema(&self) -> &SchemaRef;
     /// Validate the fixed schema, keep buffering bounded, and make write errors
     /// or cancellation terminal. Success means accepted, not published.
     async fn write(&mut self, batch: RecordBatch) -> Result<()>;
+    /// Finish accepted writes and return backend metadata for publication by
+    /// the session's [`SessionCommitter`], without publishing it here.
     /// Called once, after all accepted writes complete. A failure is terminal.
     async fn finish(&mut self) -> Result<Self::Output>;
     /// Stop I/O without deleting output, including finished output.

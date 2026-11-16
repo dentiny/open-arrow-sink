@@ -4,12 +4,18 @@ use open_arrow_sink_core::{
 };
 use std::num::NonZeroUsize;
 
+/// Shared preparation and wrapping hooks for single-writer and parallel opens.
 pub(crate) trait Decorator: Send + Sync {
+    /// Sink receiving the prepared schema and options.
     type Inner: Sink;
+    /// Per-open state retained until the backend opens successfully or fails.
     type Context: Send;
 
+    /// Borrow the backend or next layer receiving the open operation.
     fn inner(&self) -> &Self::Inner;
 
+    /// Return the decorated sink's capabilities, forwarding the inner sink's
+    /// capabilities by default. Override when the decorator changes guarantees.
     fn capability(&self) -> SinkCapability {
         self.inner().capability()
     }
@@ -18,8 +24,11 @@ pub(crate) trait Decorator: Send + Sync {
     /// including failure and cancellation, and is consumed after a successful open.
     fn prepare(&self, schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<Self::Context>;
 
+    /// Consume preparation state to wrap a successfully opened single writer.
     fn wrap_writer(&self, context: Self::Context, writer: Box<dyn Writer>) -> Box<dyn Writer>;
 
+    /// Consume preparation state to wrap a successfully opened parallel session,
+    /// preserving its backend output type and shared publication boundary.
     fn wrap_session<T: Send + 'static>(
         &self,
         context: Self::Context,

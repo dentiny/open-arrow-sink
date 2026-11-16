@@ -5,27 +5,46 @@ use open_arrow_sink_core::{
     Error, RecordBatch, SchemaRef, Sink, WriteMode, WriteOptions, async_trait,
 };
 
+/// Backend adapter supplying an isolated destination and readback for conformance tests.
 #[async_trait]
 pub trait SinkFixture: Send + Sync + Sized {
+    /// Backend sink exercised by this fixture.
     type Sink: Sink;
+
+    /// Create an isolated fixture with no input rows already published.
+    /// Prepare any destination metadata required by the selected write mode and
+    /// retain resources needed to keep the destination alive until the fixture drops.
     async fn new() -> Self;
+
+    /// Borrow the configured sink used to open this fixture's write session.
     fn sink(&self) -> &Self::Sink;
+
+    /// Return a request targeting this fixture's isolated destination.
     fn request(&self) -> <Self::Sink as Sink>::Request;
+    /// Return deterministic input data and its schema for writing and readback comparison.
     /// Use at least two rows and sortable scalar columns, including nulls or
     /// duplicates where supported. Complex backend-specific schemas stay local.
     fn batch(&self) -> RecordBatch;
+    /// Return options supported by the sink and compatible with the prepared
+    /// destination, including its write mode.
     fn options(&self) -> WriteOptions;
     /// Input large enough to cross this backend's page buffers when rolling.
     fn rolling_batch(&self) -> RecordBatch {
         self.batch()
     }
+    /// Assert that the rolling case produced multiple data files at the destination.
     async fn assert_rolled(&self);
     /// Seed and verify an unrelated object next to the destination.
     async fn create_sibling(&self);
+    /// Assert that the unrelated object seeded by [`Self::create_sibling`]
+    /// still exists with its original contents after the write session is aborted.
     async fn assert_sibling(&self);
-    /// Return all published rows. This must succeed for an empty commit too.
+    /// Read all published rows from the destination using a backend reader.
+    /// Preserve the input schema; row and batch order need not match the input.
+    /// This must succeed for an empty commit too.
     async fn read(&self) -> Vec<RecordBatch>;
-    /// Check cleanup/preservation appropriate to this backend's destination.
+    /// Assert the backend's expected destination state after an explicit abort,
+    /// including preservation of persisted output where applicable.
     async fn assert_aborted(&self);
 }
 

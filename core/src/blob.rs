@@ -96,6 +96,10 @@ pub struct BlobPlacement {
 pub trait BlobWriter: Send {
     /// Consume the chunk before returning, retaining its accounting guard until then.
     async fn write(&mut self, chunk: BlobChunk) -> Result<()>;
+    /// Finish the blob and return a handle owned by the parent write session.
+    /// Attach the handle with [`crate::Writer::write_with_blobs`] before committing
+    /// that session; finishing the blob alone does not commit any rows.
+    /// Consumes the blob writer even on failure, which poisons the parent session.
     async fn finish(self: Box<Self>) -> Result<BlobHandle>;
     /// Discard this upload. A successful explicit abort of a healthy blob must
     /// leave the enclosing session usable; cancellation/drop or destination I/O

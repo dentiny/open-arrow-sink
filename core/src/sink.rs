@@ -42,6 +42,9 @@ pub trait Sink: Send + Sync {
     /// Backend-specific destination and options; no source-library types.
     type Request: Send;
 
+    /// Return the operations and guarantees supported by this configured sink.
+    /// Layers report the capabilities of the decorated sink. Opening a session
+    /// still validates the requested options and schema against these capabilities.
     fn capability(&self) -> SinkCapability;
 
     /// Validate shared options and compression column names against the input schema
