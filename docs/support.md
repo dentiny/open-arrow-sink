@@ -2,7 +2,7 @@
 
 All bundled sinks implement `ParallelSink` and require `Ordering::Unordered`,
 even with one writer. `WriteOptions::default()` requests `Create` and
-`PreserveInput`; set ordering explicitly and use `Append` for Iceberg.
+`Unordered`; use `Append` for Iceberg.
 Inspect `sink.capability()` for the configured sink, then apply the request-time
 restrictions below. Cargo features are additive.
 
