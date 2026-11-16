@@ -1,11 +1,5 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
-use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use futures::Stream;
+use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
+use futures::stream;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
@@ -14,58 +8,14 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    LanceFragments,
-    compression::writer_batch,
-    error::{aborted, worker_stopped},
-    storage::NativeStorage,
+    LanceFragments, compression::writer_batch, error::worker_stopped, storage::NativeStorage,
 };
-
-pub(crate) enum Message {
-    Batch(RecordBatch),
-    Commit,
-}
-
-/// Async native input: an explicit Commit is the only successful EOF.
-/// Waiting for an upstream batch never occupies a blocking-pool thread.
-pub(crate) struct ChannelStream {
-    pub(crate) schema: SchemaRef,
-    pub(crate) receiver: mpsc::Receiver<Message>,
-    pub(crate) finished: bool,
-}
-
-impl Stream for ChannelStream {
-    type Item = DataFusionResult<RecordBatch>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.finished {
-            return Poll::Ready(None);
-        }
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(Message::Batch(batch))) => Poll::Ready(Some(Ok(batch))),
-            Poll::Ready(Some(Message::Commit)) => {
-                self.finished = true;
-                Poll::Ready(None)
-            }
-            Poll::Ready(None) => {
-                self.finished = true;
-                Poll::Ready(Some(Err(DataFusionError::from(aborted()))))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl RecordBatchStream for ChannelStream {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    sender: Option<mpsc::Sender<Message>>,
+    sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
     state: Poison,
@@ -79,11 +29,14 @@ impl FragmentWriter {
         options: &WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
-        let stream = Box::pin(ChannelStream {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        }) as SendableRecordBatchStream;
+        // Closing the channel ends fragment input; publication belongs to the committer.
+        let batches = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|batch| (Ok(batch), receiver))
+        });
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
+            encoding_schema.clone(),
+            batches,
+        )) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
@@ -117,7 +70,7 @@ impl DataWriter for FragmentWriter {
         self.sender
             .as_ref()
             .unwrap()
-            .send(Message::Batch(batch))
+            .send(batch)
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
@@ -126,30 +79,35 @@ impl DataWriter for FragmentWriter {
     }
     async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
-        let sender = self
-            .sender
-            .take()
-            .expect("active writer owns its native worker");
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
-        let transaction = self
+        drop(self.sender.take());
+        // Retain the worker if this await is cancelled, so abort/drop can stop it.
+        let result = self
             .task
-            .take()
+            .as_mut()
             .expect("active writer owns its native worker")
-            .await
-            .map_err(Error::backend)?
-            .map_err(Error::backend)?;
+            .await;
+        self.task.take();
+        let transaction = result.map_err(Error::backend)?.map_err(Error::backend)?;
         Ok(LanceFragments {
             rows_written: self.rows,
             transaction,
         })
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        drop(self.sender.take());
         if let Some(task) = self.task.take() {
+            task.abort();
+            drop(self.sender.take());
             let _ = task.await;
         }
         // Session cleanup runs only after every worker has stopped.
         Ok(())
+    }
+}
+
+impl Drop for FragmentWriter {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
