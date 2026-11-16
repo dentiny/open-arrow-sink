@@ -39,10 +39,11 @@ async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
         .await
         .unwrap();
     assert!(
-        !storage
-            .exists(&storage.resolve(&url).unwrap())
+        storage
+            .stat(&storage.resolve(&url).unwrap())
             .await
             .unwrap()
+            .is_none()
     );
     assert_eq!(
         storage

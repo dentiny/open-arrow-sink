@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use open_arrow_sink_storage::{RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal};
+use open_arrow_sink_storage::{
+    DirectoryState, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
+};
 
 fn memory() -> Storage {
     Storage::new(
@@ -24,7 +26,7 @@ async fn streaming_close_abort_and_shared_namespace() {
     assert!(writer.write("late".into()).await.is_err());
     assert_eq!(storage.clone().read(&path).await.unwrap(), "hello world");
     assert_eq!(storage.read_range(&path, 6..11).await.unwrap(), "world");
-    let metadata = storage.stat_optional(&path).await.unwrap().unwrap();
+    let metadata = storage.stat(&path).await.unwrap().unwrap();
     assert!(metadata.is_file());
     assert_eq!(metadata.content_length(), 11);
     assert_eq!(storage.list(&root).await.unwrap(), vec![path.clone()]);
@@ -34,9 +36,9 @@ async fn streaming_close_abort_and_shared_namespace() {
     let mut writer = storage.writer(&aborted).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!storage.exists(&aborted).await.unwrap());
+    assert!(storage.stat(&aborted).await.unwrap().is_none());
     storage.delete(&path).await.unwrap();
-    assert!(storage.stat_optional(&path).await.unwrap().is_none());
+    assert!(storage.stat(&path).await.unwrap().is_none());
     storage.delete(&path).await.unwrap();
     assert!(storage.list(&root).await.unwrap().is_empty());
 }
@@ -60,16 +62,22 @@ async fn namespace_boundaries_and_conditional_creation() {
         .unwrap();
     assert!(storage.remove_all(&root).await.is_err());
     assert!(storage.remove_all(&repeated_root).await.is_err());
-    assert!(storage.prefix_exists(&root).await.is_err());
+    assert!(storage.inspect_directory(&root).await.is_err());
     let prefix = root.join("claim").unwrap();
     assert_eq!(prefix.as_dir().as_str(), "claim/");
-    assert!(!storage.prefix_exists(&prefix).await.unwrap());
+    assert_eq!(
+        storage.inspect_directory(&prefix).await.unwrap(),
+        DirectoryState::Missing
+    );
     let (a, b) = tokio::join!(
         storage.create(&prefix, "a".into()),
         storage.create(&prefix, "b".into())
     );
     assert_ne!(a.is_ok(), b.is_ok());
-    assert!(storage.prefix_exists(&prefix).await.unwrap());
+    assert_eq!(
+        storage.inspect_directory(&prefix).await.unwrap(),
+        DirectoryState::File
+    );
 }
 
 #[tokio::test]
@@ -92,7 +100,7 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     );
     assert!(
         storage
-            .stat_optional(&storage.resolve(&output).unwrap())
+            .stat(&storage.resolve(&output).unwrap())
             .await
             .unwrap()
             .unwrap()
@@ -120,10 +128,11 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
         .await
         .unwrap();
     assert!(
-        !storage
-            .exists(&storage.resolve(&file).unwrap())
+        storage
+            .stat(&storage.resolve(&file).unwrap())
             .await
             .unwrap()
+            .is_none()
     );
     assert_eq!(
         storage

@@ -1,6 +1,6 @@
 use futures::{TryStreamExt, stream};
 use open_arrow_sink_core::Result;
-use open_arrow_sink_storage::{ObjectPath, Storage};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage};
 
 use crate::error;
 
@@ -12,15 +12,13 @@ pub(crate) async fn validate_append_directory(
     directory: &ObjectPath,
     schema: &open_arrow_sink_core::SchemaRef,
 ) -> Result<()> {
-    let exact = directory.as_object();
-    let metadata = storage.stat_optional(&exact).await?;
-    if metadata.as_ref().is_some_and(|metadata| !metadata.is_dir()) {
-        return Err(error::not_directory());
+    match storage.inspect_directory(directory).await? {
+        DirectoryState::Missing => return Err(error::missing_directory()),
+        DirectoryState::File => return Err(error::not_directory()),
+        DirectoryState::Empty => return Ok(()),
+        DirectoryState::NonEmpty => {}
     }
     let files = storage.list(directory).await?;
-    if metadata.is_none() && files.is_empty() && !storage.exists(directory).await? {
-        return Err(error::missing_directory());
-    }
     // A transport budget does not limit filesystem reads or the number of
     // live footer readers. Keep schema validation bounded for large directories.
     stream::iter(files.into_iter().map(Ok))

@@ -109,8 +109,9 @@ impl StorageFactory for OpenDalStorageFactory {
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
         self.storage
-            .exists(&self.resolve(path)?)
+            .stat(&self.resolve(path)?)
             .await
+            .map(|metadata| metadata.is_some())
             .map_err(backend)
     }
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
@@ -118,7 +119,13 @@ impl IcebergStorage for OpenDalStorageFactory {
             .storage
             .stat(&self.resolve(path)?)
             .await
-            .map_err(backend)?;
+            .map_err(backend)?
+            .ok_or_else(|| {
+                backend(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Iceberg file does not exist: {path}"),
+                ))
+            })?;
         Ok(FileMetadata {
             size: metadata.content_length(),
         })
@@ -311,16 +318,18 @@ mod tests {
         assert!(active_writer.write("more".into()).await.is_err());
         assert!(active_writer.close().await.is_err());
         assert!(
-            !storage
-                .exists(&storage.resolve(&abandoned).unwrap())
+            storage
+                .stat(&storage.resolve(&abandoned).unwrap())
                 .await
                 .unwrap()
+                .is_none()
         );
         assert!(
-            !storage
-                .exists(&storage.resolve(&active).unwrap())
+            storage
+                .stat(&storage.resolve(&active).unwrap())
                 .await
                 .unwrap()
+                .is_none()
         );
         keep_writer.write(" more".into()).await.unwrap();
         keep_writer.close().await.unwrap();
@@ -348,10 +357,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !storage
-                .exists(&storage.resolve(&abandoned).unwrap())
+            storage
+                .stat(&storage.resolve(&abandoned).unwrap())
                 .await
                 .unwrap()
+                .is_none()
         );
         // Repeated abort cleanup is harmless.
         file_io

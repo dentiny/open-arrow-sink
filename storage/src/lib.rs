@@ -10,15 +10,12 @@ mod resolver;
 mod validation;
 pub use resolver::StorageResolver;
 
-pub use backend::{Storage, StorageWriter};
+pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
 pub use http_limit::HttpConcurrencyLimitLayer;
 pub use object_path::ObjectPath;
 pub use opendal;
 pub use url::Url;
-
-mod download_pool;
-pub use download_pool::DownloadPool;
 
 mod object_store;
 

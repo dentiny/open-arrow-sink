@@ -6,7 +6,7 @@ use lance::{
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -63,7 +63,7 @@ impl NativeStorage {
             )
             .await;
         }
-        if self.storage.prefix_exists(&self.path).await? {
+        if self.storage.inspect_directory(&self.path).await? != DirectoryState::Missing {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {

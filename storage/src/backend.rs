@@ -16,6 +16,17 @@ use crate::{
 const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
+/// The contents of a destination, including virtual object-store directories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DirectoryState {
+    Missing,
+    /// An exact non-directory object takes precedence over any children.
+    File,
+    Empty,
+    /// Contains at least one child file or directory.
+    NonEmpty,
+}
+
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
 #[derive(Clone, Debug)]
@@ -69,14 +80,44 @@ impl Storage {
         Self::new(operator, base)
     }
 
-    /// Check for an exact object, an empty directory, or any objects under a prefix.
-    /// This is a preflight check; callers must use conditional creation to claim it.
-    pub async fn prefix_exists(&self, path: &ObjectPath) -> Result<bool> {
+    /// Inspect a non-root destination with or without a trailing slash.
+    /// Stops listing at the first child and does not collect the directory.
+    /// This is a preflight observation; conditional creation must still claim it.
+    pub async fn inspect_directory(&self, path: &ObjectPath) -> Result<DirectoryState> {
         path.require_nonroot()?;
         let directory = path.as_dir();
-        Ok(self.exists(&path.as_object()).await?
-            || self.exists(&directory).await?
-            || self.has_files(&directory).await?)
+        let exact = path.as_object();
+        let metadata = self.stat(&exact).await?;
+        if metadata.as_ref().is_some_and(|metadata| !metadata.is_dir()) {
+            return Ok(DirectoryState::File);
+        }
+        let path = directory.as_str();
+        let mut present = metadata.is_some();
+        // A shallow listing also sees empty subdirectories on filesystems.
+        let children = async {
+            let mut entries = self.operator().lister_with(path).limit(1).await?;
+            while let Some(entry) = entries.try_next().await? {
+                if entry.path() != path {
+                    return Ok(true);
+                }
+                // Some backends include the directory marker itself.
+                present = true;
+            }
+            Ok::<bool, opendal::Error>(false)
+        }
+        .await;
+        match children {
+            Ok(true) => return Ok(DirectoryState::NonEmpty),
+            Ok(false) => {}
+            Err(error) if error.kind() == opendal::ErrorKind::NotFound => {}
+            Err(error) => return Err(map_error("list", path, error)),
+        }
+        // Object stores may only expose an empty marker at the slash URL.
+        if present || self.stat(&directory).await?.is_some() {
+            Ok(DirectoryState::Empty)
+        } else {
+            Ok(DirectoryState::Missing)
+        }
     }
 
     /// Validate and add retry/timeout policies after either constructor.
@@ -194,28 +235,15 @@ impl Storage {
         Ok(url)
     }
 
-    pub async fn exists(&self, path: &ObjectPath) -> Result<bool> {
-        let path = path.as_str();
-        self.operator()
-            .exists(path)
-            .await
-            .map_err(|error| map_error("exists", path, error))
-    }
-    /// Read metadata once, returning `None` only when the object is not found.
-    pub async fn stat_optional(&self, path: &ObjectPath) -> Result<Option<opendal::Metadata>> {
+    /// Read exact-object metadata, returning `None` only for NotFound.
+    /// Use `inspect_directory` to discover virtual directory prefixes.
+    pub async fn stat(&self, path: &ObjectPath) -> Result<Option<opendal::Metadata>> {
         let path = path.as_str();
         match self.operator().stat(path).await {
             Ok(metadata) => Ok(Some(metadata)),
             Err(error) if error.kind() == opendal::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(map_error("stat", path, error)),
         }
-    }
-    pub async fn stat(&self, path: &ObjectPath) -> Result<opendal::Metadata> {
-        let path = path.as_str();
-        self.operator()
-            .stat(path)
-            .await
-            .map_err(|error| map_error("stat", path, error))
     }
     pub async fn read(&self, path: &ObjectPath) -> Result<Bytes> {
         let path = path.as_str();
@@ -310,7 +338,7 @@ impl Storage {
     /// Delete a directory only when it is empty. Never recursively remove its contents.
     pub async fn remove_empty_directory(&self, path: &ObjectPath) -> Result<()> {
         path.require_nonroot()?;
-        if self.has_files(path).await? {
+        if self.inspect_directory(path).await? != DirectoryState::Empty {
             return Ok(());
         }
         let directory = path.as_dir();
@@ -325,15 +353,6 @@ impl Storage {
         self.operator()
             .lister_with(path)
             .recursive(true)
-            .await
-            .map_err(|error| map_error("list", path, error))
-    }
-    async fn has_files(&self, path: &ObjectPath) -> Result<bool> {
-        let directory = path.as_dir();
-        let path = directory.as_str();
-        self.lister(&directory)
-            .await?
-            .try_any(|entry| futures::future::ready(entry.metadata().is_file()))
             .await
             .map_err(|error| map_error("list", path, error))
     }
