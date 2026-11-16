@@ -26,9 +26,12 @@ use tokio::{
 static REQUEST_BUDGET: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn download_layer(columns: std::collections::HashSet<String>) -> DownloadBlobLayer {
     DownloadBlobLayer::new(columns).with_download_pool(Arc::new(
-        open_arrow_sink_layer::DownloadPool::new(
+        // Failure/cancellation fixtures exercise one download attempt. Default
+        // retry behavior has separate coverage in the storage crate.
+        open_arrow_sink_layer::DownloadPool::new_with_config(
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+            open_arrow_sink_storage::StorageConfig::default(),
         )
         .unwrap(),
     ))
@@ -662,9 +665,10 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
 
     let (server, mut events) = gated_server().await;
     let pool = Arc::new(
-        DownloadPool::new(
+        DownloadPool::new_with_config(
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+            open_arrow_sink_storage::StorageConfig::default(),
         )
         .unwrap()
         .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_millis(100))),
@@ -744,9 +748,12 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
         }
     });
     let server = Server { url, task };
-    let mut pool = DownloadPool::new(
+    // Begin without the default policy so the two cases isolate whether the
+    // explicitly installed RetryLayer changes the result.
+    let mut pool = DownloadPool::new_with_config(
         NonZeroUsize::new(2).unwrap(),
         NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+        open_arrow_sink_storage::StorageConfig::default(),
     )
     .unwrap();
     if retry {
