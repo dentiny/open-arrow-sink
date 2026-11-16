@@ -1,17 +1,17 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use datafusion_physical_plan::SendableRecordBatchStream;
-use lance::{Dataset, dataset::InsertBuilder};
+use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
-    WriteSummary, Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
+    committer::LanceCommitter,
     destination::LanceDestination,
     error::worker_stopped,
-    index::build_indexes,
     parallel::{ChannelStream, Message},
 };
 
@@ -20,7 +20,7 @@ pub(crate) struct BlobDatasetWriter {
     encoding_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<Message>>,
-    task: JoinHandle<lance::Result<Dataset>>,
+    task: JoinHandle<lance::Result<Transaction>>,
     rows: u64,
     state: Poison,
     destination: LanceDestination,
@@ -79,27 +79,28 @@ impl Writer for BlobDatasetWriter {
             return Err(error);
         }
         let sender = self.sender.take().unwrap();
-        // Channel closure is an error; only this marker permits native publication.
+        // Channel closure is an error; only this marker permits finishing fragments.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let mut dataset = self
+        let transaction = self
             .task
             .await
             .map_err(Error::backend)?
             .map_err(Error::backend)?;
-        let summary = WriteSummary {
-            rows_written: self.rows,
-        };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
-        Ok(summary)
+        // Share manifest publication, index creation, and failure semantics with
+        // ordinary writers. Once publication starts, retain files on failure.
+        Box::new(LanceCommitter {
+            destination: self.destination,
+            options: self.options,
+        })
+        .commit(vec![(self.rows, transaction)])
+        .await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.blob_session.failed.store(true, Ordering::Release);
         drop(self.sender.take());
-        // Let native writing stop before removing only our reserved directory.
+        // Let native writing stop before cleaning up our new destination.
         let _ = self.task.await;
         if self.options.cleanup_on_error {
             let blobs = self.blob_session.abort().await;
@@ -128,7 +129,7 @@ impl BlobDatasetWriter {
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
-                .execute_stream(stream)
+                .execute_uncommitted_stream(stream)
                 .await
         });
         Ok(Self {

@@ -9,13 +9,13 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct Provider {
     destination: Storage,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
     io_tracker: Arc<crate::io_metrics::TrackedIo>,
 }
 impl Provider {
     pub fn new(
         destination: Storage,
-        sources: StorageResolver,
+        sources: Arc<StorageResolver>,
         io_tracker: Arc<crate::io_metrics::TrackedIo>,
     ) -> Self {
         Self {

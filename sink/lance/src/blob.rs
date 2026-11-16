@@ -11,8 +11,8 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison,
-    RecordBatch, Result, SchemaRef, async_trait,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
+    SchemaRef, async_trait, is_blob_field,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
@@ -140,10 +140,7 @@ pub(crate) async fn create_blob(
 
 /// Marked binary columns require the session-owned streaming blob writer.
 pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
-    schema
-        .fields()
-        .iter()
-        .any(|field| field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true"))
+    schema.fields().iter().any(|field| is_blob_field(field))
 }
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
@@ -155,7 +152,7 @@ pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_field(field) {
                 return field.clone();
             }
             let native = BlobDescriptorArrayBuilder::new(field.name())
@@ -188,7 +185,7 @@ pub(crate) fn storage_batch(
         .enumerate()
         .zip(schema.fields())
         .map(|((column, array), field)| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_field(field) {
                 return Ok(array.clone());
             }
             let values = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
@@ -235,7 +232,7 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+            if is_blob_field(field) {
                 Arc::new(
                     field.as_ref().clone().with_data_type(
                         lance::blob::blob_field(field.name(), field.is_nullable())

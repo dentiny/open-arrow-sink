@@ -1,5 +1,5 @@
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
     CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
@@ -13,19 +13,27 @@ use crate::{destination::LanceDestination, validation::validate_options, write_o
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
 }
 
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
-            sources: StorageResolver::default(),
+            sources: Arc::default(),
         }
     }
+    /// Share source namespaces, credentials, and the URL-derived cache with a download pool.
+    /// This replaces any previously configured source stores.
+    pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
+        self.sources = sources;
+        self
+    }
+
     /// Configure an independent source namespace for native external blob ingestion.
+    /// If the resolver is shared, detach its registrations before adding this store.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = self.sources.with_storage(storage);
+        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
         self
     }
     fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
