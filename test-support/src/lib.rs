@@ -1,6 +1,7 @@
 //! Shared fixtures for workspace integration tests. Use as a dev-dependency only.
 //! Backend-specific setup and deliberate malformed-HTTP fault injection stay in
 //! their owning tests; the HTTP helper serves valid protocol responses.
+pub mod conformance;
 pub mod http;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};

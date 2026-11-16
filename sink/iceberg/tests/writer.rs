@@ -157,6 +157,66 @@ async fn rows(catalog: &dyn Catalog, identifier: &TableIdent) -> Vec<Row> {
     rows
 }
 
+struct ConformanceFixture {
+    catalog: Arc<dyn Catalog>,
+    identifier: TableIdent,
+    schema: SchemaRef,
+    sink: IcebergTableSink,
+}
+
+#[open_arrow_sink_core::async_trait]
+impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixture {
+    type Sink = IcebergTableSink;
+    async fn new() -> Self {
+        let (catalog, identifier, schema) = table().await;
+        Self {
+            sink: IcebergTableSink::new(catalog.clone()),
+            catalog,
+            identifier,
+            schema,
+        }
+    }
+    fn sink(&self) -> &Self::Sink {
+        &self.sink
+    }
+    fn request(&self) -> TableIdent {
+        self.identifier.clone()
+    }
+    fn batch(&self) -> RecordBatch {
+        batch(self.schema.clone())
+    }
+    fn options(&self) -> WriteOptions {
+        options()
+    }
+    async fn read(&self) -> Vec<RecordBatch> {
+        let table = self.catalog.load_table(&self.identifier).await.unwrap();
+        table
+            .scan()
+            .build()
+            .unwrap()
+            .to_arrow()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap()
+    }
+    async fn assert_aborted(&self) {
+        let table = self.catalog.load_table(&self.identifier).await.unwrap();
+        assert_eq!(table.metadata().current_snapshot_id(), None);
+        assert!(
+            rows(self.catalog.as_ref(), &self.identifier)
+                .await
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn shared_sink_contracts() {
+    open_arrow_sink_test_support::conformance::assert_conforms::<ConformanceFixture>().await;
+}
+
 #[tokio::test]
 async fn commits_round_trip_batches_and_preserve_existing_rows() {
     let (catalog, identifier, schema) = table().await;
