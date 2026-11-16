@@ -1,7 +1,7 @@
 # Parquet directory sink
 
 `ParquetDirectorySink` accepts a destination `Url` for Create or Append and, with default features, writes uncompressed
-files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
+files named `part-0-00000.parquet`, `part-0-00001.parquet`, etc. By default it writes
 one file per session. Missing parents are created. The default Create mode
 rejects an existing target, including an empty local directory. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
@@ -59,7 +59,9 @@ atomic directory transaction or durability/fsync guarantee.
 `WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
 removal of this session's files and directory; failed open/commit also attempts
 cleanup. Set it to `false` to retain session-created output on abort or failure.
-Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
+Data writers stop their uploads on abort; the session committer applies this
+cleanup policy after every writer has stopped, including when an individual
+writer abort fails. Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
 and never commits.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
@@ -67,8 +69,9 @@ No partitioning. Storage retries are configured on the OpenDAL operator.
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
-files. Each writer rolls independently using disjoint indices (writer 0 owns
-0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+files. Each writer rolls independently using its own `part-{writer}-{seq}`
+prefix (for example, `part-0-00000.parquet` and `part-1-00000.parquet`).
+Append adds a session UUID before the writer index. The target size applies to each file.
 This overlaps file I/O; Parquet encoding and compression still run in the layer
 caller's task. Extra writers do not provide CPU parallelism and each retains its
 own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
