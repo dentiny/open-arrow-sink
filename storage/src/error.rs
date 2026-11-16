@@ -109,20 +109,19 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
     }
 }
 
-#[cfg(feature = "http")]
 pub(crate) fn download_limit() -> Error {
     invalid("download pool limits exceed semaphore capacity")
 }
-#[cfg(feature = "http")]
 pub(crate) fn invalid_download_url() -> Error {
     invalid("invalid blob URL")
 }
-#[cfg(feature = "http")]
 pub(crate) fn download_scheme() -> Error {
     invalid("blob URL must use HTTP or HTTPS")
 }
+pub(crate) fn http_storage_service() -> Error {
+    invalid_config("HTTP download storage must use the OpenDAL http service")
+}
 
-#[cfg(feature = "http")]
 pub(crate) fn download_response(
     response: http::Response<opendal::HttpBody>,
 ) -> http::Response<opendal::HttpBody> {
