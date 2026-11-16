@@ -32,11 +32,16 @@ buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
 Lance to publish a new manifest version. `abort` stops the worker and removes the
-reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
+new destination when `cleanup_on_error` is enabled. Dropping closes the stream
+with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Create checks that the destination prefix does not exist without creating marker
+files. Callers must exclude concurrent writes or directory replacement during a
+session. After a process crash, uncommitted output may require manual cleanup
+before another Create.
 Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
@@ -132,7 +137,7 @@ Lance managed-blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a freshly reserved dataset
+poisons the session. Abort or a rejected commit removes a new dataset
 when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
 owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
 streamed blobs when appending to or overwriting an existing dataset.
@@ -270,7 +275,7 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
 create a missing dataset. Abort waits for workers to stop and removes only a
-freshly reserved destination when `cleanup_on_error` is enabled. Existing
+new destination when `cleanup_on_error` is enabled. Existing
 datasets and files with an uncertain publication outcome are retained.
 
 `DownloadBlobLayer` uses this streaming interface directly: network chunks are
@@ -278,7 +283,7 @@ appended to native blob files and only completed handles enter record batches.
 A blob larger than the download pool's buffer budget is supported. The shared
 budget applies to application-owned download chunks; Lance's internal I/O and
 encoding buffers are separate. HTTP errors or cancellation poison the layer and
-native session, and a rejected commit aborts the reserved dataset directory.
+native session, and a rejected commit aborts the new dataset directory.
 
 ## Storage version
 
