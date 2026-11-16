@@ -8,13 +8,22 @@ use std::{
 
 use crate::{error::backend, validation};
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
-use arrow_schema::Schema;
+use arrow_schema::{Field, Schema};
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result,
-    SchemaRef, async_trait,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, async_trait,
+    is_blob_marked,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
+
+/// Native logical and prepared descriptor fields carry the same extension name.
+pub(crate) fn is_native_blob(field: &Field) -> bool {
+    field
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(String::as_str)
+        == Some("lance.blob.v2")
+}
 
 pub(crate) struct BlobSession {
     pub failed: AtomicBool,
@@ -140,10 +149,7 @@ pub(crate) async fn create_blob(
 
 /// Marked binary columns require the session-owned streaming blob writer.
 pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
-    schema
-        .fields()
-        .iter()
-        .any(|field| field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true"))
+    schema.fields().iter().any(|field| is_blob_marked(field))
 }
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
@@ -155,7 +161,7 @@ pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_marked(field) {
                 return field.clone();
             }
             let native = BlobDescriptorArrayBuilder::new(field.name())
@@ -188,7 +194,7 @@ pub(crate) fn storage_batch(
         .enumerate()
         .zip(schema.fields())
         .map(|((column, array), field)| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_marked(field) {
                 return Ok(array.clone());
             }
             let values = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
@@ -235,7 +241,7 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+            if is_blob_marked(field) {
                 Arc::new(
                     field.as_ref().clone().with_data_type(
                         lance::blob::blob_field(field.name(), field.is_nullable())
@@ -249,4 +255,25 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         })
         .collect::<Vec<_>>();
     Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::DataType;
+
+    #[test]
+    fn native_blob_recognition_matches_logical_and_descriptor_fields() {
+        assert!(is_native_blob(&lance::blob::blob_field("blob", true)));
+        assert!(is_native_blob(
+            BlobDescriptorArrayBuilder::new("blob").field()
+        ));
+        let field = Field::new("blob", DataType::LargeBinary, true);
+        assert!(!is_native_blob(&field));
+        for extension in ["", "other.blob"] {
+            assert!(!is_native_blob(&field.clone().with_metadata(
+                [("ARROW:extension:name".into(), extension.into())].into()
+            )));
+        }
+    }
 }

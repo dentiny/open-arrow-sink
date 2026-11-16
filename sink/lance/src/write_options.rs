@@ -3,7 +3,7 @@
 use crate::config::SessionOptions;
 use std::sync::Arc;
 
-use crate::{BlobHandleConfig, ExternalBlobMode};
+use crate::{BlobHandleConfig, ExternalBlobMode, blob::is_native_blob};
 use arrow_schema::Schema;
 use lance::{
     blob::{BlobFieldOptions, blob_field_with_options},
@@ -54,12 +54,7 @@ fn blob_schema(schema: &SchemaRef, config: Option<&BlobHandleConfig>) -> SchemaR
         .fields()
         .iter()
         .map(|field| {
-            if field
-                .metadata()
-                .get("ARROW:extension:name")
-                .map(String::as_str)
-                != Some("lance.blob.v2")
-            {
+            if !is_native_blob(field) {
                 return field.clone();
             }
             let native = blob_field_with_options(
