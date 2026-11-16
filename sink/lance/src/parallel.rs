@@ -9,15 +9,21 @@ use crate::{
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
+    /// Caller input schema for validation and Lance logical schema for encoding.
     schemas: crate::write_options::LanceSchemas,
-    // Background worker that receives RecordBatches from a bounded channel and
-    // writes them to uncommitted fragment files. No input batches means no
-    // fragment files are created; manifest publication belongs to the committer.
+    /// Background worker that receives RecordBatches from a bounded channel and
+    /// writes them to uncommitted fragment files. No input batches means no
+    /// fragment files are created; manifest publication belongs to the committer.
     worker: FragmentTask,
+    /// Prevents reuse after an error, cancellation, or finish.
     state: Poison,
+    /// Shared downloader that bounds blob download concurrency and buffered bytes.
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
+    /// Whether external blob URIs stay as references or their bytes are ingested.
     blob_mode: open_arrow_sink_core::ExternalBlobMode,
+    /// Optional failure policy, selected columns, and metrics for blob downloads.
     recovery: Option<open_arrow_sink_core::DownloadRecovery>,
+    /// Optional observers that record bytes read while materializing blob inputs.
     io_metrics: Option<open_arrow_sink_core::IoObservers>,
 }
 
