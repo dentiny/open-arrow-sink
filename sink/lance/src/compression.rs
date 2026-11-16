@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Fields, Schema};
+use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
 use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
@@ -12,34 +13,29 @@ const LEVEL: &str = "lance-encoding:compression-level";
 const DICT_CODEC: &str = "lance-encoding:dict-values-compression";
 const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
 
-/// Native codecs carry validated parameters, so metadata conversion is infallible.
-#[derive(Clone, Copy)]
-enum NativeCompression {
-    Uncompressed,
-    Zstd(Option<i32>),
-}
-
-impl TryFrom<Compression> for NativeCompression {
-    type Error = Error;
-
-    fn try_from(compression: Compression) -> Result<Self> {
-        match compression {
-            Compression::Uncompressed => Ok(Self::Uncompressed),
-            Compression::Zstd { level } => {
-                // Lance also accepts 0 as the native Zstd default.
-                if let Some(level) = level
-                    && level != 0
-                    && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-                {
-                    return Err(crate::error::invalid_compression_level(level));
-                }
-                Ok(Self::Zstd(level))
+/// Convert shared codec requests to native Lance parameters before schema conversion.
+fn native_compression(compression: Compression) -> Result<CompressionConfig> {
+    let (scheme, level) = match compression {
+        Compression::Uncompressed => (CompressionScheme::None, None),
+        // Preserve Lance's native codec policy, including Fullzip's native fallback.
+        Compression::Lz4Raw => (CompressionScheme::Lz4, None),
+        Compression::Zstd { level } => {
+            // Lance also accepts 0 as the native Zstd default.
+            if let Some(level) = level
+                && level != 0
+                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
+            {
+                return Err(crate::error::invalid_compression_level(level));
             }
-            _ => Err(Error::Unsupported(format!(
-                "Lance compression: {compression:?}"
-            ))),
+            (CompressionScheme::Zstd, level)
         }
-    }
+        _ => {
+            return Err(Error::Unsupported(format!(
+                "Lance compression: {compression:?}"
+            )));
+        }
+    };
+    Ok(CompressionConfig::new(scheme, level))
 }
 
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> Result<SchemaRef> {
@@ -51,10 +47,7 @@ pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) ->
     {
         return Ok(schema.clone());
     }
-    let global = options
-        .global
-        .map(NativeCompression::try_from)
-        .transpose()?;
+    let global = options.global.map(native_compression).transpose()?;
     let mut fields = schema
         .fields()
         .iter()
@@ -63,7 +56,7 @@ pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) ->
                 .columns
                 .get(field.name())
                 .copied()
-                .map(NativeCompression::try_from)
+                .map(native_compression)
                 .transpose()?
                 .or(global);
             let encoding = options
@@ -82,7 +75,7 @@ pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) ->
         if path.len() < 2 {
             return Err(invalid_path(path));
         }
-        fields = nested_fields(&fields, path, (*codec).try_into()?)?;
+        fields = nested_fields(&fields, path, native_compression(*codec)?)?;
     }
     Ok(Arc::new(Schema::new_with_metadata(
         fields,
@@ -96,7 +89,7 @@ fn invalid_path(path: &[String]) -> Error {
     ))
 }
 
-fn nested_fields(fields: &Fields, path: &[String], codec: NativeCompression) -> Result<Fields> {
+fn nested_fields(fields: &Fields, path: &[String], codec: CompressionConfig) -> Result<Fields> {
     let (name, rest) = path.split_first().ok_or_else(|| invalid_path(path))?;
     let mut matches = fields.iter().enumerate().filter(|(_, f)| f.name() == name);
     let (index, field) = matches.next().ok_or_else(|| invalid_path(path))?;
@@ -112,7 +105,7 @@ fn nested_fields(fields: &Fields, path: &[String], codec: NativeCompression) -> 
 fn nested_override(
     field: &Arc<Field>,
     path: &[String],
-    codec: NativeCompression,
+    codec: CompressionConfig,
 ) -> Result<Arc<Field>> {
     if path.is_empty() {
         return Ok(Arc::new(compression_field(field, Some(codec), None)));
@@ -131,21 +124,18 @@ fn nested_override(
 
 fn compression_field(
     field: &Field,
-    compression: Option<NativeCompression>,
+    compression: Option<CompressionConfig>,
     encoding: Option<StructuralEncoding>,
 ) -> Field {
     let mut metadata = field.metadata().clone();
     if let Some(compression) = compression {
-        let codec = match compression {
-            NativeCompression::Uncompressed => "none",
-            NativeCompression::Zstd(_) => "zstd",
-        };
-        metadata.insert(CODEC.into(), codec.into());
+        let codec = compression.scheme().to_string();
+        metadata.insert(CODEC.into(), codec.clone());
         // Dictionary values have an independent native compression default.
-        metadata.insert(DICT_CODEC.into(), codec.into());
+        metadata.insert(DICT_CODEC.into(), codec);
         metadata.remove(LEVEL);
         metadata.remove(DICT_LEVEL);
-        if let NativeCompression::Zstd(Some(level)) = compression {
+        if let Some(level) = compression.level() {
             metadata.insert(LEVEL.into(), level.to_string());
             metadata.insert(DICT_LEVEL.into(), level.to_string());
         }
@@ -168,7 +158,7 @@ fn compression_field(
 
 fn compression_type(
     data_type: &DataType,
-    compression: Option<NativeCompression>,
+    compression: Option<CompressionConfig>,
     encoding: Option<StructuralEncoding>,
 ) -> DataType {
     let child = |field: &Arc<Field>| Arc::new(compression_field(field, compression, encoding));

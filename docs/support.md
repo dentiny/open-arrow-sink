@@ -15,8 +15,8 @@ restrictions below. Cargo features are additive.
 | Overwrite | Unsupported | Unsupported | New manifest version; historical versions retained |
 | Preserve input order | Unsupported | Unsupported | Unsupported |
 | Partition routing | Unsupported | Existing spec: Identity, Year, Month, Day, Hour, Bucket, Truncate, Void | Unsupported |
-| Compression, global | Uncompressed; opt-in Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Zstd |
-| Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd |
+| Compression, global | Uncompressed; opt-in Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Zstd, Lz4Raw |
+| Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd, Lz4Raw |
 | Structural encoding | Unsupported | Unsupported | Miniblock, Fullzip; global and per-column |
 | Explicit Zstd level | 1–22 | 1–22 | 0–22 |
 | Session upload part size / concurrency | Supported | Unsupported; configure catalog Storage | Supported |
@@ -30,6 +30,8 @@ Partition options select the transform category already present in the Iceberg
 spec; every field must use that category. They do not define a new spec. Mixed
 transform categories are unsupported. Schema metadata must retain Iceberg field IDs.
 Lance append compares the effective schema, including compression metadata.
+Lance maps `Lz4Raw` to its native `lz4` policy; some Fullzip per-value paths in
+Lance 14 may substitute Zstd. Miniblock encoding uses LZ4.
 
 ## Features and storage
 

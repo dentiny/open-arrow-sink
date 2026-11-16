@@ -59,8 +59,16 @@ impl Sink for LanceDatasetSink {
             .with_ordering(Ordering::Unordered)
             .with_compression(
                 CompressionCapability::default()
-                    .with_global(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
-                    .with_per_column(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_global(&[
+                        CompressionCodec::Uncompressed,
+                        CompressionCodec::Zstd,
+                        CompressionCodec::Lz4Raw,
+                    ])
+                    .with_per_column(&[
+                        CompressionCodec::Uncompressed,
+                        CompressionCodec::Zstd,
+                        CompressionCodec::Lz4Raw,
+                    ])
                     .with_structural_encodings(&[
                         open_arrow_sink_core::StructuralEncoding::Miniblock,
                         open_arrow_sink_core::StructuralEncoding::Fullzip,

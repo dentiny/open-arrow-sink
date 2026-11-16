@@ -4239,6 +4239,7 @@ dependencies = [
  "datafusion-physical-plan",
  "futures",
  "lance",
+ "lance-encoding",
  "lance-file",
  "lance-index",
  "lance-io",

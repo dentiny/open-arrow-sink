@@ -19,6 +19,7 @@ bytes.workspace = true
 futures.workspace = true
 open-arrow-sink-storage.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+lance-encoding = { version = "14.0.1", default-features = false }
 lance-file = { version = "14.0.1", default-features = false }
 lance-table = { version = "14.0.1", default-features = false }
 lance-io = { version = "14.0.1", default-features = false }
