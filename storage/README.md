@@ -118,13 +118,29 @@ SDKs. The adapter delegates ordinary object operations to `OpendalStore`, while
 multipart uploads use the same storage upload policy as `Storage::writer()`.
 Parquet and Iceberg do not enable this dependency.
 
-## Download transports
+## HTTP downloads
 
-A `DownloadPool` can reuse a caller-provided `opendal::HttpTransporter` via
-`with_http_transport`. This supports shared authentication or instrumentation and
-in-memory test fixtures without installing a process-global default transport.
-The pool preserves its existing concurrency, timeout, and retry layers when the
-transport is replaced. Returned chunks retain the same buffer accounting.
+A `DownloadPool` sends HTTP(S) downloads through a `Storage`, so they use the
+same retry, timeout, request-budget, and transport configuration as every other
+storage. Build it with `DownloadPool::http_storage(config)`, adjust it with
+`with_http_concurrency_limit` or `with_http_transport`, and install it with
+`with_http_storage`. Each request goes to the complete source URL, including
+signed queries.
+
+```rust,ignore
+use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, StorageConfig};
+
+let shared_limit = HttpConcurrencyLimitLayer::new(32)?;
+let http = DownloadPool::http_storage(StorageConfig::default())?
+    .with_http_concurrency_limit(shared_limit.clone())
+    .with_http_transport(transport);
+let pool = DownloadPool::with_defaults()?.with_http_storage(http)?;
+```
+
+`Storage::with_http_transport` replaces the provider transport for shared
+authentication, instrumentation, or in-memory test fixtures without installing a
+process-global default. The current request budget and operator layers still apply.
+Returned chunks retain the same buffer accounting.
 
 ## Related documentation
 

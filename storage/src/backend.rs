@@ -20,6 +20,7 @@ pub struct Storage {
     operator: Operator,
     // Budget changes wrap this original transport, never an existing limiter.
     base_http_transport: HttpTransporter,
+    http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
     base_path: Arc<str>,
@@ -38,12 +39,14 @@ impl Storage {
         }
         let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
         let base_http_transport = operator.base_context().http_transport().clone();
-        let context = operator.base_context().with_http_transport(
-            HttpConcurrencyLimitLayer::default().wrap(base_http_transport.clone()),
-        );
+        let http_limit = HttpConcurrencyLimitLayer::default();
+        let context = operator
+            .base_context()
+            .with_http_transport(http_limit.wrap(base_http_transport.clone()));
         Ok(Self {
             operator: operator.with_context(context),
             base_http_transport,
+            http_limit,
             base_url,
             base_path,
             upload_part_size: None,
@@ -107,7 +110,16 @@ impl Storage {
             .base_context()
             .with_http_transport(limit.wrap(self.base_http_transport.clone()));
         self.operator = self.operator.with_context(context);
+        self.http_limit = limit;
         self
+    }
+
+    /// Replace the provider transport for authentication, instrumentation, or
+    /// deterministic tests. The current request budget and operator layers apply.
+    pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
+        self.base_http_transport = transport;
+        let limit = self.http_limit.clone();
+        self.with_http_concurrency_limit(limit)
     }
 
     /// Configure buffering for streaming uploads. OpenDAL applies the backend's

@@ -334,6 +334,6 @@ sink or constructing a dataset builder; Lance snapshots the available schemes.
 
 `DownloadPool::with_source_storage` configures non-HTTP source stores. File and
 enabled cloud downloads share the same transfer-buffer budget and active-stream
-limit as HTTP(S). Explicit stores retain their policies; `with_layer` configures
-HTTP downloads. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
+limit as HTTP(S). Explicit stores retain their policies; `with_http_storage`
+configures HTTP downloads with a `Storage` built by `DownloadPool::http_storage`. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
 their complete URL, including the query.
