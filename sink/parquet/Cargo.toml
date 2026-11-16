@@ -27,6 +27,7 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+open-arrow-sink-test-support.workspace = true
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

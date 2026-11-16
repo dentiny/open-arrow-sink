@@ -97,10 +97,12 @@ ordering still applies.
 
 The pool streams owned, budgeted chunks directly to the native writer. Payloads
 can exceed the transfer-buffer budget; retaining chunks holds their reservations.
-Request concurrency is process-wide, initialized by the first pool (with
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` overriding its fallback). Byte budgets are
-per pool, and exclude SDK/HTTP/encoding buffers. Share an `Arc<DownloadPool>` when
-writers should share one transfer budget. No retry or timeout is installed by
+Stream concurrency and byte budgets belong to each pool; every constructor
+honors its limits. Without a configured pool, each opened writer gets independent
+default limits. Share an `Arc<DownloadPool>` when writers should share stream and
+transfer budgets. For an HTTP-only budget shared with other pools or storage,
+install clones of one `HttpConcurrencyLimitLayer` using `with_layer`. Transfer
+budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
 default; OpenDAL I/O policies can be applied to the pool.
 
 A failed or cancelled write poisons the session and cancels remaining downloads;

@@ -9,7 +9,7 @@ description = "Shared OpenDAL storage for Arrow sinks"
 [features]
 default = []
 object-store = ["dep:object_store", "dep:object_store_opendal"]
-http = ["opendal/services-http", "opendal/http-transport-reqwest", "dep:async-stream", "dep:once_cell"]
+http = ["opendal/services-http", "opendal/http-transport-reqwest", "dep:async-stream"]
 aws = ["opendal/services-s3", "opendal/http-transport-reqwest"]
 gcp = ["opendal/services-gcs", "opendal/http-transport-reqwest"]
 azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
@@ -18,7 +18,6 @@ azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
 object_store = { version = "0.14.2", default-features = false, optional = true }
 object_store_opendal = { version = "0.60.2", default-features = false, optional = true }
 async-stream = { workspace = true, optional = true }
-once_cell = { workspace = true, optional = true }
 bytes = "1"
 futures.workspace = true
 http = "1"

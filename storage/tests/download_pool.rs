@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 use futures::{TryStreamExt, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
-use open_arrow_sink_storage::{DownloadPool, opendal};
+use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, opendal};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
 
@@ -43,24 +43,28 @@ fn pool(concurrency: usize, bytes: usize) -> Arc<DownloadPool> {
     )
 }
 
-// Run sequentially because all pools share the process-wide request limit.
 #[tokio::test]
 async fn streaming_limits_and_cleanup() {
     timeout(Duration::from_secs(5), async {
         let url = "https://download-fixture.invalid";
         let first = pool(2, 8);
         let other = pool(64, 16);
-        assert_eq!(first.concurrency(), other.concurrency());
+        assert_eq!(first.concurrency(), 2);
+        assert_eq!(other.concurrency(), 64);
 
         let mut streams = Vec::new();
         for _ in 0..first.concurrency() {
             streams.push(first.stream(url).await.unwrap());
         }
         assert!(
-            timeout(Duration::from_millis(20), other.stream(url))
+            timeout(Duration::from_millis(20), first.stream(url))
                 .await
                 .is_err()
         );
+        // An unrelated pool remains usable when the first pool is saturated.
+        let mut independent = other.stream(url).await.unwrap();
+        let other_chunk = independent.try_next().await.unwrap().unwrap();
+        drop((independent, other_chunk));
         let chunk = streams[0].try_next().await.unwrap().unwrap();
         drop(streams);
 
@@ -148,4 +152,73 @@ async fn streaming_limits_and_cleanup() {
     })
     .await
     .expect("download pool test stalled");
+}
+
+#[tokio::test]
+async fn explicit_http_budget_is_shared_across_independent_pools() {
+    struct HeldBody;
+    impl HttpTransport for HeldBody {
+        async fn fetch(&self, _: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            use futures::StreamExt;
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-length", BODY.len() + 1)
+                .body(HttpBody::new(
+                    stream::iter([Ok(Buffer::from(BODY))]).chain(stream::pending()),
+                    Some(BODY.len() as u64 + 1),
+                ))
+                .unwrap())
+        }
+    }
+    timeout(Duration::from_secs(5), async {
+        let shared = HttpConcurrencyLimitLayer::new(1).unwrap();
+        let make_pool = |concurrency| {
+            DownloadPool::new(concurrency, 8.try_into().unwrap())
+                .unwrap()
+                .with_layer(shared.clone())
+                .with_http_transport(HttpTransporter::new(HeldBody))
+        };
+        let first = make_pool(2.try_into().unwrap());
+        let second = make_pool(3.try_into().unwrap());
+        assert_eq!(first.concurrency(), 2);
+        assert_eq!(second.concurrency(), 3);
+        let url = "https://download-fixture.invalid";
+        let mut held = first.stream(url).await.unwrap();
+        let chunk = held.try_next().await.unwrap().unwrap();
+        let mut waiting = second.stream(url).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(20), waiting.try_next())
+                .await
+                .is_err()
+        );
+        // The retained chunk owns only its pool's byte reservation. Dropping the
+        // first HTTP body releases the shared request slot for the second pool.
+        drop(held);
+        assert!(waiting.try_next().await.unwrap().is_some());
+        assert_eq!(first.buffered_bytes(), 8);
+        drop(chunk);
+        assert_eq!(first.buffered_bytes(), 0);
+    })
+    .await
+    .expect("shared HTTP budget stalled");
+}
+
+#[test]
+fn invalid_concurrency_does_not_initialize_or_change_other_pools() {
+    assert!(
+        DownloadPool::new(
+            (tokio::sync::Semaphore::MAX_PERMITS + 1)
+                .try_into()
+                .unwrap(),
+            8.try_into().unwrap(),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        DownloadPool::new(3.try_into().unwrap(), 8.try_into().unwrap())
+            .unwrap()
+            .concurrency(),
+        3
+    );
+    assert_eq!(DownloadPool::with_defaults().unwrap().concurrency(), 64);
 }

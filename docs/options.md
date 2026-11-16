@@ -230,13 +230,20 @@ reusing them across sessions.
 `layer::DownloadPool` re-exports the common storage downloader, using its HTTP
 concurrency limiter. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
-writers. Every pool shares one process-wide request limiter. The first pool reads
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to its `concurrency` argument
-when unset, non-Unicode, invalid, or zero. Later pools reuse that limit, ignoring
-their `concurrency` arguments. Values above semaphore capacity return an error
-without initializing the limiter. `DownloadPool::global()` uses a fallback of 64
-and an 8 GiB transfer-buffer budget. Transfer-buffer budgets remain per pool;
-creating a new pool does not add independent request slots.
+writers. Each new pool owns the requested stream-concurrency and transfer-buffer
+budgets. No environment variable or process-wide singleton changes these limits.
+The former `DownloadPool::global()` and
+`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` override have been removed.
+`DownloadPool::with_defaults()` creates an independent pool with 64 stream slots
+and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
+`DownloadBlobLayer` creates one default pool per opened writer.
+
+To share HTTP capacity across otherwise independent pools or with `Storage`,
+create one `HttpConcurrencyLimitLayer` and install its clones using the pool's
+`with_layer` and storage's `with_http_concurrency_limit`. Stream slots also cover
+non-HTTP sources; HTTP permits cover network requests until response-body release.
+These are separate budgets. There is no additional HTTP limiter unless configured.
+
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.

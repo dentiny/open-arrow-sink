@@ -121,12 +121,7 @@ fn input() -> RecordBatch {
     RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
         .unwrap()
 }
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[rstest::rstest]
 #[case::single(0)]

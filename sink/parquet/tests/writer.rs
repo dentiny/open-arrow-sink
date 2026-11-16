@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, WriteMode, WriteOptions};
 use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -20,12 +20,7 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[rstest::rstest]
 #[case::default(None)]
