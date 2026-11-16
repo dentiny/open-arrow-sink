@@ -1,18 +1,16 @@
 use std::sync::{Arc, atomic::Ordering};
 
-use datafusion_physical_plan::SendableRecordBatchStream;
-use lance::{Dataset, dataset::InsertBuilder};
+use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
+use futures::stream;
+use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
-    WriteSummary, Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    compression::writer_batch,
-    error::worker_stopped,
-    index::build_indexes,
-    parallel::{ChannelStream, Message},
+    LanceFragments, committer::LanceCommitter, compression::writer_batch, error::worker_stopped,
     storage::NativeStorage,
 };
 
@@ -21,8 +19,8 @@ pub(crate) struct BlobDatasetWriter {
     encoding_schema: SchemaRef,
     storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
-    sender: Option<mpsc::Sender<Message>>,
-    task: Option<JoinHandle<lance::Result<Dataset>>>,
+    sender: Option<mpsc::Sender<RecordBatch>>,
+    task: Option<JoinHandle<lance::Result<Transaction>>>,
     logical: bool,
     rows: u64,
     state: Poison,
@@ -101,7 +99,7 @@ impl Writer for BlobDatasetWriter {
         self.sender
             .as_ref()
             .unwrap()
-            .send(Message::Batch(batch))
+            .send(batch)
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
@@ -120,24 +118,26 @@ impl Writer for BlobDatasetWriter {
             return Err(error);
         }
         self.start_worker(true)?;
-        let sender = self.sender.take().unwrap();
-        // Channel closure is an error; only this marker permits native publication.
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
-        let mut dataset = self
+        // Closing the input only finishes fragments; the committer publishes below.
+        drop(self.sender.take());
+        let transaction = self
             .task
             .take()
             .unwrap()
             .await
             .map_err(Error::backend)?
             .map_err(Error::backend)?;
-        let summary = WriteSummary {
+        // Share manifest publication, index creation, and failure semantics with
+        // ordinary writers. Once publication starts, retain files on failure.
+        Box::new(LanceCommitter {
+            destination: self.destination,
+            options: self.options,
+        })
+        .commit(vec![LanceFragments {
             rows_written: self.rows,
-        };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
-        Ok(summary)
+            transaction,
+        }])
+        .await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -162,15 +162,16 @@ impl BlobDatasetWriter {
             return Ok(());
         }
         let (sender, receiver) = mpsc::channel(1);
-        let stream = Box::pin(ChannelStream {
-            schema: if logical {
-                crate::blob::logical_schema(&self.encoding_schema)
-            } else {
-                self.encoding_schema.clone()
-            },
-            receiver,
-            finished: false,
-        }) as SendableRecordBatchStream;
+        let schema = if logical {
+            crate::blob::logical_schema(&self.encoding_schema)
+        } else {
+            self.encoding_schema.clone()
+        };
+        let batches = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|batch| (Ok(batch), receiver))
+        });
+        let stream =
+            Box::pin(RecordBatchStreamAdapter::new(schema, batches)) as SendableRecordBatchStream;
         let params = self
             .destination
             .bind_write_params(crate::write_options::write_params(&self.options)?);
@@ -178,7 +179,7 @@ impl BlobDatasetWriter {
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
-                .execute_stream(stream)
+                .execute_uncommitted_stream(stream)
                 .await
         });
         self.sender = Some(sender);

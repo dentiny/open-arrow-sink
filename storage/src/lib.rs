@@ -9,14 +9,11 @@ mod resolver;
 mod validation;
 pub use resolver::StorageResolver;
 
-pub use backend::{Storage, StorageWriter};
+pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
 pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
 pub use url::Url;
-
-mod downloader;
-pub use downloader::{BlobDownload, BlobDownloader};
 
 mod object_store;
 
@@ -28,3 +25,6 @@ impl Storage {
         std::sync::Arc::new(object_store::UploadStore::new(self.clone()))
     }
 }
+
+mod downloader;
+pub use downloader::{BlobDownload, BlobDownloader};

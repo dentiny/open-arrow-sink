@@ -70,11 +70,26 @@ impl BlobDownloader {
         opendal::install_default();
         let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
         let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(Error::backend)?;
-        Storage::try_new(
-            operator,
-            HTTP_PLACEHOLDER.parse().map_err(Error::backend)?,
-            config,
-        )
+        Storage::new(operator, HTTP_PLACEHOLDER.parse().map_err(Error::backend)?)?
+            .with_config(config)
+    }
+
+    /// Compose policies for HTTP and URL-resolved sources. Explicitly registered
+    /// stores retain their own policies; other shared resolver consumers are unchanged.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.sources = Arc::new(self.sources.as_ref().clone().with_config(config.clone())?);
+        self.http = self.http.with_config(config)?;
+        Ok(self)
+    }
+    /// Compose HTTP policies without changing transfer budgets or source stores.
+    pub fn with_http_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.http = self.http.with_config(config)?;
+        Ok(self)
+    }
+    /// Replace the HTTP provider transport while retaining policies and budgets.
+    pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
+        self.http = self.http.with_http_transport(transport);
+        self
     }
 
     /// Route HTTP(S) downloads through `storage`, keeping its policies, request

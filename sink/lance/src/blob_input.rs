@@ -45,7 +45,7 @@ pub(crate) async fn send_rows(
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
     metrics: Option<&IoMetrics>,
-    sender: &tokio::sync::mpsc::Sender<crate::parallel::Message>,
+    sender: &tokio::sync::mpsc::Sender<RecordBatch>,
 ) -> Result<()> {
     let mut rows = 0..batch.num_rows();
     let mut active = FuturesOrdered::new();
@@ -68,7 +68,7 @@ pub(crate) async fn send_rows(
             }
             permit = sender.reserve(), if !ready.is_empty() => {
                 permit.map_err(|_| crate::error::worker_stopped())?
-                    .send(crate::parallel::Message::Batch(ready.pop_front().unwrap()));
+                    .send(ready.pop_front().unwrap());
             }
         }
     }

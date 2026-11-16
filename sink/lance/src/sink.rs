@@ -7,7 +7,7 @@ use open_arrow_sink_core::{
     SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{storage::NativeStorage, validation::validate_options, write_options};
+use crate::{LanceFragments, storage::NativeStorage, validation::validate_options, write_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -159,7 +159,7 @@ impl Sink for LanceDatasetSink {
 
 #[async_trait]
 impl ParallelSink for LanceDatasetSink {
-    type Output = (u64, lance::dataset::transaction::Transaction);
+    type Output = LanceFragments;
     async fn open_writers(
         &self,
         url: Url,

@@ -42,13 +42,11 @@ fn pool_with(
     config: StorageConfig,
     transport: impl HttpTransport,
 ) -> BlobDownloader {
-    let http = BlobDownloader::http_storage(config)
-        .unwrap()
-        .with_http_transport(HttpTransporter::new(transport));
     BlobDownloader::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
         .unwrap()
-        .with_http_storage(http)
+        .with_http_config(config)
         .unwrap()
+        .with_http_transport(HttpTransporter::new(transport))
 }
 
 fn pool(concurrency: usize, bytes: usize) -> BlobDownloader {
