@@ -1,9 +1,7 @@
 //! Configuration, destination, transaction, and writer-state validation.
-use arrow_schema::{DataType, FieldRef, Fields, Schema};
-use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
+use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    CompressionOptions, CompressionSpec, Error, IndexSpec, IndexType, Result, SinkCapability,
-    WriteOptions, is_blob_field, validation,
+    Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, is_blob_field, validation,
 };
 
 use lance::index::DatasetIndexExt;
@@ -18,45 +16,9 @@ pub(crate) fn validate_options(
 ) -> Result<Option<LanceFileVersion>> {
     validation::validate_options(schema, options, capability)?;
     let storage_version = parse_storage_version(options.storage_version.as_deref())?;
-    validate_encoding(schema, &options.compression)?;
+    crate::compression::validate_encoding(schema, &options.compression)?;
     validate_indexes(schema, &options.indexes)?;
     Ok(storage_version)
-}
-
-fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
-    // Native blob descriptors are opaque to Lance users. Keep this backend rule
-    // here rather than teaching core's Arrow path resolver about Lance metadata.
-    for path in options.nested_columns.keys() {
-        if (1..path.len()).any(|end| {
-            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2")
-            })
-        }) {
-            return Err(error::nested_blob_compression(path));
-        }
-    }
-    for field in schema.fields() {
-        let encoding = options
-            .column_encodings
-            .get(field.name())
-            .copied()
-            .or(options.structural_encoding);
-        if encoding.is_some()
-            && (is_blob_field(field)
-                || field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2"))
-        {
-            return Err(error::blob_structural_encoding(field.name()));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
@@ -155,40 +117,6 @@ pub(crate) async fn validate_existing_dataset(
     Ok(dataset)
 }
 
-pub(crate) fn validate_transaction_compatibility(
-    target: &lance::dataset::transaction::Transaction,
-    incoming: &lance::dataset::transaction::Transaction,
-) -> Result<()> {
-    use lance::dataset::transaction::Operation;
-    if target.read_version != incoming.read_version {
-        return Err(error::different_dataset_versions());
-    }
-    if !matches!(
-        (&target.operation, &incoming.operation),
-        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
-            | (Operation::Append { .. }, Operation::Append { .. })
-    ) {
-        return Err(error::invalid_create_fragments());
-    }
-    Ok(())
-}
-
-pub(crate) fn write_fragments(
-    operation: &mut lance::dataset::transaction::Operation,
-) -> Result<&mut Vec<lance_table::format::Fragment>> {
-    match operation {
-        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
-        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
-        _ => Err(error::invalid_create_fragments()),
-    }
-}
-
-pub(crate) fn validate_session_transaction(
-    transaction: Option<lance::dataset::transaction::Transaction>,
-) -> Result<lance::dataset::transaction::Transaction> {
-    transaction.ok_or_else(error::empty_writer_session)
-}
-
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     fn check(field: &arrow_schema::Field, top_level: bool) -> Result<()> {
         if is_blob_field(field) {
@@ -261,69 +189,6 @@ pub(crate) fn parse_storage_version(
     }
 }
 
-/// Convert shared codec requests to native Lance parameters before schema conversion.
-pub(crate) fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
-    let (scheme, level) = match compression {
-        CompressionSpec::Uncompressed => (CompressionScheme::None, None),
-        // Preserve Lance's native codec policy, including Fullzip's native fallback.
-        CompressionSpec::Lz4Raw => (CompressionScheme::Lz4, None),
-        CompressionSpec::Zstd { level } => {
-            // Lance also accepts 0 as the native Zstd default.
-            if let Some(level) = level
-                && level != 0
-                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-            {
-                return Err(error::invalid_compression_level(level));
-            }
-            (CompressionScheme::Zstd, level)
-        }
-        _ => {
-            return Err(error::unsupported_compression(compression));
-        }
-    };
-    Ok(CompressionConfig::new(scheme, level))
-}
-
-pub(crate) fn validate_nested_compression_path(path: &[String]) -> Result<()> {
-    if path.len() < 2 {
-        return Err(error::invalid_compression_path(path));
-    }
-    Ok(())
-}
-
-pub(crate) fn nested_compression_field<'a, 'p>(
-    fields: &'a Fields,
-    path: &'p [String],
-) -> Result<(usize, &'a FieldRef, &'p [String])> {
-    let (name, rest) = path
-        .split_first()
-        .ok_or_else(|| error::invalid_compression_path(path))?;
-    let index = validation::unique_field_index(fields, name)
-        .ok_or_else(|| error::invalid_compression_path(path))?;
-    let field = &fields[index];
-    Ok((index, field, rest))
-}
-
-pub(crate) enum CompressionContainer<'a> {
-    Struct(&'a Fields),
-    List(&'a FieldRef),
-    LargeList(&'a FieldRef),
-    FixedSizeList(&'a FieldRef, i32),
-}
-
-pub(crate) fn compression_container<'a>(
-    field: &'a FieldRef,
-    path: &[String],
-) -> Result<CompressionContainer<'a>> {
-    match field.data_type() {
-        DataType::Struct(children) => Ok(CompressionContainer::Struct(children)),
-        DataType::List(item) => Ok(CompressionContainer::List(item)),
-        DataType::LargeList(item) => Ok(CompressionContainer::LargeList(item)),
-        DataType::FixedSizeList(item, size) => Ok(CompressionContainer::FixedSizeList(item, *size)),
-        _ => Err(error::invalid_compression_path(path)),
-    }
-}
-
 pub(crate) async fn validate_existing_indexes(
     dataset: &lance::Dataset,
     indexes: &[IndexSpec],
@@ -342,48 +207,6 @@ pub(crate) async fn validate_existing_indexes(
         }
     }
     Ok(())
-}
-
-pub(crate) fn validate_destination_path(path: &open_arrow_sink_storage::ObjectPath) -> Result<()> {
-    if path.is_root() {
-        return Err(error::invalid_destination_root());
-    }
-    Ok(())
-}
-
-/// Validate and return an existing dataset for reuse by subsequent checks.
-/// None means this session will create a new destination.
-pub(crate) async fn validate_destination(
-    destination: &crate::destination::LanceDestination,
-    schema: &open_arrow_sink_core::SchemaRef,
-    mode: open_arrow_sink_core::WriteMode,
-    storage_version: Option<LanceFileVersion>,
-) -> Result<Option<lance::Dataset>> {
-    use open_arrow_sink_core::WriteMode;
-    use open_arrow_sink_storage::DirectoryState;
-    if mode == WriteMode::Append {
-        return validate_existing_dataset(
-            destination.dataset_builder(),
-            Some(schema),
-            storage_version,
-        )
-        .await
-        .map(Some);
-    }
-    if destination
-        .storage
-        .inspect_directory(&destination.path)
-        .await?
-        == DirectoryState::Missing
-    {
-        return Ok(None);
-    }
-    if mode == WriteMode::Create {
-        return Err(Error::AlreadyExists(destination.url.to_string()));
-    }
-    validate_existing_dataset(destination.dataset_builder(), None, None)
-        .await
-        .map(Some)
 }
 
 pub(crate) async fn validate_index_requests(

@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use lance::dataset::transaction::Transaction;
+use lance::dataset::transaction::{Operation, Transaction};
 use open_arrow_sink_core::{Error, IndexSpec, Result, SessionCommitter, async_trait};
 
-use crate::{LanceFragments, destination::LanceDestination, indexed_commit::IndexedCommitHandler};
+use crate::{
+    LanceFragments, destination::LanceDestination, error, indexed_commit::IndexedCommitHandler,
+};
 
 pub(crate) struct LanceCommitter {
     pub destination: LanceDestination,
@@ -14,18 +16,7 @@ pub(crate) struct LanceCommitter {
 #[async_trait]
 impl SessionCommitter<LanceFragments> for LanceCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<LanceFragments>) -> Result<()> {
-        let mut combined: Option<Transaction> = None;
-        for LanceFragments { mut transaction } in outputs {
-            if let Some(target) = &mut combined {
-                crate::validation::validate_transaction_compatibility(target, &transaction)?;
-                let fragments = crate::validation::write_fragments(&mut target.operation)?;
-                let incoming = crate::validation::write_fragments(&mut transaction.operation)?;
-                fragments.append(incoming);
-            } else {
-                combined = Some(transaction);
-            }
-        }
-        let transaction = crate::validation::validate_session_transaction(combined)?;
+        let transaction = merge_transactions(outputs)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut builder = self.destination.commit_builder();
@@ -51,4 +42,38 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())
     }
+}
+
+/// Combine worker fragments without publishing or discarding native transaction metadata.
+fn merge_transactions(outputs: Vec<LanceFragments>) -> Result<Transaction> {
+    let mut outputs = outputs.into_iter();
+    let LanceFragments { mut transaction } =
+        outputs.next().ok_or_else(error::empty_writer_session)?;
+    for LanceFragments {
+        transaction: incoming,
+    } in outputs
+    {
+        if transaction.read_version != incoming.read_version {
+            return Err(error::different_dataset_versions());
+        }
+        match (&mut transaction.operation, incoming.operation) {
+            (
+                Operation::Overwrite { fragments, .. },
+                Operation::Overwrite {
+                    fragments: mut other,
+                    ..
+                },
+            )
+            | (
+                Operation::Append { fragments },
+                Operation::Append {
+                    fragments: mut other,
+                },
+            ) => {
+                fragments.append(&mut other);
+            }
+            _ => return Err(error::invalid_create_fragments()),
+        }
+    }
+    Ok(transaction)
 }
