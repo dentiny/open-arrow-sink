@@ -9,7 +9,7 @@ mod resolver;
 mod validation;
 pub use resolver::StorageResolver;
 
-pub use backend::{Storage, StorageWriter};
+pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
 pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
