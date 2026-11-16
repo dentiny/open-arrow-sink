@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, StorageConfig, Url};
+use open_arrow_sink_storage::{Storage, StorageConfig, StorageResolver, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -19,6 +19,8 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct ParquetDirectorySink {
     storage: Option<Storage>,
+    // Clones share URL-derived backends and their HTTP request budgets.
+    resolved: StorageResolver,
     config: StorageConfig,
 }
 
@@ -27,6 +29,7 @@ impl ParquetDirectorySink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
+            resolved: StorageResolver::default(),
             config: StorageConfig::default(),
         }
     }
@@ -103,7 +106,7 @@ impl ParquetDirectorySink {
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
-            None => Storage::from_url(&directory)?,
+            None => self.resolved.resolve(&directory)?,
         }
         .with_config(self.config.clone())?
         .with_write_options(&options);

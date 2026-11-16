@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{BlobDownloader, Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{BlobDownloader, Storage, StorageConfig, StorageResolver, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -15,6 +15,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
+    // Clones share URL-derived backends and their HTTP request budgets.
+    resolved: StorageResolver,
+    config: StorageConfig,
     sources: Option<Arc<StorageResolver>>,
     downloader: Arc<BlobDownloader>,
     encoding_buffer_size: Option<NonZeroUsize>,
@@ -24,6 +27,8 @@ impl Default for LanceDatasetSink {
     fn default() -> Self {
         Self {
             storage: None,
+            resolved: StorageResolver::default(),
+            config: StorageConfig::default(),
             sources: None,
             downloader: Arc::new(
                 BlobDownloader::with_defaults().expect("valid default download limits"),
@@ -39,6 +44,15 @@ impl LanceDatasetSink {
             ..Self::default()
         }
     }
+    /// Configure retry/timeout policies for explicit or URL-derived destination storage.
+    /// Validation happens now, before opening a destination or performing I/O.
+    /// External source stores retain their independently configured policies.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        config.validate()?;
+        self.config = config;
+        Ok(self)
+    }
+
     pub fn with_blob_downloader(mut self, downloader: Arc<BlobDownloader>) -> Self {
         self.downloader = downloader;
         self
@@ -75,8 +89,9 @@ impl LanceDatasetSink {
         let sources = self.source_resolver();
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
-            None => Storage::from_url(&url)?,
-        };
+            None => self.resolved.resolve(&url)?,
+        }
+        .with_config(self.config.clone())?;
         let downloader = Arc::new(
             self.downloader
                 .as_ref()
