@@ -1,4 +1,4 @@
-use crate::{RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
+use crate::{Poison, RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
 
 /// Independent physical writer. Finishing data must not publish table/dataset
 /// metadata. The writer remains owned by the caller until session publication,
@@ -50,7 +50,7 @@ impl<T: Send + 'static> WriteSession<T> {
         Ok(Box::new(SessionWriter {
             writer: self.writers.pop().unwrap(),
             committer: self.committer,
-            failed: false,
+            state: Poison::default(),
         }))
     }
 }
@@ -58,7 +58,7 @@ impl<T: Send + 'static> WriteSession<T> {
 struct SessionWriter<T: Send + 'static> {
     writer: Box<dyn DataWriter<Output = T>>,
     committer: Box<dyn SessionCommitter<T>>,
-    failed: bool,
+    state: Poison,
 }
 
 #[async_trait]
@@ -68,24 +68,16 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.failed {
-            return Err(crate::Error::Unsupported(
-                "writer failed; abort or drop it".into(),
-            ));
-        }
-        self.failed = true;
+        self.state.begin()?;
         self.writer.write(batch).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        let output = if self.failed {
-            Err(crate::Error::Unsupported(
-                "writer failed; abort or drop it".into(),
-            ))
-        } else {
-            self.writer.finish().await
+        let output = match self.state.begin() {
+            Ok(()) => self.writer.finish().await,
+            Err(error) => Err(error),
         };
         match output {
             Ok(output) => self.committer.commit(vec![output]).await,

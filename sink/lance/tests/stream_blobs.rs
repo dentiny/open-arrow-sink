@@ -1,3 +1,4 @@
+use arrow_array::cast::AsArray;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
@@ -29,12 +30,7 @@ fn input() -> RecordBatch {
     )
     .unwrap()
 }
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[tokio::test]
 async fn shared_storage_streams_large_empty_and_null_blobs() {
@@ -46,10 +42,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();
@@ -90,11 +83,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .try_into_batch()
         .await
         .unwrap();
-    let values = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
+    let values = actual.column(0).as_binary::<i64>();
     assert_eq!(values.value(0).len(), 17 * 1024 * 1024);
     assert!(values.value(0).iter().all(|&b| b == b'x'));
     assert!(values.is_null(1));
@@ -117,10 +106,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Overwrite,
-                ..options()
-            },
+            options().with_mode(open_arrow_sink_core::WriteMode::Overwrite),
         )
         .await
         .unwrap();
@@ -197,11 +183,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
             .unwrap();
     }
     let mut writer = sink
-        .open(
-            url.clone(),
-            input().schema(),
-            WriteOptions { mode, ..options() },
-        )
+        .open(url.clone(), input().schema(), options().with_mode(mode))
         .await
         .unwrap();
     writer.write(input()).await.unwrap();
@@ -221,10 +203,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
         .open(
             storage.url("io-failure").unwrap(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();

@@ -11,8 +11,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, RecordBatch, Result, SchemaRef, Sink,
-    SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, Poison, RecordBatch, Result, SchemaRef,
+    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
 use crate::{
@@ -136,10 +136,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     fn capability(&self) -> SinkCapability {
         // This writer consumes native streams internally but does not expose
         // create_blob/write_with_blobs to its caller.
-        SinkCapability {
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        self.inner.capability().with_supports_blob_streaming(false)
     }
     async fn open(
         &self,
@@ -173,7 +170,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let pool = match &self.config.download_pool {
             Some(pool) => pool.clone(),
-            None => DownloadPool::global()?,
+            None => Arc::new(DownloadPool::with_defaults()?),
         };
         let io_metrics = options.io_metrics.clone();
         let inner = self
@@ -186,7 +183,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             output_schema,
             indices,
             pool,
-            failed: false,
+            state: Poison::default(),
             io_metrics,
             failure_policy: self.config.failure_policy,
             metrics: self.config.metrics.clone(),
@@ -204,7 +201,7 @@ struct DownloadBlobWriter {
     output_schema: SchemaRef,
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
-    failed: bool,
+    state: Poison,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
     failure_policy: DownloadFailurePolicy,
     metrics: DownloadMetrics,
@@ -482,9 +479,8 @@ impl Writer for DownloadBlobWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_download_writer(self.failed)?;
+        self.state.begin()?;
         // Cancellation and all errors are terminal, including queue backpressure.
-        self.failed = true;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
@@ -498,13 +494,13 @@ impl Writer for DownloadBlobWriter {
                 self.drain().await?;
             }
         }
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if crate::validation::validate_download_writer(self.failed).is_err() {
+        if let Err(error) = self.state.check() {
             let _ = self.abort().await;
-            return Err(error::download_aborted());
+            return Err(error);
         }
         if let Err(error) = self.drain().await {
             let _ = self.abort().await;

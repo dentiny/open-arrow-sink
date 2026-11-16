@@ -1,6 +1,6 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and, with default features, writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` for Create or Append and, with default features, writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
 one file per session. Missing parents are created. The default Create mode
 rejects an existing target, including an empty local directory. Enable facade feature `sink-parquet`
@@ -30,7 +30,7 @@ Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-g
 `parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
 layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
 
-Create and staged Overwrite reserve a new prefix with conditional creation of `.open-arrow-sink`.
+Create reserves a new prefix with conditional creation of `.open-arrow-sink`.
 It also claims each part name before opening a streaming writer. Backends without
 conditional-create support fail instead of overwriting. External writers must
 not modify a reserved prefix. The marker is removed after a file finishes; all
@@ -39,7 +39,7 @@ Abort removes owned parts and the marker when no other objects remain, preservin
 unrelated files. Drop performs no async cleanup. These rules apply to local and
 remote destinations alike.
 
-Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
+Use `WriteOptions::default().with_ordering(Ordering::Unordered)`: this
 sink does not promise directory scan order. Each write validates its schema. Small
 batches share Parquet row groups instead of forcing one row group per write.
 Parquet buffers the current row group up to its default row limit (1,048,576 rows)
@@ -56,10 +56,11 @@ roll at the next nonempty batch. An empty session still creates one readable fil
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
 
-`WriteOptions.cleanup_on_error` defaults to `true`: abort removes this session's files and
-attempts to remove its directory; failed open/commit also attempts cleanup. Set it
-to `false` to retain session-created output on abort or failure. Cleanup never
-recursively deletes other files. Drop leaves incomplete output and never commits.
+`WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
+removal of this session's files and directory; failed open/commit also attempts
+cleanup. Set it to `false` to retain session-created output on abort or failure.
+Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
+and never commits.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 
@@ -68,6 +69,10 @@ For concurrent files, wrap the sink in
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
 files. Each writer rolls independently using disjoint indices (writer 0 owns
 0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+This overlaps file I/O; Parquet encoding and compression still run in the layer
+caller's task. Extra writers do not provide CPU parallelism and each retains its
+own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
+for using `ParallelSink` directly with application-managed worker tasks.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
@@ -115,15 +120,12 @@ creating the destination. `level: None` uses the Parquet default.
 
 Create rejects existing destinations. Append validates the schemas of existing
 root-level Parquet files and writes UUID-prefixed parts, preserving old files and
-unrelated objects on abort. Schema validation uses range reads of Parquet metadata.
-These modes work through the shared filesystem or remote operator.
+unrelated objects on abort. Schema validation uses range reads of Parquet metadata,
+with at most 32 files checked concurrently, independently of the transport budget.
+Both modes behave identically on every storage backend, local or remote.
 
-Overwrite is staged on filesystem backends: old output stays visible until commit,
-then the directory is replaced via backup/rename with restoration on failure.
-The implementation uses OpenDAL for directory renames and cleanup; a local-only
-`symlink_metadata` validation rejects symlink targets because
-OpenDAL stat follows links. Other backends reject Overwrite before creating output;
-object-store prefix swaps do not provide the directory-rename semantics used here.
+Overwrite is unsupported and rejected before creating output: a directory of
+Parquet files has no backend-independent way to replace its contents atomically.
 External writers must not modify a destination during a session.
 
 ## Related documentation

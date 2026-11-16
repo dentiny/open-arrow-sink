@@ -57,6 +57,23 @@ batch sizes and account for every backend's encoding buffers. Empty batches are
 validated and otherwise ignored. The layer spawns no tasks; pending futures are
 polled during write/commit/abort. Native backends may have workers of their own.
 
+For Parquet and Iceberg, row-group encoding and compression run while these
+futures are polled in the **same caller task**, even on a multithreaded Tokio
+runtime. Several writers can overlap uploads, but the layer does not spread
+encoding work across CPU cores. Increasing writer count can help an I/O-bound
+workload; for a CPU-bound workload it also multiplies encoding buffers without
+adding encoding threads. Lance schedules its native writes in separate tasks,
+so its scheduling behavior differs.
+
+Applications requiring CPU parallelism can use `ParallelSink::open_writers`
+directly and drive the returned data writers in separate tasks on a multithreaded
+executor. This also transfers orchestration responsibilities to the application:
+retain writer ownership through failures and cancellation, stop and join every
+worker before cleanup, and call the one session committer only after all writers
+finish successfully. Returning on the first task error or dropping a join handle
+must not leave detached writers running. `WriteSession` itself is an ownership
+interface; it does not implement this task scheduler.
+
 A write error or cancellation makes the session terminal. Commit drains accepted
 writes and finishes every data writer before passing all outputs to one committer.
 A finish failure aborts all writers, including finished ones, before aborting the
@@ -97,10 +114,12 @@ ordering still applies.
 
 The pool streams owned, budgeted chunks directly to the native writer. Payloads
 can exceed the transfer-buffer budget; retaining chunks holds their reservations.
-Request concurrency is process-wide, initialized by the first pool (with
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` overriding its fallback). Byte budgets are
-per pool, and exclude SDK/HTTP/encoding buffers. Share an `Arc<DownloadPool>` when
-writers should share one transfer budget. No retry or timeout is installed by
+Stream concurrency and byte budgets belong to each pool; every constructor
+honors its limits. Without a configured pool, each opened writer gets independent
+default limits. Share an `Arc<DownloadPool>` when writers should share stream and
+transfer budgets. For an HTTP-only budget shared with other pools or storage,
+install clones of one `HttpConcurrencyLimitLayer` using `with_layer`. Transfer
+budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
 default; OpenDAL I/O policies can be applied to the pool.
 
 The default `DownloadFailurePolicy::Fail` makes a failed write terminal.

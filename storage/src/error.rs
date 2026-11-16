@@ -87,9 +87,6 @@ fn invalid_config(message: &'static str) -> Error {
     invalid(message)
 }
 
-pub(crate) fn writer_inactive() -> Error {
-    invalid("writer is no longer active")
-}
 pub(crate) fn writer_closed() -> Error {
     invalid("writer is closed")
 }
@@ -102,16 +99,12 @@ pub(crate) fn delete_result(path: &str, result: opendal::Result<()>) -> Result<(
     }
 }
 
-pub(crate) fn abort_result(
-    path: &str,
-    result: opendal::Result<()>,
-    filesystem: bool,
-) -> Result<()> {
+pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
-        // Non-staged filesystem writes are already visible. Dropping the
+        // A backend without abort has no pending upload to cancel. Dropping the
         // handle stops this stream; the owning sink deletes its files.
-        Err(error) if filesystem && error.kind() == ErrorKind::Unsupported => Ok(()),
+        Err(error) if error.kind() == ErrorKind::Unsupported => Ok(()),
         Err(error) => Err(map_error("abort", path, error)),
     }
 }
