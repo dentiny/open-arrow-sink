@@ -78,7 +78,9 @@ A `DownloadPool` can reuse a caller-provided `opendal::HttpTransporter` via
 `with_http_transport`. This supports shared authentication or instrumentation and
 in-memory test fixtures without installing a process-global default transport.
 The pool preserves its existing concurrency, timeout, and retry layers when the
-transport is replaced. Returned chunks retain the same buffer accounting.
+transport is replaced. Each returned chunk reserves its actual byte length until
+dropped. A bounded copy keeps consumer-held chunks from pinning
+larger native read allocations; OpenDAL/HTTP/TLS buffers remain outside this quota.
 
 ## Related documentation
 

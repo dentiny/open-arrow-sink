@@ -28,7 +28,8 @@ const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 *
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Streaming downloads with a process-wide request limit and per-pool byte budget.
-/// Yielded chunks hold their budget until dropped, even after stream cancellation.
+/// Yielded chunks reserve their actual byte length until dropped, even after
+/// stream cancellation.
 /// OpenDAL/HTTP/TLS and destination buffers are outside this transfer-buffer budget.
 #[derive(Debug)]
 pub struct DownloadPool {
@@ -182,14 +183,16 @@ impl DownloadPool {
             let mut reader = reader;
             let mut pending = Buffer::new();
             loop {
-                let reservation = buffers.clone().acquire_many_owned(capacity as u32)
-                    .await.expect("pool is never closed");
                 if pending.is_empty() {
                     let Some(buffer) = reader.try_next().await.map_err(backend)? else { break };
                     pending = buffer;
                 }
-                // A bounded copy avoids retaining a larger OpenDAL backing allocation.
                 let size = capacity.min(pending.len());
+                // Native read buffers are outside the transfer budget. Once their
+                // size is known, reserve only the bytes exposed to the consumer.
+                let reservation = buffers.clone().acquire_many_owned(size as u32)
+                    .await.expect("pool is never closed");
+                // A bounded copy avoids retaining a larger OpenDAL backing allocation.
                 yield BlobChunk::with_guard(pending.split_to(size).to_vec(), reservation);
             }
         }))

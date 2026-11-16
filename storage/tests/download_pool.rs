@@ -43,6 +43,134 @@ fn pool(concurrency: usize, bytes: usize) -> Arc<DownloadPool> {
     )
 }
 
+#[tokio::test]
+async fn retained_chunks_reserve_actual_bytes_and_allow_eof() {
+    struct ChunkedTransport;
+    impl HttpTransport for ChunkedTransport {
+        async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            let chunks: Vec<Buffer> = if request.uri().path() == "/tiny" {
+                ["a", "b", "c", "d", "e"]
+                    .into_iter()
+                    .map(Buffer::from)
+                    .collect()
+            } else {
+                vec![Buffer::from("abcdefgh")]
+            };
+            let len = chunks.iter().map(Buffer::len).sum::<usize>();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-length", len)
+                .body(HttpBody::new(
+                    stream::iter(chunks.into_iter().map(Ok)),
+                    Some(len as u64),
+                ))
+                .unwrap())
+        }
+    }
+    timeout(Duration::from_secs(5), async {
+        let pool = DownloadPool::new(2.try_into().unwrap(), 4.try_into().unwrap())
+            .unwrap()
+            .with_http_transport(HttpTransporter::new(ChunkedTransport));
+        let mut download = pool.stream("https://chunks.invalid/tiny").await.unwrap();
+        let mut held = Vec::new();
+        for (index, expected) in b"abcd".iter().copied().enumerate() {
+            let chunk = download.try_next().await.unwrap().unwrap();
+            assert_eq!(chunk.as_ref(), [expected]);
+            held.push(chunk);
+            assert_eq!(pool.buffered_bytes(), index + 1);
+        }
+        assert!(
+            timeout(Duration::from_millis(20), download.try_next())
+                .await
+                .is_err()
+        );
+        // Cancelling a quota wait and dropping its stream must not release
+        // reservations still owned by consumers, or retain a new reservation.
+        drop(download);
+        assert_eq!(pool.buffered_bytes(), 4);
+        held.pop();
+        assert_eq!(pool.buffered_bytes(), 3);
+        drop(held);
+        assert_eq!(pool.buffered_bytes(), 0);
+
+        let pool = DownloadPool::new(2.try_into().unwrap(), 3.try_into().unwrap())
+            .unwrap()
+            .with_http_transport(HttpTransporter::new(ChunkedTransport));
+        let mut download = pool.stream("https://chunks.invalid/large").await.unwrap();
+        for expected in [b"abc", b"def"] {
+            let chunk = download.try_next().await.unwrap().unwrap();
+            assert_eq!(chunk.as_ref(), expected);
+            assert_eq!(pool.buffered_bytes(), 3);
+        }
+        let tail = download.try_next().await.unwrap().unwrap();
+        assert_eq!(tail.as_ref(), b"gh");
+        assert_eq!(pool.buffered_bytes(), 2);
+        // EOF needs no new transfer allocation, even with a retained tail.
+        assert!(download.try_next().await.unwrap().is_none());
+        drop(download);
+        assert_eq!(pool.buffered_bytes(), 2);
+        drop(tail);
+        assert_eq!(pool.buffered_bytes(), 0);
+    })
+    .await
+    .expect("exact download accounting stalled");
+}
+
+#[tokio::test]
+async fn retained_chunk_does_not_pin_oversized_native_allocation() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Allocation {
+        bytes: Vec<u8>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl AsRef<[u8]> for Allocation {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+    impl Drop for Allocation {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct AllocatingTransport(Arc<AtomicUsize>);
+    impl HttpTransport for AllocatingTransport {
+        async fn fetch(&self, _: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            let len = 4 * 1024 * 1024;
+            let bytes = bytes::Bytes::from_owner(Allocation {
+                bytes: vec![7; len],
+                dropped: self.0.clone(),
+            });
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-length", len)
+                .body(HttpBody::new(
+                    stream::iter([Ok(Buffer::from(bytes))]),
+                    Some(len as u64),
+                ))
+                .unwrap())
+        }
+    }
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let budget = 2 * 1024 * 1024;
+    let pool = DownloadPool::new(2.try_into().unwrap(), budget.try_into().unwrap())
+        .unwrap()
+        .with_http_transport(HttpTransporter::new(AllocatingTransport(dropped.clone())));
+    let mut download = pool
+        .stream("https://chunks.invalid/oversized")
+        .await
+        .unwrap();
+    let chunk = download.try_next().await.unwrap().unwrap();
+    assert_eq!(chunk.as_ref().len(), budget);
+    assert_eq!(pool.buffered_bytes(), budget);
+    drop(download);
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(chunk.as_ref()[0], 7);
+    assert_eq!(pool.buffered_bytes(), budget);
+    drop(chunk);
+    assert_eq!(pool.buffered_bytes(), 0);
+}
+
 // Run sequentially because all pools share the process-wide request limit.
 #[tokio::test]
 async fn streaming_limits_and_cleanup() {
