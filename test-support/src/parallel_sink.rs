@@ -1,5 +1,6 @@
-//! Event-recording backend used only by the layer contract tests.
-#![allow(dead_code)] // Each integration-test binary uses a different fixture subset.
+//! Event-recording parallel sink for testing layers and session adapters.
+//! Configuration controls failures and body gates; observations retain dispatch
+//! identities separately from directly comparable lifecycle events.
 
 use futures::channel::oneshot;
 use open_arrow_sink_core::{
@@ -14,11 +15,11 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    Open(usize),
-    WriteStarted(usize),
-    WriteCompleted(usize),
-    Finish(usize),
-    Abort(usize),
+    Open,
+    WriteStarted,
+    WriteCompleted,
+    Finish,
+    Abort,
     RequestedOrdering(Ordering),
     CommitAttempt,
     Commit { rows: u64 },
@@ -69,21 +70,34 @@ impl Default for Config {
 pub struct State {
     pub config: Config,
     pub events: Vec<Event>,
+    pub started_writers: Vec<usize>,
     pub gates: Vec<oneshot::Sender<()>>,
     pub schemas: Vec<SchemaRef>,
 }
 impl State {
-    pub fn failing(operations: impl IntoIterator<Item = Failure>) -> Self {
-        Self {
-            config: Config {
-                failures: operations.into_iter().collect(),
-                ..Default::default()
-            },
+    pub fn shared(config: Config) -> SharedState {
+        Arc::new(Mutex::new(Self {
+            config,
             ..Default::default()
-        }
+        }))
     }
-    pub fn count(&self, predicate: impl Fn(&Event) -> bool) -> usize {
-        self.events.iter().filter(|event| predicate(event)).count()
+    /// Release the first dispatched write, independent of scheduler writer order.
+    pub fn release_first(&mut self) -> usize {
+        let id = self.started_writers[0];
+        self.gates.remove(id).send(()).unwrap();
+        id
+    }
+    pub fn failing(operations: impl IntoIterator<Item = Failure>) -> SharedState {
+        Self::shared(Config {
+            failures: operations.into_iter().collect(),
+            ..Default::default()
+        })
+    }
+    pub fn count(&self, expected: Event) -> usize {
+        self.events
+            .iter()
+            .filter(|event| **event == expected)
+            .count()
     }
     pub fn requested_ordering(&self) -> Option<Ordering> {
         self.events.iter().find_map(|event| {
@@ -163,7 +177,7 @@ impl ParallelSink for TestSink {
         let mut result = Vec::new();
         for id in 0..count {
             let (sender, receiver) = oneshot::channel();
-            state.events.push(Event::Open(id));
+            state.events.push(Event::Open);
             let gate = if state.config.gated {
                 state.gates.push(sender);
                 Some(receiver)
@@ -200,11 +214,11 @@ impl DataWriter for TestWriter {
         if let Some(io) = &self.io {
             io.record_write(self.state.lock().unwrap().config.write_bytes);
         }
-        self.state
-            .lock()
-            .unwrap()
-            .events
-            .push(Event::WriteStarted(self.id));
+        {
+            let mut state = self.state.lock().unwrap();
+            state.events.push(Event::WriteStarted);
+            state.started_writers.push(self.id);
+        }
         if let Some(gate) = self.gate.take() {
             gate.await.unwrap();
         }
@@ -215,15 +229,14 @@ impl DataWriter for TestWriter {
                 self.id
             )));
         }
-        state.events.push(Event::WriteCompleted(self.id));
+        state.events.push(Event::WriteCompleted);
         self.rows += batch.num_rows() as u64;
         Ok(())
     }
     async fn finish(&mut self) -> Result<u64> {
         let mut state = self.state.lock().unwrap();
-        state.events.push(Event::Finish(self.id));
-        if state.config.failures.contains(&Failure::FirstFinish)
-            && state.count(|e| matches!(e, Event::Finish(_))) == 1
+        state.events.push(Event::Finish);
+        if state.config.failures.contains(&Failure::FirstFinish) && state.count(Event::Finish) == 1
         {
             return Err(failure());
         }
@@ -231,7 +244,7 @@ impl DataWriter for TestWriter {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        state.events.push(Event::Abort(self.id));
+        state.events.push(Event::Abort);
         if state.config.failures.contains(&Failure::Abort) {
             return Err(failure());
         }
@@ -243,10 +256,7 @@ struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoObservers>);
 impl SessionCommitter<u64> for TestCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
         let mut state = self.0.lock().unwrap();
-        assert_eq!(
-            state.count(|e| matches!(e, Event::Finish(_))),
-            state.count(|e| matches!(e, Event::Open(_)))
-        );
+        assert_eq!(state.count(Event::Finish), state.count(Event::Open));
         state.events.push(Event::CommitAttempt);
         if let Some(io) = &self.1 {
             io.record_read(state.config.commit_read_bytes);

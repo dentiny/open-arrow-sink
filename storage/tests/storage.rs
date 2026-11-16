@@ -13,7 +13,7 @@ fn memory() -> Storage {
 #[tokio::test]
 async fn streaming_close_publishes_chunks_in_the_shared_namespace() {
     let storage = memory();
-    let path = ObjectPath::parse("雪 space/file").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "雪 space/file");
     let mut writer = storage.writer(&path).await.unwrap();
     writer.write("hello ".into()).await.unwrap();
     writer.write("world".into()).await.unwrap();
@@ -25,7 +25,7 @@ async fn streaming_close_publishes_chunks_in_the_shared_namespace() {
 #[tokio::test]
 async fn reads_ranges_and_lists_object_metadata() {
     let storage = memory();
-    let path = ObjectPath::parse("雪 space/file").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "雪 space/file");
     storage.write(&path, "hello world".into()).await.unwrap();
     assert_eq!(storage.read_range(&path, 6..11).await.unwrap(), "world");
     let metadata = storage.stat(&path).await.unwrap().unwrap();
@@ -43,7 +43,7 @@ async fn reads_ranges_and_lists_object_metadata() {
 #[tokio::test]
 async fn create_collision_preserves_existing_content() {
     let storage = memory();
-    let path = ObjectPath::parse("file").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "file");
     storage.create(&path, "original".into()).await.unwrap();
     assert!(storage.create(&path, "replace".into()).await.is_err());
     assert_eq!(storage.read(&path).await.unwrap(), "original");
@@ -52,7 +52,7 @@ async fn create_collision_preserves_existing_content() {
 #[tokio::test]
 async fn abort_discards_incomplete_upload() {
     let storage = memory();
-    let path = ObjectPath::parse("aborted").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "aborted");
     let mut writer = storage.writer(&path).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
@@ -62,7 +62,7 @@ async fn abort_discards_incomplete_upload() {
 #[tokio::test]
 async fn delete_is_idempotent_and_removes_the_listing() {
     let storage = memory();
-    let path = ObjectPath::parse("file").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "file");
     storage.write(&path, "data".into()).await.unwrap();
     storage.delete(&path).await.unwrap();
     assert!(storage.stat(&path).await.unwrap().is_none());
@@ -77,7 +77,7 @@ async fn delete_is_idempotent_and_removes_the_listing() {
 }
 
 #[tokio::test]
-async fn namespace_boundaries_and_conditional_creation() {
+async fn rejects_urls_outside_the_namespace() {
     let storage = memory();
     for url in [
         "memory:///warehouse2/file",
@@ -98,6 +98,11 @@ async fn namespace_boundaries_and_conditional_creation() {
         ObjectPath::parse("../outside"),
         Err(Error::InvalidInput(_))
     ));
+}
+
+#[tokio::test]
+async fn root_operations_are_rejected() {
+    let storage = memory();
     let root = storage.path(storage.base_url()).unwrap();
     let repeated_root = storage
         .path(&"memory:///warehouse//".parse().unwrap())
@@ -105,6 +110,12 @@ async fn namespace_boundaries_and_conditional_creation() {
     assert!(storage.remove_all(&root).await.is_err());
     assert!(storage.remove_all(&repeated_root).await.is_err());
     assert!(storage.inspect_directory(&root).await.is_err());
+}
+
+#[tokio::test]
+async fn memory_conditional_creation_has_one_winner() {
+    let storage = memory();
+    let root = storage.path(storage.base_url()).unwrap();
     let prefix = root.join("claim").unwrap();
     assert_eq!(prefix.as_dir().as_str(), "claim/");
     assert_eq!(
@@ -123,7 +134,7 @@ async fn namespace_boundaries_and_conditional_creation() {
 }
 
 #[tokio::test]
-async fn filesystem_urls_decode_and_preserve_siblings() {
+async fn filesystem_urls_decode_escaped_paths() {
     let temp = tempfile::tempdir().unwrap();
     let root = Url::from_directory_path(temp.path()).unwrap();
     let storage = Storage::from_url(&root).unwrap();
@@ -145,6 +156,13 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
             .unwrap()
             .is_dir()
     );
+}
+
+#[tokio::test]
+async fn filesystem_abort_allows_owner_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = Url::from_directory_path(temp.path()).unwrap();
+    let storage = Storage::from_url(&root).unwrap();
     let aborted = root.join("aborted").unwrap();
     let mut writer = storage
         .writer(&storage.path(&aborted).unwrap())
@@ -155,6 +173,26 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     // Non-staged files can be visible before close; the owner removes them.
     storage
         .delete(&storage.path(&aborted).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        storage
+            .stat(&storage.path(&aborted).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn filesystem_removal_preserves_siblings() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = Url::from_directory_path(temp.path()).unwrap();
+    let storage = Storage::from_url(&root).unwrap();
+    let output = root.join("new/").unwrap();
+    let file = output.join("part").unwrap();
+    storage
+        .create(&storage.path(&file).unwrap(), "data".into())
         .await
         .unwrap();
     let sibling = root.join("keep").unwrap();
@@ -243,7 +281,7 @@ async fn filesystem_conditional_creation_has_one_winner() {
 async fn errors_retain_category_operation_and_path() {
     let storage = memory();
     let error = storage
-        .read(&ObjectPath::parse("missing").unwrap())
+        .read(&open_arrow_sink_test_support::path(&storage, "missing"))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::NotFound(_)));

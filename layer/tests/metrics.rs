@@ -1,55 +1,46 @@
-#[path = "support/parallel_sink.rs"]
-mod parallel_sink;
-use arrow_array::{ArrayRef, Int64Array};
 use futures::FutureExt;
 use open_arrow_sink_core::{Error, ParallelSink, RecordBatch, Sink, SinkExt};
 use open_arrow_sink_layer::{MetricsLayer, UnorderedWriteLayer};
-use parallel_sink::{Config, Failure, State, TestSink};
-use std::{num::NonZeroUsize, sync::Arc};
+use open_arrow_sink_test_support::parallel_sink::{Config, Failure, State, TestSink};
+use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
+use std::num::NonZeroUsize;
 
-#[derive(Default, Clone, Copy)]
-struct Behavior {
-    blocked: bool,
-    unmeasured: bool,
-    fail_commit: bool,
+fn sink(config: Config) -> TestSink {
+    TestSink(State::shared(Config {
+        ordering: open_arrow_sink_core::Ordering::Unordered,
+        write_bytes: 10,
+        commit_read_bytes: 5,
+        ..config
+    }))
 }
-fn sink(behavior: Behavior) -> TestSink {
-    TestSink(Arc::new(std::sync::Mutex::new(State {
-        config: Config {
-            ordering: open_arrow_sink_core::Ordering::Unordered,
-            gated: behavior.blocked,
-            record_io: !behavior.unmeasured,
-            write_bytes: 10,
-            commit_read_bytes: 5,
-            failures: if behavior.fail_commit {
-                [Failure::Commit].into()
-            } else {
-                Default::default()
-            },
-            ..Default::default()
-        },
+fn config() -> Config {
+    Config {
+        gated: false,
         ..Default::default()
-    })))
+    }
 }
 fn input() -> RecordBatch {
-    RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
-        .unwrap()
+    int64_batch("id", vec![Some(1), Some(2), Some(3)])
 }
-use open_arrow_sink_test_support::unordered_options as options;
+enum Placement {
+    Single,
+    InsideParallel,
+    OutsideParallel,
+}
 
 #[rstest::rstest]
-#[case::single(0)]
-#[case::inside_parallel(1)]
-#[case::outside_parallel(2)]
+#[case::single(Placement::Single)]
+#[case::inside_parallel(Placement::InsideParallel)]
+#[case::outside_parallel(Placement::OutsideParallel)]
 #[tokio::test]
-async fn measures_one_commit_per_session_without_double_counting(#[case] placement: u8) {
+async fn measures_one_commit_per_session_without_double_counting(#[case] placement: Placement) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
     let unordered = UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap());
     let sink: Box<dyn Sink<Request = ()>> = match placement {
-        0 => Box::new(sink(Behavior::default()).layer(layer)),
-        1 => Box::new(sink(Behavior::default()).layer(layer).layer(unordered)),
-        _ => Box::new(sink(Behavior::default()).layer(unordered).layer(layer)),
+        Placement::Single => Box::new(sink(config()).layer(layer)),
+        Placement::InsideParallel => Box::new(sink(config()).layer(layer).layer(unordered)),
+        Placement::OutsideParallel => Box::new(sink(config()).layer(unordered).layer(layer)),
     };
     for _ in 0..2 {
         let mut writer = sink.open((), input().schema(), options()).await.unwrap();
@@ -73,9 +64,9 @@ async fn measures_one_commit_per_session_without_double_counting(#[case] placeme
 async fn cancellation_is_terminal_without_automatic_abort() {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let sink = sink(Behavior {
-        blocked: true,
-        ..Default::default()
+    let sink = sink(Config {
+        gated: true,
+        ..config()
     })
     .layer(layer);
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
@@ -95,9 +86,9 @@ async fn uninstrumented_sessions_leave_measured_totals_intact() {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
     for unmeasured in [false, true, false] {
-        sink(Behavior {
-            unmeasured,
-            ..Default::default()
+        sink(Config {
+            record_io: !unmeasured,
+            ..config()
         })
         .layer(layer.clone())
         .open((), input().schema(), options())
@@ -110,7 +101,7 @@ async fn uninstrumented_sessions_leave_measured_totals_intact() {
     assert_eq!(metrics.snapshot().sessions_committed, 3);
     assert_eq!(metrics.snapshot().bytes_read, 10);
     assert_eq!(metrics.snapshot().bytes_written, 0);
-    sink(Behavior::default())
+    sink(config())
         .layer(layer)
         .open((), input().schema(), options())
         .await
@@ -128,9 +119,13 @@ async fn uninstrumented_sessions_leave_measured_totals_intact() {
 async fn io_is_visible_before_commit_and_retained_after_failure(#[case] fail_commit: bool) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let sink = sink(Behavior {
-        fail_commit,
-        ..Default::default()
+    let sink = sink(Config {
+        failures: if fail_commit {
+            [Failure::Commit].into()
+        } else {
+            Default::default()
+        },
+        ..config()
     })
     .layer(layer);
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
@@ -150,7 +145,7 @@ async fn io_is_visible_before_commit_and_retained_after_failure(#[case] fail_com
 #[tokio::test]
 async fn shared_handle_in_nested_layers_does_not_duplicate_io() {
     let metrics = open_arrow_sink_layer::WriteMetrics::default();
-    let sink = sink(Behavior::default())
+    let sink = sink(config())
         .layer(MetricsLayer::new(metrics.clone()))
         .layer(MetricsLayer::new(metrics.clone()));
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
@@ -171,7 +166,7 @@ async fn poisoned_writer_operations_do_not_change_metrics(
 ) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let backend = sink(Behavior::default());
+    let backend = sink(config());
     backend
         .0
         .lock()
@@ -222,9 +217,9 @@ async fn poisoned_data_writer_operations_do_not_change_metrics(
 ) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let backend = sink(Behavior {
-        blocked: cancelled,
-        ..Default::default()
+    let backend = sink(Config {
+        gated: cancelled,
+        ..config()
     });
     if !cancelled && !finished {
         backend

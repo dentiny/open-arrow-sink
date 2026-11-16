@@ -62,11 +62,9 @@ async fn rolling_collision_is_preserved() {
         .unwrap();
     let bytes = storage.read(&completed).await.unwrap();
     let path = storage.path(&directory).unwrap();
-    let mut paths = storage.list(&path).await.unwrap();
-    paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let paths = open_arrow_sink_test_support::sorted_list(&storage, &path).await;
     assert!(writer.commit().await.is_err());
-    let mut retained = storage.list(&path).await.unwrap();
-    retained.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let retained = open_arrow_sink_test_support::sorted_list(&storage, &path).await;
     assert_eq!(retained, paths);
     assert_eq!(storage.read(&completed).await.unwrap(), bytes);
     assert_eq!(
@@ -79,7 +77,7 @@ async fn rolling_collision_is_preserved() {
 }
 
 async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> usize {
-    open_arrow_sink_test_support::read_parquet_dir(storage, directory)
+    open_arrow_sink_test_support::read_parquet_dir(storage, &storage.path(directory).unwrap())
         .await
         .iter()
         .map(RecordBatch::num_rows)
@@ -204,7 +202,11 @@ async fn empty_parallel_create_writes_one_file_and_append_adds_none(#[case] file
         if mode == WriteMode::Append {
             assert_eq!(files, before);
         }
-        let batches = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
+        let batches = open_arrow_sink_test_support::read_parquet_dir(
+            &storage,
+            &storage.path(&directory).unwrap(),
+        )
+        .await;
         assert!(!batches.is_empty());
         for actual in batches {
             assert_eq!(actual.schema(), batch().schema());

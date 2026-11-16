@@ -1,10 +1,11 @@
-use open_arrow_sink_storage::ObjectPath;
-use std::sync::Arc;
-
 use arrow_array::{ArrayRef, LargeBinaryArray, RecordBatch, cast::AsArray};
 use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{BLOB_METADATA_KEY, Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::unordered_options as options;
+use open_arrow_sink_test_support::within;
+use std::sync::Arc;
 
 fn storage() -> Storage {
     open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
@@ -22,7 +23,6 @@ fn input() -> RecordBatch {
     )
     .unwrap()
 }
-use open_arrow_sink_test_support::unordered_options as options;
 
 #[rstest::rstest]
 #[case::create(WriteMode::Create)]
@@ -52,12 +52,11 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
         .await
         .unwrap();
     // The combined payload is larger than one reservation; batch admission must split it.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    within(async {
         writer.write(input()).await.unwrap();
         writer.commit().await.unwrap();
     })
-    .await
-    .unwrap();
+    .await;
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let output = dataset
         .scan()

@@ -1,13 +1,11 @@
 /// Read every Parquet file in a directory in path order, including empty batches.
 pub async fn read_parquet_dir(
     storage: &open_arrow_sink_storage::Storage,
-    directory: &open_arrow_sink_storage::Url,
+    directory: &open_arrow_sink_storage::ObjectPath,
 ) -> Vec<arrow_array::RecordBatch> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    let directory = storage.path(directory).unwrap();
-    let mut files = storage.list(&directory).await.unwrap();
+    let mut files = crate::sorted_list(storage, directory).await;
     files.retain(|file| file.as_str().ends_with(".parquet"));
-    files.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     let mut batches = Vec::new();
     for file in files {
         let reader =

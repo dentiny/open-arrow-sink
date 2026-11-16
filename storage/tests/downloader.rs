@@ -5,9 +5,9 @@ use open_arrow_sink_storage::{
     BlobDownloader, DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer,
     ObjectPath, OpenDalDownloader, RetryConfig, StorageConfig, opendal,
 };
+use open_arrow_sink_test_support::within;
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use std::{sync::Arc, time::Duration};
-use tokio::time::timeout;
 
 const URL: &str = "https://download-fixture.invalid";
 const BODY: &[u8] = b"a payload larger than one download chunk";
@@ -61,7 +61,7 @@ fn default_pool(groups: usize) -> BlobDownloader {
 
 #[tokio::test]
 async fn payloads_and_clones_hold_shared_memory_until_consumed() {
-    timeout(Duration::from_secs(5), async {
+    within(async {
         let first = default_pool(1);
         let other = default_pool(1);
         let bytes = first.download(URL).await.unwrap();
@@ -78,7 +78,13 @@ async fn payloads_and_clones_hold_shared_memory_until_consumed() {
         drop(resumed);
         assert_eq!(first.buffered_bytes(), 0);
         assert_eq!(other.buffered_bytes(), 0);
+    })
+    .await;
+}
 
+#[tokio::test]
+async fn large_reservations_do_not_require_a_single_tokio_acquire() {
+    within(async {
         // Large reservations don't allocate payloads and need not fit one Tokio acquire.
         let capacity = u32::MAX as usize + 65;
         let large = pool(1, 1, (capacity - CHUNK) / 3);
@@ -87,8 +93,7 @@ async fn payloads_and_clones_hold_shared_memory_until_consumed() {
         drop(held);
         assert_eq!(large.buffered_bytes(), 0);
     })
-    .await
-    .expect("memory admission stalled");
+    .await;
 }
 
 #[tokio::test]
@@ -167,7 +172,7 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
                 .unwrap())
         }
     }
-    timeout(Duration::from_secs(5), async {
+    within(async {
         let budget = HttpConcurrencyLimitLayer::new(1).unwrap();
         let make = || {
             let storage = OpenDalDownloader::http_storage(StorageConfig::default())
@@ -202,8 +207,7 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
         drop(waiting);
         assert_eq!(second.buffered_bytes(), 0);
     })
-    .await
-    .expect("HTTP admission stalled");
+    .await;
 }
 
 #[tokio::test]
@@ -223,7 +227,7 @@ async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
             ))
         }
     }
-    timeout(Duration::from_secs(5), async {
+    within(async {
         let downloads = pool(2, 2, CHUNK)
             .with_downloader(Arc::new(Custom))
             .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(1).unwrap());
@@ -245,8 +249,7 @@ async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
             b"custom"
         );
     })
-    .await
-    .expect("custom downloader leaked a permit");
+    .await;
 }
 
 #[tokio::test]

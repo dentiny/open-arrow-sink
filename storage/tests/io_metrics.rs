@@ -1,5 +1,5 @@
 use open_arrow_sink_core::{IoMetrics, IoSnapshot, WriteOptions};
-use open_arrow_sink_storage::{ObjectPath, Storage, opendal};
+use open_arrow_sink_storage::{Storage, opendal};
 
 #[tokio::test]
 async fn storage_counts_read_and_write_bytes_once() {
@@ -11,7 +11,7 @@ async fn storage_counts_read_and_write_bytes_once() {
     .unwrap()
     .with_io_metrics(metrics.clone())
     .with_write_options(&WriteOptions::default().with_io_metrics(metrics.clone()));
-    let path = ObjectPath::parse("payload").unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "payload");
 
     storage.write(&path, "abcdef".into()).await.unwrap();
     assert_eq!(storage.read_range(&path, 1..4).await.unwrap(), "bcd");

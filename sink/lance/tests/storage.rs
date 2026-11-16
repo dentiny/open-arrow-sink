@@ -1,4 +1,4 @@
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use lance::{
     blob::{BlobArrayBuilder, blob_field},
@@ -11,17 +11,14 @@ use open_arrow_sink_core::{
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::write_batches;
 use std::{num::NonZeroUsize, sync::Arc};
 
 fn storage() -> Storage {
     open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 fn batch() -> RecordBatch {
-    RecordBatch::try_from_iter([(
-        "value",
-        Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-    )])
-    .unwrap()
+    open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
 fn write_options() -> WriteOptions {
     open_arrow_sink_test_support::unordered_options().with_upload(
@@ -31,16 +28,33 @@ fn write_options() -> WriteOptions {
     )
 }
 
-async fn write_dataset(
-    sink: impl Sink<Request = open_arrow_sink_lance::Url>,
+struct IndexedDataset {
+    sink: LanceDatasetSink,
     url: open_arrow_sink_lance::Url,
-    options: WriteOptions,
-) {
-    let mut writer = sink.open(url, batch().schema(), options).await.unwrap();
-    for _ in 0..4 {
-        writer.write(batch()).await.unwrap();
-    }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 12);
+    io: open_arrow_sink_core::IoMetrics,
+}
+async fn indexed_dataset() -> &'static IndexedDataset {
+    static DATASET: tokio::sync::OnceCell<IndexedDataset> = tokio::sync::OnceCell::const_new();
+    DATASET
+        .get_or_init(|| async {
+            let storage = storage();
+            let sink = LanceDatasetSink::new(storage.clone());
+            let url = storage
+                .url(&ObjectPath::parse("indexed/").unwrap())
+                .unwrap();
+            let io = open_arrow_sink_core::IoMetrics::default();
+            write_batches(
+                &sink,
+                url.clone(),
+                &vec![batch(); 4],
+                write_options()
+                    .with_io_metrics(io.clone())
+                    .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
+            )
+            .await;
+            IndexedDataset { sink, url, io }
+        })
+        .await
 }
 
 #[tokio::test]
@@ -48,10 +62,12 @@ async fn shared_operator_unordered_commit_preserves_rows() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
-    write_dataset(
-        sink.clone()
+    write_batches(
+        &sink
+            .clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap())),
         url.clone(),
+        &vec![batch(); 4],
         write_options(),
     )
     .await;
@@ -72,18 +88,8 @@ async fn shared_operator_unordered_commit_preserves_rows() {
 
 #[tokio::test]
 async fn shared_operator_records_read_and_write_metrics() {
-    let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone());
-    let io = open_arrow_sink_core::IoMetrics::default();
-    write_dataset(
-        sink,
-        storage.url(&ObjectPath::parse("output/").unwrap()).unwrap(),
-        // Building the index forces reads within the measured session.
-        write_options()
-            .with_io_metrics(io.clone())
-            .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
-    )
-    .await;
+    let fixture = indexed_dataset().await;
+    let io = &fixture.io;
     assert_gt!(io.snapshot().bytes_read, 0);
     assert_gt!(io.snapshot().bytes_written, 0);
 }
@@ -91,16 +97,14 @@ async fn shared_operator_records_read_and_write_metrics() {
 #[tokio::test]
 async fn shared_operator_builds_requested_index() {
     use lance::index::DatasetIndexExt;
-    let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
-    write_dataset(
-        sink.clone(),
-        url.clone(),
-        write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
-    )
-    .await;
-    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let fixture = indexed_dataset().await;
+    let dataset = fixture
+        .sink
+        .dataset_builder(fixture.url.clone())
+        .unwrap()
+        .load()
+        .await
+        .unwrap();
     assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
 }
 
@@ -111,7 +115,7 @@ async fn native_files_use_the_configured_storage_namespace() {
     let url = storage
         .url(&ObjectPath::parse("雪 output%20/").unwrap())
         .unwrap();
-    write_dataset(sink.clone(), url.clone(), write_options()).await;
+    write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert_gt!(
         storage
             .list(&storage.path(&url).unwrap())
@@ -129,7 +133,7 @@ async fn duplicate_create_preserves_the_existing_dataset() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
-    write_dataset(sink.clone(), url.clone(), write_options()).await;
+    write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert!(matches!(
         sink.open(url.clone(), batch().schema(), write_options()).await,
         Err(open_arrow_sink_core::Error::AlreadyExists(location)) if location == url.as_str()
@@ -140,13 +144,10 @@ async fn duplicate_create_preserves_the_existing_dataset() {
 
 #[tokio::test]
 async fn duplicate_index_reports_already_exists() {
-    let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+    let fixture = indexed_dataset().await;
     let options = write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
-    write_dataset(sink.clone(), url.clone(), options.clone()).await;
     assert!(matches!(
-        sink.open(url, batch().schema(), options.with_mode(open_arrow_sink_core::WriteMode::Append)).await,
+        fixture.sink.open(fixture.url.clone(), batch().schema(), options.with_mode(open_arrow_sink_core::WriteMode::Append)).await,
         Err(open_arrow_sink_core::Error::AlreadyExists(message)) if message.contains("index oas_btree_")
     ));
 }
@@ -170,8 +171,7 @@ async fn shared_operator_abort_preserves_output() {
     session.writers[0].write(batch()).await.unwrap();
     session.writers[0].finish().await.unwrap();
     let directory = storage.path(&url).unwrap();
-    let mut before = storage.list(&directory).await.unwrap();
-    before.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let before = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
     assert!(!before.is_empty());
     let sibling = storage.url(&ObjectPath::parse("keep").unwrap()).unwrap();
     storage
@@ -182,8 +182,7 @@ async fn shared_operator_abort_preserves_output() {
         writer.abort().await.unwrap();
     }
     session.committer.abort().await.unwrap();
-    let mut retained = storage.list(&directory).await.unwrap();
-    retained.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let retained = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
     assert_eq!(retained, before);
     assert_eq!(
         storage
@@ -304,7 +303,7 @@ async fn external_blobs_resolve_independent_buckets() {
     let shadow = make("s3://destination/local/");
     shadow
         .write(
-            &ObjectPath::parse("blob").unwrap(),
+            &open_arrow_sink_test_support::path(&shadow, "blob"),
             b"wrong".to_vec().into(),
         )
         .await
@@ -353,11 +352,11 @@ async fn external_blobs_resolve_independent_buckets() {
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     first
-        .delete(&ObjectPath::parse("same-key").unwrap())
+        .delete(&open_arrow_sink_test_support::path(&first, "same-key"))
         .await
         .unwrap();
     second
-        .delete(&ObjectPath::parse("same-key").unwrap())
+        .delete(&open_arrow_sink_test_support::path(&second, "same-key"))
         .await
         .unwrap();
     destination
