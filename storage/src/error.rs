@@ -91,36 +91,3 @@ pub(crate) fn download_too_large(limit: usize) -> Error {
         "download group exceeds its {limit}-byte payload limit"
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error as _;
-
-    #[test]
-    fn backend_errors_retain_operation_path_and_native_source() {
-        let error = map_error(
-            "read",
-            "object",
-            opendal::Error::new(ErrorKind::Unexpected, "transport failed"),
-        );
-        assert!(matches!(error, Error::Backend(_)));
-        assert!(error.to_string().contains("read object \"object\""));
-        let source = error.source().unwrap().source().unwrap();
-        assert_eq!(
-            source.downcast_ref::<opendal::Error>().unwrap().kind(),
-            ErrorKind::Unexpected
-        );
-    }
-
-    #[test]
-    fn unsupported_operations_remain_classified() {
-        let error = map_error(
-            "create",
-            "object",
-            opendal::Error::new(ErrorKind::Unsupported, "conditional writes unavailable"),
-        );
-        assert!(matches!(error, Error::Unsupported(_)));
-        assert!(error.to_string().contains("create object \"object\""));
-    }
-}

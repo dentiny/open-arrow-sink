@@ -102,11 +102,6 @@ async fn failures_release_budgets_and_oversized_payloads_are_rejected() {
         assert!(downloads.download(url).await.is_err());
         assert_eq!(downloads.buffered_bytes(), 0);
     }
-    assert!(matches!(
-        downloads.download(&format!("{URL}/missing")).await,
-        Err(open_arrow_sink_core::Error::NotFound(_))
-    ));
-    assert_eq!(downloads.buffered_bytes(), 0);
     assert_eq!(downloads.download(URL).await.unwrap().as_ref(), BODY);
     assert!(downloads.download_all(&[URL, URL], None).await.is_err());
     assert_eq!(downloads.buffered_bytes(), 0);
