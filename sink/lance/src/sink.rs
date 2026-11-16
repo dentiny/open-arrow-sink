@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{BlobDownloader, Storage, StorageResolver, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -12,44 +12,87 @@ use crate::{
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    sources: Arc<StorageResolver>,
+    sources: Option<Arc<StorageResolver>>,
+    downloader: Arc<BlobDownloader>,
+    encoding_buffer_size: Option<NonZeroUsize>,
 }
 
+impl Default for LanceDatasetSink {
+    fn default() -> Self {
+        Self {
+            storage: None,
+            sources: None,
+            downloader: Arc::new(
+                BlobDownloader::with_defaults().expect("valid default download limits"),
+            ),
+            encoding_buffer_size: None,
+        }
+    }
+}
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
-            sources: Arc::default(),
+            ..Self::default()
         }
+    }
+    pub fn with_blob_downloader(mut self, downloader: Arc<BlobDownloader>) -> Self {
+        self.downloader = downloader;
+        self
+    }
+    /// Native column-data cache per physical writer, separate from download/upload buffers.
+    pub fn with_encoding_buffer_size(mut self, bytes: NonZeroUsize) -> Self {
+        self.encoding_buffer_size = Some(bytes);
+        self
     }
     /// Share source namespaces, credentials, and the URL-derived cache with a download pool.
     /// This replaces any previously configured source stores.
     pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
-        self.sources = sources;
+        self.sources = Some(sources);
         self
     }
 
     /// Configure an independent source namespace for native external blob ingestion.
     /// If the resolver is shared, detach its registrations before adding this store.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
+        self.sources = Some(Arc::new(
+            self.source_resolver()
+                .as_ref()
+                .clone()
+                .with_storage(storage),
+        ));
         self
     }
+    fn source_resolver(&self) -> Arc<StorageResolver> {
+        self.sources
+            .clone()
+            .unwrap_or_else(|| self.downloader.source_resolver())
+    }
     fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
+        let sources = self.source_resolver();
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
-        }
-        .with_write_options(options);
-        LanceDestination::new(
-            storage,
+        };
+        let downloader = Arc::new(
+            self.downloader
+                .as_ref()
+                .clone()
+                .with_source_resolver(sources.clone())
+                .with_primary_storage(storage.clone()),
+        );
+        let mut destination = LanceDestination::new(
+            storage.with_write_options(options),
             url,
-            self.sources.clone(),
+            sources,
             options.io_metrics.as_ref(),
-        )
+        )?;
+        destination.downloader = downloader;
+        destination.encoding_buffer_size = self.encoding_buffer_size;
+        Ok(destination)
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
@@ -87,7 +130,7 @@ impl Sink for LanceDatasetSink {
             )
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(true)
-            .with_supports_blob_streaming(true)
+            .with_supports_blob_streaming(false)
             .with_supports_upload_options(true)
             .with_supports_storage_version(true)
             .with_supported_indexes(&[
@@ -104,22 +147,6 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        if crate::blob::requires_streaming_writer(&schema) {
-            let storage_version = validate_options(&schema, &options, self.capability())?;
-            let schemas = write_options::LanceSchemas::new(schema, &options)?;
-            let params = write_options::write_params(&options, storage_version);
-            let mut destination = self.resolve(url, &options)?;
-            let existing = destination
-                .prepare(&schemas.logical, options.mode, storage_version)
-                .await?;
-            crate::validation::validate_index_requests(existing.as_ref(), &options).await?;
-            return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
-                schemas,
-                destination,
-                options,
-                params,
-            )));
-        }
         // Use the same fragment writing and publication path for every session.
         self.open_writer(url, schema, options).await
     }
@@ -136,7 +163,7 @@ impl ParallelSink for LanceDatasetSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         let storage_version = validate_options(&schema, &options, self.capability())?;
-        crate::validation::validate_parallel_blob_schema(&schema)?;
+        crate::validation::validate_blob_schema(&schema)?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);
         let mut destination = self.resolve(url, &options)?;
@@ -150,6 +177,7 @@ impl ParallelSink for LanceDatasetSink {
                     schemas.clone(),
                     destination.clone(),
                     params.clone(),
+                    &options,
                 )) as Box<dyn DataWriter<Output = Self::Output>>
             })
             .collect();

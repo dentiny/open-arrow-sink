@@ -35,9 +35,7 @@ Lance to publish a new manifest version. `abort` stops the worker and retains
 persisted output. Dropping closes the stream
 with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
-have an uncertain publication outcome; do not automatically retry. Finished native
-blobs that are never attached to a batch remain as orphan files, including after a
-successful commit; callers are responsible for their cleanup.
+have an uncertain publication outcome; do not automatically retry.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
 Create checks that the destination prefix does not exist without creating marker
@@ -124,24 +122,15 @@ A runnable index construction example (destination must not exist):
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
 
-## Streaming native blobs
+## Materialized blob inputs
 
-Blob-marked schemas require a single writer; blob bytes use the configured shared storage.
-Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
-value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
-finish it to obtain a session-owned `BlobHandle`. Attach handles with
-`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
-non-null binary placeholders. Null cells remain null. Ordinary materialized
-binary values can still be written through `Writer::write`.
-
-Streams append through the common `StorageWriter`, and batches carry native
-Lance managed-blob descriptors. Streaming values use dedicated storage without
-buffering the full payload to select inline or packed storage. Materialized binary
-inputs remain supported through Lance's prepared-blob path. Handles from another
-session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort stops writing and retains persisted output. A rejected
-commit returns directly without deleting the dataset or its streamed blobs.
-Each session owns a separate `_blobs/<session>/` namespace.
+Ordinary Arrow text columns remain text, even when values look like URLs. Use
+`layer::DownloadBlobLayer` to select URL columns for ingestion, native logical
+blob fields (`BlobArrayBuilder::push_bytes` / `push_uri`), or mark a top-level `LargeBinary` field with `open-arrow-sink:blob = true`. Every
+blob goes through the built-in downloader's admission/memory budget, then the
+SDK selects its physical layout. Single and parallel writers use this same path.
+Nulls and empty blobs remain distinct. Prepared descriptors and the old
+`create_blob` / `write_with_blobs` streaming-handle API are unsupported by Lance.
 
 ## External blob ingestion
 
@@ -171,12 +160,11 @@ These options map through native `BlobFieldOptions` to top-level blob field meta
 Explicit values override existing field thresholds; `None` preserves field metadata
 or Lance defaults (64 KiB inline, 4 MiB dedicated). Values strictly above each
 threshold move to the next storage class. Dedicated selection takes precedence.
-They control native logical blob writes, including ingested URIs. Already prepared
-streaming handles retain their chosen dedicated storage layout.
+They control native logical blob writes, including ingested URIs.
 The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
 or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
-`DownloadBlobLayer` already creates destination-owned managed streams directly.
+downloaded materialized bytes use the same SDK layout selection.
 
 For a runnable parallel ingestion workflow, use:
 
@@ -192,11 +180,9 @@ same mechanism for caller-configured S3 credentials and endpoints. In an ordinar
 pipeline, native logical blob batches can also be dispatched through
 `UnorderedWriteLayer`; actual writer utilization depends on available batches.
 
-This route does not make `DownloadBlobLayer` or session-owned streamed handles
-parallel. `DataWriter` has no `create_blob`/`write_with_blobs` interface, and a
-streamed handle must remain bound to its owning session. Extending that path
-requires a shared handle-ownership, incomplete-upload, and cancellation protocol;
-removing `validate_parallel_blob_schema` alone would not supply those guarantees.
+Materialized
+blob-marked `LargeBinary` inputs also work with parallel writers: the adapter
+converts them to logical blobs and the SDK chooses their layout.
 
 ## Compression
 
@@ -281,12 +267,15 @@ create a missing dataset. Explicit abort waits for workers to stop and retains
 persisted output. Write and commit failures return directly without automatic
 abort, deletion, or rollback.
 
-`DownloadBlobLayer` uses this streaming interface directly: network chunks are
-appended to native blob files and only completed handles enter record batches.
-A blob larger than the download pool's buffer budget is supported. The shared
-budget applies to application-owned download chunks; Lance's internal I/O and
-encoding buffers are separate. HTTP errors or cancellation poison the layer and
-native session, and a rejected commit leaves output in place.
+Use `LanceDatasetSink::with_encoding_buffer_size(NonZeroUsize)` to set the SDK's
+total column-data cache per physical writer. This is separate from downloaded
+payloads and upload buffers; account for the writer count when budgeting memory.
+
+The sink always owns a `storage::BlobDownloader`. Logical blob URI inputs are
+downloaded automatically; materialized bytes use the same admission and memory
+budget. Configure it with `with_blob_downloader(Arc<BlobDownloader>)`. Complete
+payloads use SDK layout selection. Install a custom `Downloader` implementation
+through `BlobDownloader::with_downloader` while keeping the framework budgets.
 
 ## Storage version
 
@@ -310,14 +299,14 @@ schema for dataset validation, and the encoded schema for native writes.
 Compression is applied first; logical blob fields and encoded descriptors are then
 derived together with the same metadata and explicit layout overrides.
 `LanceDestination` binds
-the resulting parameters to its session and commit handler; blob runtime code
-owns handles and placements.
+the resulting parameters to its session and commit handler; blob input conversion
+and materialization happen before native fragment writes.
 
 ## Upload buffering
 
 Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
 sink to control the native data-file and sidecar multipart upload buffers, as
-well as streamed blob uploads through the shared storage writer. For example, select a 16 MiB part
+well as SDK-managed blob uploads. For example, select a 16 MiB part
 size to tune buffering for your workload. Uploads default to 4 MiB parts and four
 concurrent requests per writer; use `Storage::with_upload_concurrency` to increase
 parallelism within your memory budget. This shared default replaces the native
@@ -345,41 +334,40 @@ Unregistered sources use URL-configured storage cached by `StorageResolver`.
 Lance’s `Provider` applies destination precedence and adapts the selected storage
 to Lance.
 
-Configure sources once and pass the same `Arc<StorageResolver>` to the download
-pool and native Lance sink. Both paths then use the same source operators,
-credentials, and URL-derived cache:
+The sink inherits its injected downloader's source resolver unless an explicit
+sink resolver is configured. Register sources once on the downloader to share
+operators, credentials, and the URL-derived cache with native Lance reads:
 
 ```rust
 use std::sync::Arc;
 use open_arrow_sink_lance::LanceDatasetSink;
-use open_arrow_sink_layer::DownloadPool;
-use open_arrow_sink_storage::{Storage, StorageResolver, opendal};
+use open_arrow_sink_storage::{BlobDownloader, Storage, StorageResolver, opendal};
 
 let source = Storage::new(
     opendal::Operator::new(opendal::services::Memory::default())?,
     "memory://sources/".parse()?,
 )?;
 let sources = Arc::new(StorageResolver::default().with_storage(source));
-let pool = Arc::new(DownloadPool::with_defaults()?.with_source_resolver(sources.clone()));
-let sink = LanceDatasetSink::default().with_source_resolver(sources);
-// Pass pool to DownloadBlobLayer::with_download_pool when composing the sink.
-# let _ = (pool, sink);
+let pool = Arc::new(BlobDownloader::with_defaults()?.with_source_resolver(sources.clone()));
+let sink = LanceDatasetSink::default().with_blob_downloader(pool);
+// Blob writes always use the configured downloader.
+# let _ = sink;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `with_source_resolver` replaces prior source registrations. Calling
 `with_source_storage` afterwards adds a store only to that consumer's resolver;
 configure all shared stores before wrapping the resolver in `Arc`.
-HTTP(S) downloads use the pool's operator and transport; configure their policies
-with `DownloadPool::with_http_config`.
+HTTP policy and transport configuration live on `OpenDalDownloader`, or a custom
+implementation of the `Downloader` trait.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
 sink or constructing a dataset builder; Lance snapshots the available schemes.
 
-`DownloadPool::with_source_storage` configures non-HTTP source stores. File and
-enabled cloud downloads share the same transfer-buffer budget and active-stream
-limit as HTTP(S). Explicit stores retain their policies; `with_http_config`
-configures HTTP download retry/timeout policies directly, and `with_http_transport`
-replaces the provider transport. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
-their complete URL, including the query.
+`BlobDownloader::with_source_storage` configures non-HTTP download sources.
+The default `OpenDalDownloader` preserves signed query
+strings. Configure shared downloader limits on the sink; it downloads URI inputs and
+passes complete payloads to the SDK automatically. Plain text URL columns require
+explicit selection with `DownloadBlobLayer`; native logical blob inputs do not. See the
+[download contracts](../../docs/options.md#blob-downloader-and-memory-limits).

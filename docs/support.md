@@ -2,7 +2,7 @@
 
 All bundled sinks implement `ParallelSink` and require `Ordering::Unordered`,
 even with one writer. `WriteOptions::default()` requests `Create` and
-`PreserveInput`; set ordering explicitly and use `Append` for Iceberg.
+`Unordered`; use `Append` for Iceberg.
 Inspect `sink.capability()` for the configured sink, then apply the request-time
 restrictions below. Cargo features are additive.
 
@@ -22,7 +22,8 @@ restrictions below. Cargo features are additive.
 | Session upload part size / concurrency | Supported | Unsupported; configure catalog Storage | Supported |
 | Target file size | Soft target; rolls between batches, default one file per writer | SDK soft target; table default otherwise | Native soft target; SDK default otherwise |
 | Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_FLAT L2, Text/Inverted, BloomFilter |
-| Native streaming blobs | Unsupported | Unsupported | Single-writer blob schema only |
+| URL columns via `DownloadBlobLayer` | Unsupported | Unsupported | Explicit top-level text columns; single and parallel writers |
+| Native streaming blobs | Unsupported | Unsupported | Unsupported; use logical blob inputs |
 | Explicit storage version | Unsupported | Unsupported | `2.2` or `2.3` |
 | Empty successful session | One readable file per opened writer | No new snapshot | Readable empty dataset on Create; see native mode semantics |
 

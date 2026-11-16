@@ -101,8 +101,8 @@ resolved storage.
 `ParquetDirectorySink::default().with_config(config)?` configures automatically
 resolved destinations. The same method also adds policies to explicit storage
 passed to `ParquetDirectorySink::new`.
-`DownloadPool::with_config(config)` configures both HTTP downloads and lazily
-resolved non-HTTP sources; explicitly registered source stores keep their policies.
+Configure HTTP policies on `OpenDalDownloader`; configure URL-derived non-HTTP
+policies on the shared `StorageResolver`. Explicit source stores keep their own policies.
 
 ```rust
 use open_arrow_sink_storage::{RetryConfig, Storage, StorageConfig, TimeoutConfig, Url};
@@ -152,7 +152,7 @@ let sink_storage = storage.clone();
 Separately constructed stores have independent budgets unless given clones of
 the same limiter. Reconfiguring one `Storage` does not change previously created
 clones, operators, or sinks. This transport budget also does not set a
-`DownloadPool`'s stream concurrency or buffered-byte quota; those are separate
+`BlobDownloader`'s stream concurrency or buffered-byte quota; those are separate
 admission limits.
 
 ## Multipart uploads
@@ -172,28 +172,49 @@ and `WriteOptions.upload.concurrency`; unset fields preserve the Storage setting
 ordinary object operations to `OpendalStore`, while multipart uploads use the same
 storage upload policy as `Storage::writer()`.
 
-## HTTP downloads
+## Blob downloads
 
-`DownloadPool` belongs to `open-arrow-sink-layer`; see its
-[download configuration](../docs/options.md#streaming-download-pool). It owns an
-HTTP operator and transport directly, with one pool stream limit and a separate
-transfer-buffer budget. Non-HTTP downloads use this crate's `StorageResolver`
-and retain their source storage policies.
+Every Lance sink owns a `BlobDownloader`; native logical blob URI inputs need no optional layer
+or explicit download call. It collects full payloads under shared admission and
+memory limits before handing them to the SDK for layout selection.
 
-`Storage::with_http_transport` replaces the provider transport for authentication,
-instrumentation, or in-memory fixtures. Storage's request budget and operator
-layers still apply to its namespace operations.
+`Downloader` is the pluggable I/O trait. Its single `open(source, DownloadContext)`
+method returns a stream of bounded byte chunks. `OpenDalDownloader` is the default
+implementation for HTTP, files, and enabled cloud services. Configure its retry,
+timeout, and HTTP transport policies before installing it:
+
+```rust,ignore
+use std::sync::Arc;
+use open_arrow_sink_storage::{BlobDownloader, OpenDalDownloader, StorageConfig};
+
+let io = OpenDalDownloader::new(StorageConfig::default())?
+    .with_http_transport(transport);
+let downloads = BlobDownloader::with_defaults()?.with_downloader(Arc::new(io));
+// Or provide Arc::new(MyDownloader) implementing Downloader.
+```
+
+The wrapper, rather than the trait implementation, owns admission, memory
+reservations, chunk validation, and full-payload collection. Returned bytes and
+shared Arrow buffers retain reservations through SDK consumption. Custom HTTP
+implementations use `context.http_requests().acquire().await` and retain the guard
+until response-body EOF/drop, or wrap their transport with that same limiter.
+The OpenDAL implementation does this automatically, and avoids reacquiring an
+identical budget already installed on a source store.
+
+`with_http_concurrency_limit` can share the request budget with destination stores.
+`with_download_limits(payload_bytes, chunk_bytes)` configures full-payload and
+chunk caps. See [resource contracts](../docs/options.md#blob-downloader-and-memory-limits).
 
 ## Shared source configuration
 
 Build an `Arc<StorageResolver>` with `StorageResolver::with_storage`, then pass
-clones to `DownloadPool::with_source_resolver` and
+clones to `BlobDownloader::with_source_resolver` and
 `LanceDatasetSink::with_source_resolver`. This shares explicit source operators,
 credentials, and the URL-derived cache across downloads and native Lance blob
 reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
 `with_source_resolver` replaces prior registrations; `with_source_storage`
 subsequently adds a store only for that consumer. HTTP(S) download policies can be
-configured independently with `DownloadPool::with_http_config`.
+configured on `OpenDalDownloader` before attaching it with `with_downloader`.
 
 ## Related documentation
 

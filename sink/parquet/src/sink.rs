@@ -109,16 +109,16 @@ impl ParquetDirectorySink {
         .with_write_options(&options);
         let destination =
             Arc::new(Destination::open(storage, directory, &schema, options.mode).await?);
-        let committer = Box::new(ParquetCommitter);
+        let committer = Box::new(ParquetCommitter {
+            destination: destination.clone(),
+            schema: schema.clone(),
+            properties: properties.clone(),
+        });
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
-            let writer = destination
-                .open_writer(index, 0, schema.clone(), properties.clone())
-                .await?;
             writers.push(ParquetDirectoryWriter::new(
                 destination.clone(),
                 schema.clone(),
-                writer,
                 options.target_file_size,
                 properties.clone(),
                 index,

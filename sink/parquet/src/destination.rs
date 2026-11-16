@@ -9,6 +9,7 @@ pub(crate) struct Destination {
     pub(crate) storage: Storage,
     pub(crate) path: ObjectPath,
     prefix: String,
+    create_empty_file: bool,
 }
 
 impl Destination {
@@ -47,7 +48,25 @@ impl Destination {
             storage,
             path: directory,
             prefix,
+            create_empty_file: matches!(mode, WriteMode::Create),
         })
+    }
+
+    pub(crate) fn needs_empty_file(&self) -> bool {
+        self.create_empty_file
+    }
+
+    pub(crate) async fn write_empty_file(
+        &self,
+        schema: SchemaRef,
+        properties: WriterProperties,
+    ) -> Result<()> {
+        self.open_writer(0, 0, schema, properties)
+            .await?
+            .finish()
+            .await
+            .map_err(Error::backend)?;
+        Ok(())
     }
 
     pub(crate) async fn open_writer(

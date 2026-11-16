@@ -19,9 +19,10 @@ pub enum WriteMode {
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Ordering {
-    #[default]
+    /// Preserve input row sequence in the backend's documented read order.
     PreserveInput,
     /// Allow batches and rows to be reordered, without loss or duplication.
+    #[default]
     Unordered,
 }
 
@@ -86,7 +87,7 @@ impl UploadConfig {
 /// use open_arrow_sink_core::{WriteMode, WriteOptions};
 /// let options = WriteOptions { mode: WriteMode::Append, ..WriteOptions::default() };
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WriteOptions {
     /// Optional shared I/O observer. Layers forward it; instrumented backends
@@ -99,6 +100,7 @@ pub struct WriteOptions {
     /// Destination policy. Defaults to Create for every sink. Unsupported modes,
     /// including the default, fail before destination I/O.
     pub mode: WriteMode,
+    /// Input-order policy. Defaults to Unordered; preservation requires an explicit request.
     pub ordering: Ordering,
     /// Codec and structural encoding defaults/column overrides; empty preserves backend defaults.
     pub compression: CompressionOptions,
@@ -115,23 +117,6 @@ pub struct WriteOptions {
     /// Backend data-file format version. None preserves the backend default.
     /// Currently supported only by Lance; values use the backend version syntax.
     pub storage_version: Option<String>,
-}
-
-impl Default for WriteOptions {
-    fn default() -> Self {
-        Self {
-            io_metrics: None,
-            blob_handle: None,
-            mode: WriteMode::default(),
-            ordering: Ordering::default(),
-            compression: CompressionOptions::default(),
-            partition: None,
-            indexes: Vec::new(),
-            upload: UploadConfig::default(),
-            target_file_size: None,
-            storage_version: None,
-        }
-    }
 }
 
 impl WriteOptions {

@@ -1,7 +1,6 @@
 //! Successful OpenDAL payload transfers, independent of publication and cleanup.
 use open_arrow_sink_core::IoMetrics;
-use opendal::raw::oio::{Read, ReadStream, Write};
-use opendal::{Buffer, Capability, Metadata, Result, raw::*};
+use opendal::{Buffer, BytesRange, Capability, Metadata, OperationContext, Result, raw::*};
 use std::sync::Arc;
 
 /// Count bytes returned by reads and accepted by writes on any OpenDAL backend.

@@ -1,180 +1,118 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+//! Logical blob input conversion. Layout and object ownership belong to Lance.
+use arrow_array::{
+    ArrayRef, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray, StructArray,
 };
+use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef, is_blob_field};
+use std::sync::Arc;
 
-use arrow_array::{Array, ArrayRef, LargeBinaryArray};
-use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
-use open_arrow_sink_core::{
-    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
-    SchemaRef, async_trait, is_blob_field,
-};
-use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
-
-pub(crate) struct BlobSession {
-    active: AtomicUsize,
-    failed: AtomicBool,
-    storage: Storage,
-    relative_prefix: String,
-}
-impl BlobSession {
-    pub fn new(storage: Storage) -> Self {
-        let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
-        Self {
-            active: AtomicUsize::new(0),
-            failed: AtomicBool::new(false),
-            storage,
-            relative_prefix,
-        }
-    }
-    pub fn check(&self) -> Result<()> {
-        if self.failed.load(Ordering::Acquire) {
-            return Err(crate::error::poisoned());
-        }
-        Ok(())
-    }
-
-    pub fn fail(&self) {
-        self.failed.store(true, Ordering::Release);
-    }
-
-    pub fn ensure_idle(&self) -> Result<()> {
-        self.check()?;
-        if self.active.load(Ordering::Acquire) != 0 {
-            return Err(Error::backend(std::io::Error::other(
-                "writer failed or has unfinished blobs",
-            )));
-        }
-        Ok(())
-    }
-
-    pub async fn create_blob(
-        self: &Arc<Self>,
-        directory: &ObjectPath,
-    ) -> Result<Box<dyn BlobWriter>> {
-        self.check()?;
-        let relative = format!("{}{}.blob", self.relative_prefix, uuid::Uuid::new_v4());
-        let path = directory.join(&relative)?;
-        let inner = self.storage.writer(&path).await?;
-        self.active.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(NativeBlobWriter {
-            inner,
-            session: self.clone(),
-            relative,
-            finished: false,
-            state: Poison::default(),
-        }))
-    }
-
-    fn release_writer(&self, finished: bool) {
-        if !finished {
-            self.fail();
-        }
-        self.active.fetch_sub(1, Ordering::Release);
-    }
+pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
+    field
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(String::as_str)
+        == Some("lance.blob.v2")
 }
 
-pub(crate) struct NativeBlob {
-    pub session: Arc<BlobSession>,
-    pub descriptor: BlobDescriptor,
-}
-
-struct NativeBlobWriter {
-    inner: StorageWriter,
-    session: Arc<BlobSession>,
-    relative: String,
-    finished: bool,
-    state: Poison,
-}
-impl Drop for NativeBlobWriter {
-    fn drop(&mut self) {
-        self.session.release_writer(self.finished);
-    }
-}
-#[async_trait]
-impl BlobWriter for NativeBlobWriter {
-    async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        self.state.check()?;
-        self.session.check()?;
-        self.state.poison();
-        if let Err(error) = self.inner.write(chunk.bytes().clone()).await {
-            self.session.fail();
-            return Err(error);
-        }
-        self.state.complete();
-        Ok(())
-    }
-    async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
-        self.state.check()?;
-        self.session.check()?;
-        let size = self.inner.close().await?;
-        self.finished = true;
-        Ok(BlobHandle::new(NativeBlob {
-            session: self.session.clone(),
-            descriptor: BlobDescriptor::Managed {
-                base_id: None,
-                uri: self.relative.clone(),
-                offset: 0,
-                size,
-            },
-        }))
-    }
-    async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.inner.abort().await
-    }
-}
-
-/// Marked binary columns require the session-owned streaming blob writer.
-pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
-    schema.fields().iter().any(|field| is_blob_field(field))
-}
-
-pub(crate) fn storage_batch(
-    batch: RecordBatch,
-    schema: &SchemaRef,
-    blobs: Vec<BlobPlacement>,
-    session: &Arc<BlobSession>,
-) -> Result<RecordBatch> {
-    let placements = crate::validation::validate_blob_placements(&batch, blobs, session)?;
+/// Logical input reuses the binary buffers, retaining download reservations until
+/// Lance consumes them. This is the same shape produced by BlobArrayBuilder's
+/// push_bytes, without another payload copy at the adapter boundary.
+pub(crate) fn logical_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
     let columns = batch
         .columns()
         .iter()
-        .enumerate()
+        .zip(batch.schema().fields())
         .zip(schema.fields())
-        .map(|((column, array), field)| {
-            if !is_blob_field(field) {
-                return Ok(array.clone());
+        .map(|((array, source), target)| {
+            if !is_blob_field(source) {
+                return array.clone();
             }
-            let values = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
-            let mut builder = BlobDescriptorArrayBuilder::new(field.name());
-            for row in 0..values.len() {
-                if let Some(handle) = placements.get(&(column, row)) {
-                    builder
-                        .push(
-                            handle
-                                .downcast_ref::<NativeBlob>()
-                                .unwrap()
-                                .descriptor
-                                .clone(),
-                        )
-                        .map_err(Error::backend)?;
-                } else if values.is_null(row) {
-                    builder.push_null().map_err(Error::backend)?;
-                } else {
-                    builder
-                        .push_inline(values.value(row).to_vec())
-                        .map_err(Error::backend)?;
+            let arrow_schema::DataType::Struct(fields) = target.data_type() else {
+                unreachable!("logical blob field is a struct");
+            };
+            let (data, uris): (ArrayRef, ArrayRef) = match source.data_type() {
+                arrow_schema::DataType::LargeBinary => {
+                    (array.clone(), Arc::new(StringArray::new_null(array.len())))
                 }
-            }
-            Ok(builder.finish().map_err(Error::backend)?.array().clone() as ArrayRef)
+                arrow_schema::DataType::Utf8 => (
+                    Arc::new(LargeBinaryArray::new_null(array.len())),
+                    array.clone(),
+                ),
+                arrow_schema::DataType::LargeUtf8 => (
+                    Arc::new(LargeBinaryArray::new_null(array.len())),
+                    Arc::new(StringArray::from_iter(
+                        array
+                            .as_any()
+                            .downcast_ref::<LargeStringArray>()
+                            .unwrap()
+                            .iter(),
+                    )),
+                ),
+                arrow_schema::DataType::Utf8View => (
+                    Arc::new(LargeBinaryArray::new_null(array.len())),
+                    Arc::new(StringArray::from_iter(
+                        array
+                            .as_any()
+                            .downcast_ref::<StringViewArray>()
+                            .unwrap()
+                            .iter(),
+                    )),
+                ),
+                _ => unreachable!("validated blob input type"),
+            };
+            Arc::new(StructArray::new(
+                fields.clone(),
+                vec![data, uris],
+                array.nulls().cloned(),
+            )) as ArrayRef
         })
-        .collect::<Result<Vec<_>>>()?;
-    // Compression can change nested field metadata while reusing column buffers.
-    // Match the metadata-only conversion used by ordinary writers.
-    let options = arrow_array::RecordBatchOptions::new()
-        .with_match_field_names(false)
-        .with_row_count(Some(batch.num_rows()));
-    let output = RecordBatch::try_new_with_options(schema.clone(), columns, &options)
-        .map_err(Error::backend)?;
-    Ok(output)
+        .collect();
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(Error::backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::Array;
+    use arrow_schema::{Field, Schema};
+    use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteOptions};
+
+    #[test]
+    fn selected_text_inputs_become_logical_uris_without_changing_nulls() {
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![Some("custom://blob"), None])),
+            Arc::new(LargeStringArray::from(vec![Some("custom://blob"), None])),
+            Arc::new(StringViewArray::from(vec![Some("custom://blob"), None])),
+        ];
+        let schema = Arc::new(Schema::new(
+            arrays
+                .iter()
+                .enumerate()
+                .map(|(index, array)| {
+                    Field::new(format!("url{index}"), array.data_type().clone(), true)
+                        .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into())
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+        let schemas =
+            crate::write_options::LanceSchemas::new(schema, &WriteOptions::default()).unwrap();
+        for row in 0..2 {
+            let logical = logical_batch(batch.slice(row, 1), &schemas.logical).unwrap();
+            for column in logical.columns() {
+                let blob = column.as_any().downcast_ref::<StructArray>().unwrap();
+                assert_eq!(blob.is_null(0), row == 1);
+                let uris = blob
+                    .column_by_name("uri")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                assert_eq!(
+                    uris.iter().next().unwrap(),
+                    (row == 0).then_some("custom://blob")
+                );
+            }
+        }
+    }
 }

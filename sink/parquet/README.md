@@ -51,7 +51,7 @@ nonempty batches once the current file's encoded bytes reach the target. A batch
 and the file footer can exceed the target; it is not a strict maximum. `None`
 keeps the single-file behavior. Buffered encoded-size estimates trigger an early
 row-group flush near an explicit target; actual flushed bytes decide whether to
-roll at the next nonempty batch. An empty session still creates one readable file.
+roll at the next nonempty batch. An empty Create session still creates one readable file.
 
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
@@ -66,15 +66,16 @@ No partitioning. Storage retries are configured on the OpenDAL operator.
 
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
-`ParallelSink::open_writers` to reserve the directory once and pre-open four
-files. Each writer rolls independently using its own `part-{writer}-{seq}`
-prefix (for example, `part-0-00000.parquet` and `part-1-00000.parquet`).
+`ParallelSink::open_writers` to validate the destination once and create files
+lazily for workers that receive nonempty batches. Each writer rolls independently
+using its own `part-{writer}-{seq}` prefix (for example, `part-0-00000.parquet` and `part-1-00000.parquet`).
 Append adds a session UUID before the writer index. The target size applies to each file.
 This overlaps file I/O; Parquet encoding and compression still run in the layer
 caller's task. Extra writers do not provide CPU parallelism and each retains its
 own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
 for using `ParallelSink` directly with application-managed worker tasks.
-Empty sessions produce one readable empty file per pre-opened writer. Batch
+An all-empty Create session produces one readable empty file at commit;
+an empty Append session adds no files. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
 failure returns directly without aborting writers or deleting output. Files remain visible
