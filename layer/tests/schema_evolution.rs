@@ -51,17 +51,14 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit(#[case] paral
 #[tokio::test]
 async fn rejects_backend_schema_before_remapping() {
     use open_arrow_sink_core::ParallelSink;
-    use parallel_sink::{Event, SessionDefect};
+    use open_arrow_sink_test_support::parallel_sink::{Event, SessionDefect};
     use std::num::NonZeroUsize;
 
-    let state = Arc::new(Mutex::new(State {
-        config: Config {
-            defect: SessionDefect::WrongSchema,
-            gated: false,
-            ..Default::default()
-        },
+    let state = State::shared(Config {
+        defect: SessionDefect::WrongSchema,
+        gated: false,
         ..Default::default()
-    }));
+    });
     let sink = TestSink(state.clone()).layer(layer());
     assert!(
         sink.open_writer((), input().schema(), options())
@@ -75,6 +72,6 @@ async fn rejects_backend_schema_before_remapping() {
     );
     assert!(!state.lock().unwrap().events.iter().any(|event| matches!(
         event,
-        Event::Abort(_) | Event::SessionAbort | Event::CommitAttempt
+        Event::Abort | Event::SessionAbort | Event::CommitAttempt
     )));
 }
