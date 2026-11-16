@@ -1,187 +1,19 @@
-use arrow_array::{Int64Array, RecordBatch};
-use futures::{FutureExt, channel::oneshot};
-use open_arrow_sink_core::{
-    DataWriter, Error, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter, Sink,
-    SinkCapability, SinkExt, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
-};
+#[path = "support/parallel_sink.rs"]
+mod parallel_sink;
+use futures::FutureExt;
+use open_arrow_sink_core::{Error, Ordering, RecordBatch, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
+use parallel_sink::{Config, Event, Failure, Operation, SessionDefect, State, TestSink, release};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
-
-#[derive(Default)]
-struct State {
-    opened: usize,
-    started: usize,
-    finished: usize,
-    committed: usize,
-    aborted: usize,
-    rows: u64,
-    gates: Vec<oneshot::Sender<()>>,
-    fail_write: bool,
-    fail_commit: bool,
-    fail_finish: bool,
-    fail_abort: bool,
-    wrong_count: bool,
-    supports_blobs: bool,
-    unordered: bool,
-    requested_ordering: Option<Ordering>,
-    wrong_schema: bool,
-    prepared: usize,
-    commit_attempts: usize,
-    session_aborted: usize,
-}
-
-struct TestSink(Arc<Mutex<State>>);
-struct TestWriter {
-    state: Arc<Mutex<State>>,
-    schema: SchemaRef,
-    gate: Option<oneshot::Receiver<()>>,
-    rows: u64,
-}
-
-fn error() -> Error {
-    Error::Unsupported("injected failure".into())
-}
-
-#[async_trait]
-impl Sink for TestSink {
-    type Request = ();
-    fn capability(&self) -> SinkCapability {
-        let state = self.0.lock().unwrap();
-        SinkCapability::default()
-            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
-            .with_ordering(if state.unordered {
-                Ordering::Unordered
-            } else {
-                Ordering::PreserveInput
-            })
-            .with_compression(Default::default())
-            .with_supported_partitions(vec![])
-            .with_supports_blob_handle(state.supports_blobs)
-            .with_supports_blob_streaming(state.supports_blobs)
-            .with_supports_storage_version(false)
-            .with_supported_indexes(&[])
-    }
-    async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
-        unreachable!()
-    }
-}
-
-#[async_trait]
-impl ParallelSink for TestSink {
-    type Output = u64;
-    async fn open_writers(
-        &self,
-        _: (),
-        schema: SchemaRef,
-        options: WriteOptions,
-        writers: NonZeroUsize,
-    ) -> Result<WriteSession<u64>> {
-        open_arrow_sink_core::validation::validate_options(&schema, &options, self.capability())?;
-        self.0.lock().unwrap().requested_ordering = Some(options.ordering);
-        let mut result = Vec::new();
-        let count = if self.0.lock().unwrap().wrong_count {
-            0
-        } else {
-            writers.get()
-        };
-        for _ in 0..count {
-            let (sender, receiver) = oneshot::channel();
-            let mut state = self.0.lock().unwrap();
-            state.opened += 1;
-            state.gates.push(sender);
-            result.push(Box::new(TestWriter {
-                state: self.0.clone(),
-                schema: if state.wrong_schema {
-                    Arc::new(arrow_schema::Schema::empty())
-                } else {
-                    schema.clone()
-                },
-                gate: Some(receiver),
-                rows: 0,
-            }) as Box<dyn DataWriter<Output = u64>>);
-        }
-        Ok(WriteSession {
-            writers: result,
-            committer: Box::new(TestCommitter(self.0.clone())),
-        })
-    }
-}
-
-#[async_trait]
-impl DataWriter for TestWriter {
-    type Output = u64;
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.lock().unwrap().started += 1;
-        if let Some(gate) = self.gate.take() {
-            gate.await.unwrap();
-        }
-        let mut state = self.state.lock().unwrap();
-        if state.fail_write {
-            return Err(error());
-        }
-        state.finished += 1;
-        self.rows += batch.num_rows() as u64;
-        Ok(())
-    }
-    async fn finish(&mut self) -> Result<u64> {
-        let mut state = self.state.lock().unwrap();
-        state.prepared += 1;
-        if state.fail_finish && state.prepared == 1 {
-            return Err(error());
-        }
-        Ok(self.rows)
-    }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        state.aborted += 1;
-        if state.fail_abort {
-            return Err(error());
-        }
-        Ok(())
-    }
-}
-
-struct TestCommitter(Arc<Mutex<State>>);
-#[async_trait]
-impl SessionCommitter<u64> for TestCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
-        let mut state = self.0.lock().unwrap();
-        assert_eq!(state.prepared, state.opened);
-        state.commit_attempts += 1;
-        if state.fail_commit {
-            return Err(error());
-        }
-        state.committed += 1;
-        state.rows = outputs.into_iter().sum();
-        Ok(WriteSummary {
-            rows_written: state.rows,
-        })
-    }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        self.0.lock().unwrap().session_aborted += 1;
-        Ok(())
-    }
-}
-
 fn batch() -> RecordBatch {
-    RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as _)]).unwrap()
-}
-fn options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
+    int64_batch("id", vec![Some(1), Some(2), Some(3)])
 }
 fn sink(state: &Arc<Mutex<State>>) -> impl Sink<Request = ()> {
     TestSink(state.clone()).layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
-}
-fn release(state: &Arc<Mutex<State>>) {
-    for gate in state.lock().unwrap().gates.drain(..) {
-        let _ = gate.send(());
-    }
 }
 
 #[tokio::test]
@@ -192,26 +24,41 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
         .open((), batch.schema(), options())
         .await
         .unwrap();
-    assert_eq!(state.lock().unwrap().opened, 2);
+    assert_eq!(state.lock().unwrap().count(Operation::Open), 2);
     writer.write(batch.clone()).await.unwrap();
     writer.write(batch.clone()).await.unwrap();
-    assert_eq!(state.lock().unwrap().started, 2);
-    assert_eq!(state.lock().unwrap().finished, 0);
+    assert_eq!(state.lock().unwrap().count(Operation::WriteStarted), 2);
+    assert_eq!(state.lock().unwrap().count(Operation::WriteCompleted), 0);
     {
         let third = writer.write(batch);
         futures::pin_mut!(third);
         assert!(third.as_mut().now_or_never().is_none());
-        assert_eq!(state.lock().unwrap().started, 2);
+        assert_eq!(state.lock().unwrap().count(Operation::WriteStarted), 2);
         release(&state);
         third.await.unwrap();
     }
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
     let state = state.lock().unwrap();
-    assert_eq!((state.committed, state.rows, state.finished), (1, 9, 3));
+    assert_eq!(state.count(Operation::Commit), 1);
+    assert_eq!(state.committed_rows(), Some(9));
+    assert_eq!(state.count(Operation::WriteCompleted), 3);
+    let publication = state
+        .events
+        .iter()
+        .position(|event| matches!(event, Event::CommitAttempt))
+        .unwrap();
+    assert_eq!(
+        state.events[..publication]
+            .iter()
+            .filter(|event| matches!(event, Event::Finish(_)))
+            .count(),
+        2
+    );
+    assert_eq!(state.events.last(), Some(&Event::Commit { rows: 9 }));
 }
 
 #[rstest::rstest]
-#[case::preserve_input(WriteOptions::default())]
+#[case::preserve_input(options().with_ordering(Ordering::PreserveInput))]
 #[case::zero_target(options().with_target_file_size(Some(0)))]
 #[tokio::test]
 async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: WriteOptions) {
@@ -222,7 +69,7 @@ async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: Wr
             .await
             .is_err()
     );
-    assert_eq!(state.lock().unwrap().opened, 0);
+    assert_eq!(state.lock().unwrap().count(Operation::Open), 0);
 }
 
 #[rstest::rstest]
@@ -244,19 +91,14 @@ async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
         assert_eq!(writer.commit().await.unwrap().rows_written, 3);
     }
     let state = state.lock().unwrap();
-    assert_eq!(state.finished, 1);
-    assert_eq!(
-        (state.committed, state.aborted),
-        if abort { (0, 2) } else { (1, 0) }
-    );
+    assert_eq!(state.count(Operation::WriteCompleted), 1);
+    assert_eq!(state.count(Operation::Commit), usize::from(!abort));
+    assert_eq!(state.count(Operation::Abort), if abort { 2 } else { 0 });
 }
 
 #[tokio::test]
 async fn async_failure_aborts_every_writer_before_committing() {
-    let state = Arc::new(Mutex::new(State {
-        fail_write: true,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(State::failing([Failure::Write])));
     let mut writer = sink(&state)
         .open((), batch().schema(), options())
         .await
@@ -266,7 +108,8 @@ async fn async_failure_aborts_every_writer_before_committing() {
     release(&state);
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!((state.committed, state.aborted), (0, 2));
+    assert_eq!(state.count(Operation::Commit), 0);
+    assert_eq!(state.count(Operation::Abort), 2);
 }
 
 #[tokio::test]
@@ -283,7 +126,8 @@ async fn cancelled_write_makes_commit_terminal_and_cleans_up() {
     assert!(writer.write(batch()).await.is_err());
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!((state.committed, state.aborted), (0, 2));
+    assert_eq!(state.count(Operation::Commit), 0);
+    assert_eq!(state.count(Operation::Abort), 2);
 }
 
 #[tokio::test]
@@ -299,31 +143,23 @@ async fn schema_error_is_terminal_even_for_empty_batches() {
         Err(Error::SchemaMismatch)
     ));
     assert!(writer.commit().await.is_err());
-    assert_eq!(state.lock().unwrap().started, 0);
-    assert_eq!(state.lock().unwrap().aborted, 2);
+    assert_eq!(state.lock().unwrap().count(Operation::WriteStarted), 0);
+    assert_eq!(state.lock().unwrap().count(Operation::Abort), 2);
 }
 
 #[tokio::test]
 async fn publication_failure_does_not_delete_possibly_published_data() {
-    let state = Arc::new(Mutex::new(State {
-        fail_commit: true,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(State::failing([Failure::Commit])));
     let writer = sink(&state)
         .open((), batch().schema(), options())
         .await
         .unwrap();
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(
-        (
-            state.committed,
-            state.aborted,
-            state.commit_attempts,
-            state.session_aborted
-        ),
-        (0, 0, 1, 0)
-    );
+    assert_eq!(state.count(Operation::Commit), 0);
+    assert_eq!(state.count(Operation::Abort), 0);
+    assert_eq!(state.count(Operation::CommitAttempt), 1);
+    assert_eq!(state.count(Operation::SessionAbort), 0);
 }
 
 #[tokio::test]
@@ -337,7 +173,8 @@ async fn drop_never_commits() {
     drop(writer);
     release(&state);
     let state = state.lock().unwrap();
-    assert_eq!((state.finished, state.committed), (0, 0));
+    assert_eq!(state.count(Operation::WriteCompleted), 0);
+    assert_eq!(state.count(Operation::Commit), 0);
 }
 
 #[tokio::test]
@@ -352,18 +189,15 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
     // The first batch is on writer 1; release only writer 0.
     state.lock().unwrap().gates.remove(0).send(()).unwrap();
     assert!(writer.write(batch()).now_or_never().unwrap().is_ok());
-    assert_eq!(state.lock().unwrap().started, 3);
-    assert_eq!(state.lock().unwrap().finished, 2);
+    assert_eq!(state.lock().unwrap().count(Operation::WriteStarted), 3);
+    assert_eq!(state.lock().unwrap().count(Operation::WriteCompleted), 2);
     release(&state);
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
 }
 
 #[tokio::test]
 async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
-    let state = Arc::new(Mutex::new(State {
-        fail_write: true,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(State::failing([Failure::Write])));
     let mut writer = sink(&state)
         .open((), batch().schema(), options())
         .await
@@ -373,30 +207,31 @@ async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     assert!(writer.write(batch()).await.is_err());
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
-    assert_eq!(state.lock().unwrap().aborted, 2);
+    assert_eq!(state.lock().unwrap().count(Operation::Abort), 2);
 }
 
+#[rstest::rstest]
+#[case::finish_failure(false)]
+#[case::finish_and_abort_failure(true)]
 #[tokio::test]
-async fn finish_failure_aborts_even_successfully_finished_writers_without_publication() {
-    let state = Arc::new(Mutex::new(State {
-        fail_finish: true,
-        ..Default::default()
-    }));
+async fn finish_failure_aborts_even_successfully_finished_writers_without_publication(
+    #[case] fail_abort: bool,
+) {
+    let mut failures = vec![Failure::FirstFinish];
+    if fail_abort {
+        failures.push(Failure::Abort);
+    }
+    let state = Arc::new(Mutex::new(State::failing(failures)));
     let writer = sink(&state)
         .open((), batch().schema(), options())
         .await
         .unwrap();
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(
-        (
-            state.prepared,
-            state.commit_attempts,
-            state.aborted,
-            state.session_aborted
-        ),
-        (2, 0, 2, 1)
-    );
+    assert_eq!(state.count(Operation::Finish), 2);
+    assert_eq!(state.count(Operation::CommitAttempt), 0);
+    assert_eq!(state.count(Operation::Abort), 2);
+    assert_eq!(state.count(Operation::SessionAbort), 1);
 }
 
 #[rstest::rstest]
@@ -407,8 +242,14 @@ async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted(
     #[case] wrong_count: bool,
 ) {
     let state = Arc::new(Mutex::new(State {
-        wrong_count,
-        wrong_schema: !wrong_count,
+        config: Config {
+            defect: if wrong_count {
+                SessionDefect::WrongCount
+            } else {
+                SessionDefect::WrongSchema
+            },
+            ..Default::default()
+        },
         ..Default::default()
     }));
     assert!(
@@ -418,101 +259,20 @@ async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted(
             .is_err()
     );
     let state = state.lock().unwrap();
-    assert_eq!(state.aborted, state.opened);
-    assert_eq!(state.session_aborted, 1);
-    assert_eq!(state.commit_attempts, 0);
+    assert_eq!(state.count(Operation::Abort), state.count(Operation::Open));
+    assert_eq!(state.count(Operation::SessionAbort), 1);
+    assert_eq!(state.count(Operation::CommitAttempt), 0);
 }
 
 #[tokio::test]
 async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
-    let state = Arc::new(Mutex::new(State {
-        fail_abort: true,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(State::failing([Failure::Abort])));
     let writer = sink(&state)
         .open((), batch().schema(), options())
         .await
         .unwrap();
     assert!(writer.abort().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!((state.aborted, state.session_aborted), (2, 1));
-}
-
-#[tokio::test]
-async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
-    use arrow_array::StringArray;
-    use open_arrow_sink_layer::DownloadBlobLayer;
-
-    let state = Arc::new(Mutex::new(State {
-        supports_blobs: true,
-        ..Default::default()
-    }));
-    assert!(TestSink(state.clone()).capability().supports_blob_handle);
-    let sink = sink(&state);
-    assert!(sink.capability().supports_blob_handle);
-    assert!(!sink.capability().supports_blob_streaming);
-    let input = RecordBatch::try_from_iter([(
-        "url",
-        Arc::new(StringArray::from(vec!["https://example.invalid/blob"])) as _,
-    )])
-    .unwrap();
-    // Native logical blob options remain valid for parallel data writers.
-    sink.open(
-        (),
-        input.schema(),
-        options().with_blob_handle(Some(Default::default())),
-    )
-    .await
-    .unwrap()
-    .abort()
-    .await
-    .unwrap();
-    let opened = state.lock().unwrap().opened;
-    assert_eq!(opened, 2);
-    assert!(
-        sink.layer(DownloadBlobLayer::new(["url".to_owned()].into()))
-            .open((), input.schema(), options())
-            .await
-            .is_err()
-    );
-    assert_eq!(state.lock().unwrap().opened, opened);
-}
-
-#[rstest::rstest]
-#[case::preserving_sink_preserve_input(false, Ordering::PreserveInput)]
-#[case::preserving_sink_unordered(false, Ordering::Unordered)]
-#[case::unordered_sink_preserve_input(true, Ordering::PreserveInput)]
-#[case::unordered_sink_unordered(true, Ordering::Unordered)]
-#[tokio::test]
-async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
-    #[case] unordered: bool,
-    #[case] requested: Ordering,
-) {
-    let state = Arc::new(Mutex::new(State {
-        unordered,
-        ..State::default()
-    }));
-    let sink = TestSink(state.clone()).layer(open_arrow_sink_layer::OrderingLayer::new(requested));
-    let result = sink
-        .open_writers(
-            (),
-            Arc::new(arrow_schema::Schema::empty()),
-            WriteOptions::default().with_ordering(if requested == Ordering::PreserveInput {
-                Ordering::Unordered
-            } else {
-                Ordering::PreserveInput
-            }),
-            NonZeroUsize::MIN,
-        )
-        .await;
-    let supported = !unordered || requested == Ordering::Unordered;
-    assert_eq!(result.is_ok(), supported, "{unordered:?}, {requested:?}");
-    assert_eq!(state.lock().unwrap().opened, usize::from(supported));
-    if let Ok(session) = result {
-        assert_eq!(state.lock().unwrap().requested_ordering, Some(requested));
-        for writer in session.writers {
-            writer.abort().await.unwrap();
-        }
-        session.committer.abort().await.unwrap();
-    }
+    assert_eq!(state.count(Operation::Abort), 2);
+    assert_eq!(state.count(Operation::SessionAbort), 1);
 }

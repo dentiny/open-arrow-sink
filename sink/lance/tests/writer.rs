@@ -1,21 +1,21 @@
 use std::sync::Arc;
 
-use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, cast::AsArray};
 use lance::Dataset;
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn batch() -> RecordBatch {
-    RecordBatch::try_from_iter([(
-        "value",
-        Arc::new(Int64Array::from(vec![Some(3), None, Some(1), Some(3)])) as ArrayRef,
-    )])
-    .unwrap()
+    open_arrow_sink_test_support::int64_batch("value", vec![Some(3), None, Some(1), Some(3)])
 }
 
-fn options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
+use open_arrow_sink_test_support::{
+    concat_sorted, seeded_bytes, sort_batch, unordered_options as options,
+};
+
+async fn read_sorted(dataset: &Dataset, key: &str) -> RecordBatch {
+    sort_batch(&dataset.scan().try_into_batch().await.unwrap(), &[key]).unwrap()
 }
 
 #[tokio::test]
@@ -36,18 +36,10 @@ async fn commit_round_trips_multiple_batches() {
     writer.write(expected.slice(1, 3)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 4);
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    let actual = dataset.scan().try_into_batch().await.unwrap();
-    assert_eq!(actual.schema(), expected.schema());
-    let values = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let mut values: Vec<_> = (0..values.len())
-        .map(|i| (!values.is_null(i)).then(|| values.value(i)))
-        .collect();
-    values.sort_unstable();
-    assert_eq!(values, vec![None, Some(1), Some(3), Some(3)]);
+    assert_eq!(
+        read_sorted(&dataset, "value").await,
+        sort_batch(&expected, &["value"]).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -97,17 +89,9 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
 async fn target_file_size_rolls_files_without_losing_rows() {
     // Exceed the SDK's default page buffer while staying below its row-count limit.
     let count = 10 * 1024;
-    let payloads = arrow_array::FixedSizeBinaryArray::try_from_iter((0..count).map(|i| {
-        let mut state = i as u64 + 1;
-        let mut bytes = [0; 1024];
-        for byte in &mut bytes {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            *byte = state as u8;
-        }
-        bytes
-    }))
+    let payloads = arrow_array::FixedSizeBinaryArray::try_from_iter(
+        (0..count).map(|id| seeded_bytes(id as u64 + 1, 1024)),
+    )
     .unwrap();
     let expected = RecordBatch::try_from_iter([
         (
@@ -136,30 +120,10 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let fragments = dataset.get_fragments();
     assert_gt!(fragments.len(), 1);
-    let actual = dataset.scan().try_into_batch().await.unwrap();
-    assert_eq!(actual.schema(), expected.schema());
-    let ids = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let payloads = actual
-        .column(1)
-        .as_any()
-        .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-        .unwrap();
-    let expected_payloads = expected
-        .column(1)
-        .as_any()
-        .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-        .unwrap();
-    let mut occurrences = vec![0; count];
-    for i in 0..actual.num_rows() {
-        let id = usize::try_from(ids.value(i)).unwrap();
-        assert_eq!(payloads.value(i), expected_payloads.value(id));
-        occurrences[id] += 1;
-    }
-    assert_eq!(occurrences, vec![2; count]);
+    let actual = read_sorted(&dataset, "id").await;
+    let expected =
+        concat_sorted(&expected.schema(), &[expected.clone(), expected], &["id"]).unwrap();
+    assert_eq!(actual, expected);
 }
 
 #[tokio::test]
@@ -175,18 +139,9 @@ async fn compression_survives_rolling_and_round_trips() {
     let text = StringArray::from_iter_values(
         (0..count).map(|id| format!("{id:08}:{}", "compressible payload ".repeat(100))),
     );
-    let raw = FixedSizeBinaryArray::try_from_iter((0..count).map(|id| {
-        let mut state = id as u64 + 1;
-        let mut bytes = [0; 1024];
-        for byte in &mut bytes {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            *byte = state as u8;
-        }
-        bytes
-    }))
-    .unwrap();
+    let raw =
+        FixedSizeBinaryArray::try_from_iter((0..count).map(|id| seeded_bytes(id as u64 + 1, 1024)))
+            .unwrap();
     let text_field = Arc::new(Field::new("text", DataType::Utf8, false).with_metadata(
         HashMap::from([
             ("custom".into(), "preserved".into()),
@@ -278,34 +233,25 @@ async fn compression_survives_rolling_and_round_trips() {
         "17"
     );
 
-    let ids = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let nested = actual
-        .column(1)
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .unwrap();
-    let actual_text = nested
-        .column(0)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    let actual_raw = actual
-        .column(2)
-        .as_any()
-        .downcast_ref::<FixedSizeBinaryArray>()
-        .unwrap();
-    let mut occurrences = vec![0; count];
-    for i in 0..actual.num_rows() {
-        let id = usize::try_from(ids.value(i)).unwrap();
-        assert_eq!(actual_text.value(i), text.value(id));
-        assert_eq!(actual_raw.value(i), raw.value(id));
-        occurrences[id] += 1;
+    // Encoding metadata intentionally differs. Compare every value separately
+    // from the metadata assertions above, retaining both copies of every row.
+    fn values(batch: &RecordBatch) -> RecordBatch {
+        RecordBatch::try_from_iter([
+            ("id", batch.column(0).clone()),
+            ("text", batch.column(1).as_struct().column(0).clone()),
+            ("raw_payload", batch.column(2).clone()),
+        ])
+        .unwrap()
     }
-    assert_eq!(occurrences, vec![2; count]);
+    let actual_values = sort_batch(&values(&actual), &["id"]).unwrap();
+    let expected_values = values(&expected);
+    let expected_values = concat_sorted(
+        &expected_values.schema(),
+        &[expected_values.clone(), expected_values],
+        &["id"],
+    )
+    .unwrap();
+    assert_eq!(actual_values, expected_values);
 }
 
 #[rstest::rstest]

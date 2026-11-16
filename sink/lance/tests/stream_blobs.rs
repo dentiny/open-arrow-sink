@@ -1,11 +1,10 @@
+use arrow_array::cast::AsArray;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
-use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Ordering, Sink, WriteMode, WriteOptions,
-};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_storage::opendal;
 
@@ -29,9 +28,7 @@ fn input() -> RecordBatch {
     )
     .unwrap()
 }
-fn options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[tokio::test]
 async fn shared_storage_streams_large_empty_and_null_blobs() {
@@ -84,11 +81,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .try_into_batch()
         .await
         .unwrap();
-    let values = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
+    let values = actual.column(0).as_binary::<i64>();
     assert_eq!(values.value(0).len(), 17 * 1024 * 1024);
     assert!(values.value(0).iter().all(|&b| b == b'x'));
     assert!(values.is_null(1));
