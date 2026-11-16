@@ -199,7 +199,7 @@ impl ParallelSink for LanceDatasetSink {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {
                 destination,
-                options,
+                indexes: options.indexes,
                 storage_version,
             }),
         })
