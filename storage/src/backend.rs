@@ -13,6 +13,8 @@ use crate::{
     validation,
 };
 
+const DEFAULT_UPLOAD_PART_SIZE: usize = 5 * 1024 * 1024;
+
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
 #[derive(Clone, Debug)]
@@ -150,7 +152,7 @@ impl Storage {
     ) -> opendal::options::WriteOptions {
         options.chunk = Some(
             self.upload_part_size
-                .map_or(5 * 1024 * 1024, NonZeroUsize::get),
+                .map_or(DEFAULT_UPLOAD_PART_SIZE, NonZeroUsize::get),
         );
         options.concurrent = self.upload_concurrency.get();
         options
