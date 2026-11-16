@@ -17,8 +17,8 @@ datafusion-common = { version = "54.1", default-features = false }
 datafusion-physical-plan = { version = "54.1", default-features = false }
 bytes.workspace = true
 futures.workspace = true
-hex = "0.4"
-lance-encoding = { version = "14.0.1", default-features = false }
+hex.workspace = true
+lance-encoding.workspace = true
 open-arrow-sink-storage.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 lance-file = { version = "14.0.1", default-features = false }
