@@ -2,10 +2,12 @@
 use arrow_array::{ArrayRef, RecordBatchOptions};
 use arrow_schema::{FieldRef, Schema};
 use open_arrow_sink_core::{
-    DataWriter, Error, Layer, ParallelSink, Poison, RecordBatch, Result, SchemaRef, Sink,
-    SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
+    DataWriter, Error, Layer, Poison, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
+    WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
 };
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
+
+use crate::decorate::{Decorator, impl_sink};
 
 type Transform = dyn Fn(ArrayRef) -> Result<ArrayRef> + Send + Sync;
 
@@ -62,7 +64,7 @@ impl<S: Sink> Layer<S> for SchemaEvolutionLayer {
     }
 }
 #[derive(Clone)]
-struct Plan {
+pub(crate) struct Plan {
     source: SchemaRef,
     target: SchemaRef,
     steps: Vec<(usize, FieldRemap)>,
@@ -121,29 +123,55 @@ impl Plan {
         .map_err(Error::backend)
     }
 }
-#[async_trait]
-impl<S: Sink> Sink for SchemaEvolutionSink<S> {
-    type Request = S::Request;
+impl_sink!(SchemaEvolutionSink);
+
+impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
+    type Inner = S;
+    type Context = Plan;
+
+    fn inner(&self) -> &S {
+        &self.inner
+    }
+
     fn capability(&self) -> SinkCapability {
         self.inner.capability().with_supports_blob_streaming(false)
     }
-    async fn open(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        options: WriteOptions,
-    ) -> Result<Box<dyn Writer>> {
-        let output = Plan::new(&schema, &self.remaps)?;
-        let inner = self
-            .inner
-            .open(request, output.target.clone(), options)
-            .await?;
-        Ok(Box::new(EvolutionWriter {
+
+    fn prepare(&self, schema: &mut SchemaRef, _options: &mut WriteOptions) -> Result<Plan> {
+        let output = Plan::new(schema, &self.remaps)?;
+        *schema = output.target.clone();
+        Ok(output)
+    }
+
+    fn wrap_writer(&self, output: Plan, inner: Box<dyn Writer>) -> Box<dyn Writer> {
+        Box::new(EvolutionWriter {
             inner,
-            schema,
+            schema: output.source.clone(),
             output,
             state: Poison::default(),
-        }))
+        })
+    }
+
+    fn wrap_session<T: Send + 'static>(
+        &self,
+        output: Plan,
+        session: WriteSession<T>,
+    ) -> WriteSession<T> {
+        WriteSession {
+            writers: session
+                .writers
+                .into_iter()
+                .map(|inner| {
+                    Box::new(EvolutionDataWriter {
+                        inner,
+                        schema: output.source.clone(),
+                        output: output.clone(),
+                        state: Poison::default(),
+                    }) as Box<dyn DataWriter<Output = T>>
+                })
+                .collect(),
+            committer: session.committer,
+        }
     }
 }
 struct EvolutionWriter {
@@ -200,39 +228,6 @@ impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
         self.inner.abort().await
     }
 }
-#[async_trait]
-impl<S: ParallelSink> ParallelSink for SchemaEvolutionSink<S> {
-    type Output = S::Output;
-    async fn open_writers(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        options: WriteOptions,
-        count: NonZeroUsize,
-    ) -> Result<WriteSession<Self::Output>> {
-        let output = Plan::new(&schema, &self.remaps)?;
-        let session = self
-            .inner
-            .open_writers(request, output.target.clone(), options, count)
-            .await?;
-        Ok(WriteSession {
-            writers: session
-                .writers
-                .into_iter()
-                .map(|inner| {
-                    Box::new(EvolutionDataWriter {
-                        inner,
-                        schema: schema.clone(),
-                        output: output.clone(),
-                        state: Poison::default(),
-                    }) as Box<dyn DataWriter<Output = Self::Output>>
-                })
-                .collect(),
-            committer: session.committer,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
