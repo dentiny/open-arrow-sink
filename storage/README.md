@@ -163,27 +163,15 @@ storage upload policy as `Storage::writer()`.
 
 ## HTTP downloads
 
-A `DownloadPool` sends HTTP(S) downloads through a `Storage`, so they use the
-same retry, timeout, request-budget, and transport configuration as every other
-storage. Build it with `DownloadPool::http_storage(config)`, adjust it with
-`with_http_concurrency_limit` or `with_http_transport`, and install it with
-`with_http_storage`. Each request goes to the complete source URL, including
-signed queries.
+`DownloadPool` belongs to `open-arrow-sink-layer`; see its
+[download configuration](../docs/options.md#streaming-download-pool). It owns an
+HTTP operator and transport directly, with one pool stream limit and a separate
+transfer-buffer budget. Non-HTTP downloads use this crate's `StorageResolver`
+and retain their source storage policies.
 
-```rust,ignore
-use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, StorageConfig};
-
-let shared_limit = HttpConcurrencyLimitLayer::new(32)?;
-let http = DownloadPool::http_storage(StorageConfig::default())?
-    .with_http_concurrency_limit(shared_limit.clone())
-    .with_http_transport(transport);
-let pool = DownloadPool::with_defaults()?.with_http_storage(http)?;
-```
-
-`Storage::with_http_transport` replaces the provider transport for shared
-authentication, instrumentation, or in-memory test fixtures without installing a
-process-global default. The current request budget and operator layers still apply.
-Returned chunks retain the same buffer accounting.
+`Storage::with_http_transport` replaces the provider transport for authentication,
+instrumentation, or in-memory fixtures. Storage's request budget and operator
+layers still apply to its namespace operations.
 
 ## Shared source configuration
 
@@ -193,8 +181,8 @@ clones to `DownloadPool::with_source_resolver` and
 credentials, and the URL-derived cache across downloads and native Lance blob
 reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
 `with_source_resolver` replaces prior registrations; `with_source_storage`
-subsequently adds a store only for that consumer. HTTP(S) downloads still use
-`with_http_storage` independently.
+subsequently adds a store only for that consumer. HTTP(S) download policies can be
+configured independently with `DownloadPool::with_http_config`.
 
 ## Related documentation
 

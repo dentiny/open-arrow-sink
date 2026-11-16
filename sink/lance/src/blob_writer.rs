@@ -1,6 +1,7 @@
 use std::sync::{Arc, atomic::Ordering};
 
-use datafusion_physical_plan::SendableRecordBatchStream;
+use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
+use futures::stream;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
@@ -9,18 +10,14 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    LanceFragments,
-    committer::LanceCommitter,
-    destination::LanceDestination,
-    error::worker_stopped,
-    parallel::{ChannelStream, Message},
+    LanceFragments, committer::LanceCommitter, destination::LanceDestination, error::worker_stopped,
 };
 
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
-    sender: Option<mpsc::Sender<Message>>,
+    sender: Option<mpsc::Sender<RecordBatch>>,
     task: JoinHandle<lance::Result<Transaction>>,
     rows: u64,
     state: Poison,
@@ -61,7 +58,7 @@ impl Writer for BlobDatasetWriter {
         self.sender
             .as_ref()
             .unwrap()
-            .send(Message::Batch(batch))
+            .send(batch)
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
@@ -79,10 +76,8 @@ impl Writer for BlobDatasetWriter {
             let _ = self.abort().await;
             return Err(error);
         }
-        let sender = self.sender.take().unwrap();
-        // Channel closure is an error; only this marker permits finishing fragments.
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
+        // Closing the input only finishes fragments; the committer publishes below.
+        drop(self.sender.take());
         let transaction = self
             .task
             .await
@@ -123,11 +118,13 @@ impl BlobDatasetWriter {
         options: WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
-        let stream = Box::pin(ChannelStream {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        }) as SendableRecordBatchStream;
+        let batches = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|batch| (Ok(batch), receiver))
+        });
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
+            encoding_schema.clone(),
+            batches,
+        )) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {

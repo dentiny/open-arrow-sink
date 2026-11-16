@@ -346,7 +346,8 @@ credentials, and URL-derived cache:
 ```rust
 use std::sync::Arc;
 use open_arrow_sink_lance::LanceDatasetSink;
-use open_arrow_sink_storage::{DownloadPool, Storage, StorageResolver, opendal};
+use open_arrow_sink_layer::DownloadPool;
+use open_arrow_sink_storage::{Storage, StorageResolver, opendal};
 
 let source = Storage::new(
     opendal::Operator::new(opendal::services::Memory::default())?,
@@ -363,7 +364,8 @@ let sink = LanceDatasetSink::default().with_source_resolver(sources);
 `with_source_resolver` replaces prior source registrations. Calling
 `with_source_storage` afterwards adds a store only to that consumer's resolver;
 configure all shared stores before wrapping the resolver in `Arc`.
-HTTP(S) downloads continue to use `DownloadPool::with_http_storage`.
+HTTP(S) downloads use the pool's operator and transport; configure their policies
+with `DownloadPool::with_http_config`.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
@@ -371,6 +373,7 @@ sink or constructing a dataset builder; Lance snapshots the available schemes.
 
 `DownloadPool::with_source_storage` configures non-HTTP source stores. File and
 enabled cloud downloads share the same transfer-buffer budget and active-stream
-limit as HTTP(S). Explicit stores retain their policies; `with_http_storage`
-configures HTTP downloads with a `Storage` built by `DownloadPool::http_storage`. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
+limit as HTTP(S). Explicit stores retain their policies; `with_http_config`
+configures HTTP download retry/timeout policies directly, and `with_http_transport`
+replaces the provider transport. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
 their complete URL, including the query.

@@ -618,21 +618,20 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
     use open_arrow_sink_storage::{StorageConfig, TimeoutConfig};
 
     let (server, mut events) = gated_server().await;
-    let http = DownloadPool::http_storage(StorageConfig {
+    let config = StorageConfig {
         timeout: Some(TimeoutConfig {
             io_timeout: Duration::from_millis(100),
             ..TimeoutConfig::default()
         }),
         ..StorageConfig::default()
-    })
-    .unwrap();
+    };
     let pool = Arc::new(
         DownloadPool::new(
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
         )
         .unwrap()
-        .with_http_storage(http)
+        .with_http_config(config)
         .unwrap(),
     );
     let layer = download_layer(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
@@ -702,7 +701,7 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
     )
     .unwrap();
     if retry {
-        let http = DownloadPool::http_storage(StorageConfig {
+        let config = StorageConfig {
             retry: Some(RetryConfig {
                 max_retries: 1,
                 min_delay: Duration::from_millis(1),
@@ -713,9 +712,8 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
                 io_timeout: Duration::from_secs(1),
                 ..TimeoutConfig::default()
             }),
-        })
-        .unwrap();
-        pool = pool.with_http_storage(http).unwrap();
+        };
+        pool = pool.with_http_config(config).unwrap();
     }
     let capture = Capture::default();
     let input = batch(vec![Some(&url)]);
