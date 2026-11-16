@@ -136,10 +136,7 @@ impl SessionCommitter<u64> for CountCommitter {
                 AtomicOrdering::SeqCst,
             )
             .map_err(|_| Error::Unsupported("use a fresh destination counter".into()))?;
-        Ok(WriteSummary {
-            rows_written,
-            ..Default::default()
-        })
+        Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

@@ -44,6 +44,9 @@ impl Default for PartitionOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
+    /// Optional shared I/O observer. Layers forward it; instrumented backends
+    /// record measured payloads independently of commit success.
+    pub io_metrics: Option<crate::IoMetrics>,
     /// Native blob options for this session. None uses BlobHandleConfig defaults
     /// on supporting backends, including Ingest for external blob URIs.
     /// Explicit configuration requires `SinkCapability.supports_blob_handle`.
@@ -73,6 +76,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
+            io_metrics: None,
             blob_handle: None,
             mode: WriteMode::default(),
             ordering: Ordering::default(),

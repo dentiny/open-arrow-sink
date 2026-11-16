@@ -1,4 +1,4 @@
-//! Backend-independent write observation. Physical byte counts come from backends.
+//! Backend-independent write observation. Payload bytes come from shared I/O observers.
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, DataWriter, Error, Layer, ParallelSink, RecordBatch, Result,
     SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary,
@@ -22,30 +22,45 @@ pub struct MetricsSnapshot {
     pub rows_committed: u64,
     /// Failed or cancelled open/write/finish/commit/abort/blob-open operations.
     pub failed_operations: u64,
-    /// Totals over committed sessions; None if any committed session is unmeasured.
-    pub bytes_read: Option<u64>,
-    pub bytes_written: Option<u64>,
+    /// Measured payload bytes across all observed sessions, including failures.
+    /// Uninstrumented backends contribute no bytes.
+    pub bytes_read: u64,
+    pub bytes_written: u64,
     pub write_duration: Duration,
     pub commit_duration: Duration,
 }
 
 /// Cloneable, thread-safe handle; snapshots do not reset counters.
 #[derive(Debug, Clone, Default)]
-pub struct WriteMetrics(Arc<Mutex<MetricsSnapshot>>);
+pub struct WriteMetrics {
+    observations: Arc<Mutex<MetricsSnapshot>>,
+    io: open_arrow_sink_core::IoMetrics,
+}
 impl WriteMetrics {
     pub fn snapshot(&self) -> MetricsSnapshot {
-        self.0
+        let mut snapshot = self
+            .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .clone();
+        let io = self.io.snapshot();
+        snapshot.bytes_read = io.bytes_read;
+        snapshot.bytes_written = io.bytes_written;
+        snapshot
     }
     fn update(&self, update: impl FnOnce(&mut MetricsSnapshot)) {
         update(
             &mut self
-                .0
+                .observations
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+    }
+    fn observe_io(&self, options: &mut WriteOptions) {
+        options.io_metrics = Some(match options.io_metrics.take() {
+            Some(outer) => self.io.clone().combine(outer),
+            None => self.io.clone(),
+        });
     }
     fn accepted(&self, rows: u64) {
         self.update(|s| {
@@ -55,21 +70,8 @@ impl WriteMetrics {
     }
     fn committed(&self, summary: &WriteSummary) {
         self.update(|s| {
-            let first = s.sessions_committed == 0;
             s.sessions_committed += 1;
             s.rows_committed += summary.rows_written;
-            s.bytes_read = if first {
-                summary.bytes_read
-            } else {
-                s.bytes_read.zip(summary.bytes_read).map(|(a, b)| a + b)
-            };
-            s.bytes_written = if first {
-                summary.bytes_written
-            } else {
-                s.bytes_written
-                    .zip(summary.bytes_written)
-                    .map(|(a, b)| a + b)
-            };
         });
     }
 }
@@ -160,8 +162,9 @@ impl<S: Sink> Sink for MetricsSink<S> {
         &self,
         request: Self::Request,
         schema: SchemaRef,
-        options: WriteOptions,
+        mut options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
+        self.metrics.observe_io(&mut options);
         let observation = Observation::new(&self.metrics, Operation::Other);
         let inner = self.inner.open(request, schema, options).await?;
         self.metrics.update(|s| s.sessions_opened += 1);
@@ -309,9 +312,10 @@ impl<S: ParallelSink> ParallelSink for MetricsSink<S> {
         &self,
         request: Self::Request,
         schema: SchemaRef,
-        options: WriteOptions,
+        mut options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
+        self.metrics.observe_io(&mut options);
         let observation = Observation::new(&self.metrics, Operation::Other);
         let session = self
             .inner

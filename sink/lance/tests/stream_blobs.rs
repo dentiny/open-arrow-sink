@@ -41,8 +41,16 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
     let storage = storage();
     let url = storage.url("雪 output%20/").unwrap();
     let sink = LanceDatasetSink::new(storage);
+    let io = open_arrow_sink_core::IoMetrics::default();
     let mut writer = sink
-        .open(url.clone(), input().schema(), options())
+        .open(
+            url.clone(),
+            input().schema(),
+            WriteOptions {
+                io_metrics: Some(io.clone()),
+                ..options()
+            },
+        )
         .await
         .unwrap();
     let mut blob = writer.create_blob().await.unwrap();
@@ -74,7 +82,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .unwrap();
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_written, 3);
-    assert!(summary.bytes_written.unwrap() > 17 * 1024 * 1024);
+    assert!(io.snapshot().bytes_written > 17 * 1024 * 1024);
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let actual = dataset
         .scan()
@@ -200,4 +208,37 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
     writer.commit().await.unwrap();
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
+}
+
+#[rstest::rstest]
+#[case::abort(false)]
+#[case::failed_commit(true)]
+#[tokio::test]
+async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: bool) {
+    let storage = storage();
+    let io = open_arrow_sink_core::IoMetrics::default();
+    let mut writer = LanceDatasetSink::new(storage.clone())
+        .open(
+            storage.url("io-failure").unwrap(),
+            input().schema(),
+            WriteOptions {
+                io_metrics: Some(io.clone()),
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new(vec![b'x'; 4096])).await.unwrap();
+    let handle = blob.finish().await.unwrap();
+    assert_eq!(io.snapshot().bytes_written, 4096);
+    drop(handle);
+    if fail_commit {
+        // Dropping an unfinished blob makes commit fail before publication.
+        drop(writer.create_blob().await.unwrap());
+        assert!(writer.commit().await.is_err());
+    } else {
+        writer.abort().await.unwrap();
+    }
+    assert!(io.snapshot().bytes_written >= 4096);
 }

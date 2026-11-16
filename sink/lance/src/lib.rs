@@ -14,6 +14,7 @@ mod write_options;
 pub use sink::LanceDatasetSink;
 
 mod index;
+mod io_metrics;
 
 mod parallel;
 

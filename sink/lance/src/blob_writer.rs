@@ -88,7 +88,9 @@ impl Writer for BlobDatasetWriter {
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;
-        Ok(self.destination.summary(self.rows))
+        Ok(WriteSummary {
+            rows_written: self.rows,
+        })
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {

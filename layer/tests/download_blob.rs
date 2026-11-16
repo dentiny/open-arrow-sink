@@ -127,7 +127,6 @@ impl Writer for CaptureWriter {
         state.committed = true;
         Ok(WriteSummary {
             rows_written: state.batches.iter().map(|b| b.num_rows() as u64).sum(),
-            ..Default::default()
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -838,4 +837,89 @@ async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it()
         Err(open_arrow_sink_core::Error::Unsupported(_))
     ));
     assert!(capture.0.lock().unwrap().schema.is_none());
+}
+
+#[tokio::test]
+async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
+    let _request_budget = REQUEST_BUDGET.lock().await;
+    let server = server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+        Duration::ZERO,
+    )
+    .await;
+    let input = batch(vec![Some(&server.url)]);
+    let layer = open_arrow_sink_layer::MetricsLayer::default();
+    let metrics = layer.metrics();
+    let sink = Capture::default()
+        .layer(download_layer(["url".to_owned()].into()))
+        .layer(layer);
+    let mut writer = sink
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    writer.write(input).await.unwrap();
+    assert_eq!(metrics.snapshot().bytes_read, 3);
+    writer.abort().await.unwrap();
+    assert_eq!(metrics.snapshot().bytes_read, 3);
+    assert_eq!(metrics.snapshot().rows_committed, 0);
+}
+
+#[rstest::rstest]
+#[case::failed_download(false)]
+#[case::cancelled_download(true)]
+#[tokio::test]
+async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: bool) {
+    let _request_budget = REQUEST_BUDGET.lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (release, released) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabc")
+            .await
+            .unwrap();
+        // Leave the body incomplete until the first chunk has been consumed.
+        let _ = released.await;
+    });
+    let server = Server { url, task };
+    let input = batch(vec![Some(&server.url)]);
+    let layer = open_arrow_sink_layer::MetricsLayer::default();
+    let metrics = layer.metrics();
+    let sink = Capture::default()
+        .layer(download_layer(["url".to_owned()].into()))
+        .layer(layer);
+    let mut writer = sink
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    let mut write = Box::pin(writer.write(input));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut write => panic!("body should still be incomplete: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                    if metrics.snapshot().bytes_read == 3 { break; }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    release.send(()).unwrap();
+    if cancel {
+        drop(write);
+    } else {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), write)
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert!(writer.commit().await.is_err());
+    assert_eq!(metrics.snapshot().bytes_read, 3);
+    assert_eq!(metrics.snapshot().rows_committed, 0);
 }

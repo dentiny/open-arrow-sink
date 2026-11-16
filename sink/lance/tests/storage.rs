@@ -40,7 +40,9 @@ async fn shared_operator_commit_indexes_and_read_back() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("雪 output%20/").unwrap();
+    let io = open_arrow_sink_core::IoMetrics::default();
     let options = WriteOptions {
+        io_metrics: Some(io.clone()),
         indexes: vec![IndexSpec::new("value", IndexType::Scalar)],
         ..write_options()
     };
@@ -55,8 +57,8 @@ async fn shared_operator_commit_indexes_and_read_back() {
     }
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_written, 12);
-    assert_gt!(summary.bytes_read.unwrap(), 0);
-    assert_gt!(summary.bytes_written.unwrap(), 0);
+    assert_gt!(io.snapshot().bytes_read, 0);
+    assert_gt!(io.snapshot().bytes_written, 0);
     let dataset = sink
         .dataset_builder(url.clone())
         .unwrap()
@@ -270,12 +272,21 @@ async fn io_metrics_are_isolated_per_session() {
     let sink = LanceDatasetSink::new(store.clone());
     let mut totals = Vec::new();
     for name in ["first", "second"] {
+        let io = open_arrow_sink_core::IoMetrics::default();
         let mut writer = sink
-            .open(store.url(name).unwrap(), batch().schema(), write_options())
+            .open(
+                store.url(name).unwrap(),
+                batch().schema(),
+                WriteOptions {
+                    io_metrics: Some(io.clone()),
+                    ..write_options()
+                },
+            )
             .await
             .unwrap();
         writer.write(batch()).await.unwrap();
-        totals.push(writer.commit().await.unwrap().bytes_written.unwrap());
+        writer.commit().await.unwrap();
+        totals.push(io.snapshot().bytes_written);
     }
     assert!(totals[0] > 0);
     // Identical output shapes should have comparable counters, not accumulate.

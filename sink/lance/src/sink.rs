@@ -28,16 +28,20 @@ impl LanceDatasetSink {
         self.sources = self.sources.with_storage(storage);
         self
     }
-    fn resolve(&self, url: Url) -> Result<NativeStorage> {
+    fn resolve(
+        &self,
+        url: Url,
+        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+    ) -> Result<NativeStorage> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         };
-        NativeStorage::new(storage, url, self.sources.clone())
+        NativeStorage::new(storage, url, self.sources.clone(), metrics)
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
-        Ok(self.resolve(url)?.dataset_builder())
+        Ok(self.resolve(url, None)?.dataset_builder())
     }
 }
 
@@ -80,7 +84,7 @@ impl Sink for LanceDatasetSink {
         if storage_schema != schema {
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
-            let mut destination = self.resolve(url)?;
+            let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
             destination
                 .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
                 .await?;
@@ -113,7 +117,7 @@ impl ParallelSink for LanceDatasetSink {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
-        let mut destination = self.resolve(url)?;
+        let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
         destination.prepare(&encoding_schema, options.mode).await?;
         let writers = (0..count.get())
             .map(|_| {

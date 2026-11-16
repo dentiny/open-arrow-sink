@@ -36,10 +36,7 @@ impl SessionCommitter<(u64, Vec<iceberg::spec::DataFile>)> for IcebergCommitter 
             // Retain data on error: catalog publication may have succeeded.
             tx.commit(self.catalog.as_ref()).await.map_err(backend)?;
         }
-        Ok(WriteSummary {
-            rows_written,
-            ..Default::default()
-        })
+        Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

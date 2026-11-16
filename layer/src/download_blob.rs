@@ -91,6 +91,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             Some(pool) => pool.clone(),
             None => DownloadPool::global()?,
         };
+        let io_metrics = options.io_metrics.clone();
         let inner = self
             .inner
             .open(request, output_schema.clone(), options)
@@ -102,7 +103,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             indices,
             pool,
             failed: false,
-            bytes_downloaded: 0,
+            io_metrics,
         }))
     }
 }
@@ -114,7 +115,7 @@ struct DownloadBlobWriter {
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
     failed: bool,
-    bytes_downloaded: u64,
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
     match array.data_type() {
@@ -136,11 +137,6 @@ fn url_value(array: &dyn Array, row: usize) -> &str {
         _ => unreachable!("validated at open"),
     }
 }
-struct DownloadedBlob {
-    placement: BlobPlacement,
-    bytes_read: u64,
-}
-
 async fn download(
     pool: Arc<DownloadPool>,
     url: String,
@@ -148,22 +144,21 @@ async fn download(
     name: String,
     column: usize,
     row: usize,
-) -> Result<DownloadedBlob> {
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+) -> Result<BlobPlacement> {
     let result = async {
         let mut stream = pool.stream(&url).await?;
-        let mut bytes = 0;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            bytes += chunk.as_ref().len() as u64;
+            if let Some(metrics) = &io_metrics {
+                metrics.record_read(chunk.as_ref().len() as u64);
+            }
             native.write(chunk).await?;
         }
-        Ok(DownloadedBlob {
-            placement: BlobPlacement {
-                column,
-                row,
-                blob: native.finish().await?,
-            },
-            bytes_read: bytes,
+        Ok(BlobPlacement {
+            column,
+            row,
+            blob: native.finish().await?,
         })
     }
     .await
@@ -214,14 +209,11 @@ impl Writer for DownloadBlobWriter {
                         self.schema.field(column).name().clone(),
                         column,
                         row,
+                        self.io_metrics.clone(),
                     ));
                 }
                 match active.next().await {
-                    Some(result) => {
-                        let downloaded = result?;
-                        self.bytes_downloaded += downloaded.bytes_read;
-                        blobs.push(downloaded.placement);
-                    }
+                    Some(result) => blobs.push(result?),
                     None => break,
                 }
             }
@@ -237,11 +229,7 @@ impl Writer for DownloadBlobWriter {
             let _ = self.inner.abort().await;
             return Err(error::download_aborted());
         }
-        let mut summary = self.inner.commit().await?;
-        if let Some(bytes) = &mut summary.bytes_read {
-            *bytes += self.bytes_downloaded;
-        }
-        Ok(summary)
+        self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.inner.abort().await

@@ -13,14 +13,19 @@ pub(crate) struct NativeStorage {
     pub storage: Storage,
     pub url: Url,
     session: Arc<Session>,
-    pub io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
+    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, url: Url, sources: StorageResolver) -> Result<Self> {
+    pub fn new(
+        storage: Storage,
+        url: Url,
+        sources: StorageResolver,
+        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+    ) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
-        let io_tracker = Arc::new(lance_io::utils::tracking_store::IOTracker::default());
+        let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
         let provider = Arc::new(Provider {
             destination: storage.clone(),
             sources: sources.clone(),
@@ -40,14 +45,6 @@ impl NativeStorage {
             io_tracker,
             reserved: false,
         })
-    }
-    pub fn summary(&self, rows_written: u64) -> open_arrow_sink_core::WriteSummary {
-        let stats = self.io_tracker.stats();
-        open_arrow_sink_core::WriteSummary {
-            rows_written,
-            bytes_read: Some(stats.read_bytes),
-            bytes_written: Some(stats.written_bytes),
-        }
     }
     pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
         if mode == WriteMode::Append {

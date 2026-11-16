@@ -12,15 +12,18 @@ use std::{num::NonZeroUsize, sync::Arc};
 struct Behavior {
     blocked: bool,
     unmeasured: bool,
+    fail_commit: bool,
 }
 struct TestSink;
 struct Data {
     schema: SchemaRef,
     rows: u64,
     blocked: bool,
+    io: Option<open_arrow_sink_core::IoMetrics>,
 }
 struct Committer {
-    unmeasured: bool,
+    io: Option<open_arrow_sink_core::IoMetrics>,
+    fail_commit: bool,
 }
 #[async_trait]
 impl DataWriter for Data {
@@ -29,6 +32,9 @@ impl DataWriter for Data {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        if let Some(io) = &self.io {
+            io.record_write(10);
+        }
         if self.blocked {
             futures::future::pending::<()>().await;
         }
@@ -45,10 +51,16 @@ impl DataWriter for Data {
 #[async_trait]
 impl SessionCommitter<u64> for Committer {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+        if let Some(io) = &self.io {
+            io.record_read(5);
+        }
+        if self.fail_commit {
+            return Err(open_arrow_sink_core::Error::Unsupported(
+                "commit failed".into(),
+            ));
+        }
         Ok(WriteSummary {
             rows_written: outputs.iter().sum(),
-            bytes_read: (!self.unmeasured).then_some(5),
-            bytes_written: (!self.unmeasured).then_some(10),
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -89,9 +101,10 @@ impl ParallelSink for TestSink {
         &self,
         request: Behavior,
         schema: SchemaRef,
-        _: WriteOptions,
+        options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<u64>> {
+        let io = options.io_metrics.filter(|_| !request.unmeasured);
         Ok(WriteSession {
             writers: (0..count.get())
                 .map(|_| {
@@ -99,11 +112,13 @@ impl ParallelSink for TestSink {
                         schema: schema.clone(),
                         rows: 0,
                         blocked: request.blocked,
+                        io: io.clone(),
                     }) as Box<dyn DataWriter<Output = u64>>
                 })
                 .collect(),
             committer: Box::new(Committer {
-                unmeasured: request.unmeasured,
+                io,
+                fail_commit: request.fail_commit,
             }),
         })
     }
@@ -149,8 +164,8 @@ async fn measures_one_commit_per_session_without_double_counting(#[case] placeme
     assert_eq!(snapshot.batches_accepted, 8);
     assert_eq!(snapshot.rows_accepted, 24);
     assert_eq!(snapshot.rows_committed, 24);
-    assert_eq!(snapshot.bytes_read, Some(10));
-    assert_eq!(snapshot.bytes_written, Some(20));
+    assert_eq!(snapshot.bytes_read, 10);
+    assert_eq!(snapshot.bytes_written, 80);
     assert_eq!(snapshot.failed_operations, 0);
 }
 
@@ -178,10 +193,11 @@ async fn cancellation_and_abort_are_observable_and_terminal() {
     assert_eq!(snapshot.sessions_aborted, 1);
     assert_eq!(snapshot.rows_accepted, 0);
     assert_eq!(snapshot.failed_operations, 2);
+    assert_eq!(snapshot.bytes_written, 10);
 }
 
 #[tokio::test]
-async fn unmeasured_commits_do_not_report_incomplete_byte_totals() {
+async fn uninstrumented_sessions_leave_measured_totals_intact() {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
     let sink = TestSink.layer(layer);
@@ -201,8 +217,8 @@ async fn unmeasured_commits_do_not_report_incomplete_byte_totals() {
         .unwrap();
     }
     assert_eq!(metrics.snapshot().sessions_committed, 3);
-    assert_eq!(metrics.snapshot().bytes_read, None);
-    assert_eq!(metrics.snapshot().bytes_written, None);
+    assert_eq!(metrics.snapshot().bytes_read, 10);
+    assert_eq!(metrics.snapshot().bytes_written, 0);
     sink.open(Behavior::default(), input().schema(), options())
         .await
         .unwrap()
@@ -210,4 +226,52 @@ async fn unmeasured_commits_do_not_report_incomplete_byte_totals() {
         .await
         .unwrap();
     assert_eq!(metrics.snapshot().sessions_aborted, 1);
+}
+
+#[rstest::rstest]
+#[case::abort(false)]
+#[case::failed_commit(true)]
+#[tokio::test]
+async fn io_is_visible_before_commit_and_retained_after_failure(#[case] fail_commit: bool) {
+    let layer = MetricsLayer::default();
+    let metrics = layer.metrics();
+    let sink = TestSink.layer(layer);
+    let mut writer = sink
+        .open(
+            Behavior {
+                fail_commit,
+                ..Default::default()
+            },
+            input().schema(),
+            options(),
+        )
+        .await
+        .unwrap();
+    writer.write(input()).await.unwrap();
+    assert_eq!(metrics.snapshot().bytes_written, 10);
+    assert_eq!(metrics.snapshot().rows_committed, 0);
+    if fail_commit {
+        assert!(writer.commit().await.is_err());
+        assert_eq!(metrics.snapshot().bytes_read, 5);
+    } else {
+        writer.abort().await.unwrap();
+    }
+    assert_eq!(metrics.snapshot().bytes_written, 10);
+    assert_eq!(metrics.snapshot().sessions_committed, 0);
+}
+
+#[tokio::test]
+async fn shared_handle_in_nested_layers_does_not_duplicate_io() {
+    let metrics = open_arrow_sink_layer::WriteMetrics::default();
+    let sink = TestSink
+        .layer(MetricsLayer::new(metrics.clone()))
+        .layer(MetricsLayer::new(metrics.clone()));
+    let mut writer = sink
+        .open(Behavior::default(), input().schema(), options())
+        .await
+        .unwrap();
+    writer.write(input()).await.unwrap();
+    writer.commit().await.unwrap();
+    assert_eq!(metrics.snapshot().bytes_written, 10);
+    assert_eq!(metrics.snapshot().bytes_read, 5);
 }

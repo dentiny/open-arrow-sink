@@ -116,5 +116,5 @@ To build your own decorator, follow [extend a layer](../docs/extending-layers.md
 `MetricsLayer` wraps any Sink and forwards ParallelSink/native blob interfaces.
 Create a layer, keep its cloneable `metrics()` handle, then install the layer and
 inspect `snapshot()` for lifecycle, accepted/committed rows, durations, failures,
-and optional backend byte totals. The layer collects observations; backends remain
+and measured backend payload bytes (including unsuccessful sessions). The layer collects observations; backends remain
 responsible for measuring real encoded I/O. See [metrics contracts](../docs/options.md#observing-sessions-with-metricslayer).

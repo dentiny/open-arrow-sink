@@ -63,17 +63,19 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
     assert_eq!(budget.buffered_bytes(), 0);
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_written, 3);
-    assert!(summary.bytes_read.unwrap() >= 17 * 1024 * 1024);
-    assert!(summary.bytes_written.unwrap() > 17 * 1024 * 1024);
     let observed = outer_metrics.snapshot();
     assert_eq!(observed.rows_committed, 3);
     assert_eq!(observed.rows_accepted, 3);
-    assert_eq!(observed.bytes_read, summary.bytes_read);
-    assert_eq!(observed.bytes_written, summary.bytes_written);
+    assert!(observed.bytes_read >= 17 * 1024 * 1024);
+    assert!(observed.bytes_written > 17 * 1024 * 1024);
+    assert_eq!(
+        observed.bytes_read - inner_metrics.snapshot().bytes_read,
+        17 * 1024 * 1024
+    );
     assert_eq!(inner_metrics.snapshot().rows_committed, 3);
     assert_eq!(
         inner_metrics.snapshot().bytes_written,
-        summary.bytes_written
+        observed.bytes_written
     );
     drop(server);
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();

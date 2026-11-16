@@ -18,7 +18,7 @@ use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
 pub(crate) struct BlobSession {
     pub failed: AtomicBool,
-    io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
+    io_tracker: Arc<crate::io_metrics::TrackedIo>,
     pub active: AtomicUsize,
     storage: Storage,
     relative_prefix: String,
@@ -29,7 +29,7 @@ impl BlobSession {
     pub fn new(
         storage: Storage,
         dataset: &Url,
-        io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
+        io_tracker: Arc<crate::io_metrics::TrackedIo>,
     ) -> Self {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
         let directory = dataset.join(&relative_prefix).unwrap();

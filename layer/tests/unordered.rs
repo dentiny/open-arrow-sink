@@ -162,7 +162,6 @@ impl SessionCommitter<u64> for TestCommitter {
         state.rows = outputs.into_iter().sum();
         Ok(WriteSummary {
             rows_written: state.rows,
-            ..Default::default()
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {

@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub(crate) struct Provider {
     pub destination: Storage,
     pub sources: StorageResolver,
-    pub io_tracker: Arc<lance_io::utils::tracking_store::IOTracker>,
+    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
 }
 impl Provider {
     fn resolve(&self, url: &Url) -> open_arrow_sink_core::Result<Storage> {
