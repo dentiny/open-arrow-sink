@@ -9,11 +9,13 @@ index construction.
 ```rust,ignore
 use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
 
-let mut writer = LanceDatasetSink::default().open(
-    "file:///tmp/new.lance".parse()?,
-    schema,
-    WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
-).await?;
+let mut writer = LanceDatasetSink::default()
+    .open(
+        "file:///tmp/new.lance".parse()?,
+        schema,
+        WriteOptions::default().with_ordering(Ordering::Unordered),
+    )
+    .await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
@@ -52,20 +54,22 @@ The native Lance dependency needs `protoc` available when building from source.
 Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
 
 ```rust,ignore
-use open_arrow_sink::{IndexType, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
+use open_arrow_sink::{
+    IndexSpec, IndexType, Ordering, Sink, WriteOptions, lance::LanceDatasetSink,
+};
 
-let mut writer = LanceDatasetSink::default().open(
-    "file:///tmp/indexed.lance".parse()?,
-    schema,
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        indexes: vec![
-            IndexSpec::new("id", IndexType::Scalar),
-            IndexSpec::new("embedding", IndexType::Vector),
-        ],
-        ..WriteOptions::default()
-    },
-).await?;
+let mut writer = LanceDatasetSink::default()
+    .open(
+        "file:///tmp/indexed.lance".parse()?,
+        schema,
+        WriteOptions::default()
+            .with_ordering(Ordering::Unordered)
+            .with_indexes(vec![
+                IndexSpec::new("id", IndexType::Scalar),
+                IndexSpec::new("embedding", IndexType::Vector),
+            ]),
+    )
+    .await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
@@ -103,7 +107,9 @@ when one fails, and the original dataset handle is refreshed after they finish.
 The first observed error is returned after all tasks complete. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
 `Error::Backend` contains an `IndexCommitError` identifying the failed index type
-and column, or a task failure if a worker panics. Dropping the commit future aborts
+and column, or a task failure if a worker panics. Its `summary` retains the
+committed row count even when indexing fails; retry index construction rather
+than rewriting already committed rows. Dropping the commit future aborts
 the task set; native publication may still have an uncertain outcome.
 
 A runnable index construction example (destination must not exist):
@@ -138,18 +144,16 @@ Lance advertises `SinkCapability.supports_blob_handle`. Configure each session
 through `WriteOptions.blob_handle`; the storage thresholds match Lance `BlobFieldOptions`:
 
 ```rust
-use std::num::NonZeroUsize;
 use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Ordering, WriteOptions};
+use std::num::NonZeroUsize;
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    blob_handle: Some(BlobHandleConfig {
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_blob_handle(Some(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
-    }),
-    ..Default::default()
-};
+    }));
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with
@@ -168,6 +172,26 @@ The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None
 or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
 `DownloadBlobLayer` already creates destination-owned managed streams directly.
+
+For a runnable parallel ingestion workflow, use:
+
+```sh
+cargo run --locked -p open-arrow-sink-lance --example parallel_native_blobs
+```
+
+The self-contained example sends a batch to each of eight physical writers,
+mixes materialized bytes with native source URIs, and commits one data manifest.
+It verifies inline, packed, and dedicated blob readback after removing the source
+objects. `with_source_storage` routes the independent source operator; use the
+same mechanism for caller-configured S3 credentials and endpoints. In an ordinary
+pipeline, native logical blob batches can also be dispatched through
+`UnorderedWriteLayer`; actual writer utilization depends on available batches.
+
+This route does not make `DownloadBlobLayer` or session-owned streamed handles
+parallel. `DataWriter` has no `create_blob`/`write_with_blobs` interface, and a
+streamed handle must remain bound to its owning session. Extending that path
+requires a shared handle-ownership, incomplete-upload, and cancellation protocol;
+removing `validate_parallel_blob_schema` alone would not supply those guarantees.
 
 ## Compression
 
