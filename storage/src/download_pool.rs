@@ -2,15 +2,11 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Result};
+use open_arrow_sink_core::{BlobChunk, Error, Result};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, services::Http};
 use tokio::sync::Semaphore;
 
-use crate::{
-    HttpConcurrencyLimitLayer, Storage, StorageConfig,
-    error::{self, backend},
-    validation,
-};
+use crate::{HttpConcurrencyLimitLayer, Storage, StorageConfig, error, validation};
 
 // Placeholder namespace for HTTP storage; requests use each complete source URL.
 const HTTP_PLACEHOLDER: &str = "https://download.invalid/";
@@ -62,8 +58,12 @@ impl DownloadPool {
     pub fn http_storage(config: StorageConfig) -> Result<Storage> {
         opendal::install_default();
         let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
-        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(backend)?;
-        Storage::try_new(operator, HTTP_PLACEHOLDER.parse().map_err(backend)?, config)
+        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(Error::backend)?;
+        Storage::try_new(
+            operator,
+            HTTP_PLACEHOLDER.parse().map_err(Error::backend)?,
+            config,
+        )
     }
 
     /// Route HTTP(S) downloads through `storage`, keeping its policies, request
@@ -101,7 +101,7 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let url = crate::Url::parse(source).map_err(backend)?;
+        let url = crate::Url::parse(source).map_err(Error::backend)?;
         let stream_slot = self
             .stream_slots
             .clone()
@@ -125,10 +125,10 @@ impl DownloadPool {
         let reader = operator
             .reader(&path)
             .await
-            .map_err(backend)?
+            .map_err(Error::backend)?
             .into_stream(..)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
@@ -139,7 +139,7 @@ impl DownloadPool {
                 let reservation = buffers.clone().acquire_many_owned(capacity as u32)
                     .await.expect("pool is never closed");
                 if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(backend)? else { break };
+                    let Some(buffer) = reader.try_next().await.map_err(Error::backend)? else { break };
                     pending = buffer;
                 }
                 // A bounded copy avoids retaining a larger OpenDAL backing allocation.

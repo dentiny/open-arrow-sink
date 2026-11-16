@@ -5,9 +5,7 @@ use iceberg::{
     table::Table,
     transaction::{ApplyTransactionAction, Transaction},
 };
-use open_arrow_sink_core::{Result, SessionCommitter, WriteSummary, async_trait};
-
-use crate::error::backend;
+use open_arrow_sink_core::{Error, Result, SessionCommitter, WriteSummary, async_trait};
 
 pub(crate) struct IcebergCommitter {
     pub catalog: Arc<dyn Catalog>,
@@ -32,9 +30,11 @@ impl SessionCommitter<(u64, Vec<iceberg::spec::DataFile>)> for IcebergCommitter 
                 .fast_append()
                 .add_data_files(files)
                 .apply(tx)
-                .map_err(backend)?;
+                .map_err(Error::backend)?;
             // Retain data on error: catalog publication may have succeeded.
-            tx.commit(self.catalog.as_ref()).await.map_err(backend)?;
+            tx.commit(self.catalog.as_ref())
+                .await
+                .map_err(Error::backend)?;
         }
         Ok(WriteSummary { rows_written })
     }

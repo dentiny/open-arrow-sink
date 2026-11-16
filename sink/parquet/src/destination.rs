@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
+use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
@@ -55,7 +55,7 @@ impl Destination {
     }
     async fn reserve(&self) -> Result<()> {
         if self.storage.prefix_exists(&self.directory).await? {
-            return Err(crate::error::destination_exists());
+            return Err(Error::DestinationExists);
         }
         self.storage
             .create(&self.child(RESERVATION), Bytes::new())
@@ -71,7 +71,7 @@ impl Destination {
         self.storage.create(&path, Bytes::new()).await?;
         let result = async {
             let file = FileWriter(self.storage.writer(&path).await?);
-            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(crate::error::backend)
+            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
         }
         .await;
         if result.is_err() && self.cleanup_on_error {

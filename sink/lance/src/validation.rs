@@ -1,8 +1,8 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
-    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Compression, CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability,
+    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -137,7 +137,7 @@ pub(crate) async fn validate_existing_dataset(
     schema: Option<&Schema>,
     storage_version: Option<&str>,
 ) -> Result<()> {
-    let dataset = builder.load().await.map_err(error::backend)?;
+    let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
         lance_file::version::ConcreteFileVersion::V2_2
@@ -158,7 +158,7 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(error::schema_mismatch());
+        return Err(Error::SchemaMismatch);
     }
     Ok(())
 }

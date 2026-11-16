@@ -124,7 +124,10 @@ fn storage_policies_validate_without_io() {
         }),
         timeout: None,
     };
-    assert!(config.apply(operator.clone()).is_err());
+    assert!(matches!(
+        config.apply(operator.clone()),
+        Err(open_arrow_sink_core::Error::InvalidConfig(_))
+    ));
     let config = StorageConfig {
         retry: None,
         timeout: Some(TimeoutConfig {
@@ -132,7 +135,10 @@ fn storage_policies_validate_without_io() {
             ..Default::default()
         }),
     };
-    assert!(config.apply(operator).is_err());
+    assert!(matches!(
+        config.apply(operator),
+        Err(open_arrow_sink_core::Error::InvalidConfig(_))
+    ));
     assert!(
         StorageConfig {
             retry: Some(RetryConfig {

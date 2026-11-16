@@ -3,10 +3,8 @@ use std::sync::Arc;
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, RecordBatch, Result, SchemaRef, StructuralEncoding,
+    Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
-
-use crate::error::backend;
 
 const CODEC: &str = "lance-encoding:compression";
 const STRUCTURAL: &str = "lance-encoding:structural-encoding";
@@ -159,7 +157,7 @@ pub(crate) fn writer_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Rec
         .with_match_field_names(false)
         .with_row_count(Some(batch.num_rows()));
     RecordBatch::try_new_with_options(schema.clone(), batch.columns().to_vec(), &options)
-        .map_err(backend)
+        .map_err(Error::backend)
 }
 
 #[cfg(test)]

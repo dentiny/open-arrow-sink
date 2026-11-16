@@ -3,14 +3,14 @@ use std::sync::{Arc, atomic::Ordering};
 use datafusion_physical_plan::SendableRecordBatchStream;
 use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary,
-    Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
+    WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, worker_stopped},
+    error::worker_stopped,
     index::build_indexes,
     parallel::{ChannelStream, Message},
     storage::NativeStorage,
@@ -85,13 +85,17 @@ impl Writer for BlobDatasetWriter {
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        let mut dataset = self
+            .task
+            .await
+            .map_err(Error::backend)?
+            .map_err(Error::backend)?;
         let summary = WriteSummary {
             rows_written: self.rows,
         };
         build_indexes(&mut dataset, &self.options.indexes, &summary)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         Ok(summary)
     }
 

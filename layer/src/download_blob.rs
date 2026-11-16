@@ -6,15 +6,11 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, Poison, RecordBatch, Result, SchemaRef,
-    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, Poison, RecordBatch, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::{
-    DownloadPool,
-    error::{self, backend},
-    validation::validate_download_config,
-};
+use crate::{DownloadPool, error, validation::validate_download_config};
 
 /// Stream selected URL columns into native blobs and attach their descriptors.
 /// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
@@ -213,8 +209,8 @@ impl Writer for DownloadBlobWriter {
                     None => break,
                 }
             }
-            let output =
-                RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
+            let output = RecordBatch::try_new(self.output_schema.clone(), columns)
+                .map_err(Error::backend)?;
             self.inner.write_with_blobs(output, blobs).await?;
         }
         self.state.complete();
