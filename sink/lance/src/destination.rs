@@ -23,6 +23,7 @@ impl LanceDestination {
         storage: Storage,
         url: Url,
         sources: Arc<StorageResolver>,
+        downloader: Arc<open_arrow_sink_storage::BlobDownloader>,
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<Self> {
         let path = storage.path(&url)?.as_dir();
@@ -36,7 +37,7 @@ impl LanceDestination {
         }
         Ok(Self {
             storage,
-            downloader: Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults()?),
+            downloader,
             url,
             path,
             session,
@@ -105,7 +106,9 @@ mod tests {
         let url = destination
             .url(&ObjectPath::parse("dataset/").unwrap())
             .unwrap();
-        let native = LanceDestination::new(destination, url, sources, None).unwrap();
+        let downloader =
+            Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults().unwrap());
+        let native = LanceDestination::new(destination, url, sources, downloader, None).unwrap();
         let registry = native.session.store_registry();
         assert!(registry.get_provider("destination-only").is_some());
         let provider = registry.get_provider(source_url.scheme()).unwrap();

@@ -103,9 +103,9 @@ impl LanceDatasetSink {
             storage.with_write_options(options),
             url,
             sources,
+            downloader,
             options.io_metrics.as_ref(),
         )?;
-        destination.downloader = downloader;
         destination.encoding_buffer_size = self.encoding_buffer_size;
         Ok(destination)
     }
