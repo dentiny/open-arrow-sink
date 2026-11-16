@@ -76,6 +76,40 @@ For integration details, start with the examples above and the
 cargo doc --workspace --all-features --no-deps --locked --open
 ```
 
+## Downloading PMC PDFs
+
+PMC metadata from open-arrow-access includes S3 `pdf_url` strings such as
+`s3://pmc-oa-opendata/PMC10009416.1/PMC10009416.1.pdf?md5=...`.
+The default `OpenDalDownloader` strips a single `md5` query containing exactly
+32 hexadecimal digits before resolving S3 source storage. This treats the query
+as metadata; it does **not** verify the downloaded bytes against that checksum.
+Malformed, duplicate, and additional query parameters are rejected. General
+`Storage` APIs still reject queries, and HTTP(S) downloads preserve their queries.
+
+Register the public bucket separately from destination storage so downloads use
+unsigned requests in `us-east-1`. Enable `opendal/services-s3` on your application's
+OpenDAL dependency (or a sink's AWS facade feature):
+
+```rust,no_run
+use open_arrow_sink::storage::{BlobDownloader, Storage, opendal};
+
+let operator = opendal::Operator::new(
+    opendal::services::S3::default()
+        .bucket("pmc-oa-opendata")
+        .region("us-east-1")
+        .skip_signature(),
+)?;
+let source = Storage::new(operator, "s3://pmc-oa-opendata/".parse()?)?;
+let downloads = BlobDownloader::new(
+    8.try_into()?,
+    (256 * 1024 * 1024).try_into()?,
+)?.with_source_storage(source);
+```
+
+Pass this downloader to the sink's `with_blob_downloader` and select `pdf_url`
+with `DownloadBlobLayer`. Bucket credentials and region remain caller policy;
+the downloader does not infer anonymous access from the URL.
+
 ## Extending and developing
 
 Implement a **sink** for a new destination, or a **layer** for reusable policy or

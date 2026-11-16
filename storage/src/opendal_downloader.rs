@@ -10,6 +10,10 @@ use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, servic
 
 const HTTP_PLACEHOLDER: &str = "https://download.invalid/";
 
+/// Downloads HTTP URLs verbatim (excluding fragments) and resolves other URLs
+/// through source storage. S3 links may include a single `md5=<32 hex digits>`
+/// query: it is stripped as metadata, without verifying the payload checksum.
+/// Other storage URL queries remain unsupported.
 #[derive(Clone, Debug)]
 pub struct OpenDalDownloader {
     http: Operator,
@@ -66,7 +70,7 @@ impl OpenDalDownloader {
 #[async_trait]
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
-        let url = crate::Url::parse(source).map_err(Error::backend)?;
+        let mut url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
             let transport = if self
@@ -91,6 +95,7 @@ impl Downloader for OpenDalDownloader {
             let ctx = operator.base_context().with_http_transport(transport);
             (operator.with_context(ctx), "blob".to_owned())
         } else {
+            validation::normalize_s3_download_url(&mut url);
             let (storage, path) = context.resolve_source(&url)?;
             let operator = storage.operator();
             let operator = if storage

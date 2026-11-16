@@ -120,6 +120,21 @@ pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<(
     Ok(())
 }
 
+/// S3 content links may carry checksum metadata (for example PMC PDFs).
+/// Only a single, well-formed MD5 is discardable; other queries may select an
+/// object version or carry authentication and must retain normal URL rejection.
+/// This validates the metadata's shape, not the downloaded content's checksum.
+pub(crate) fn normalize_s3_download_url(url: &mut Url) {
+    if url.scheme() == "s3"
+        && url
+            .query()
+            .and_then(|query| query.strip_prefix("md5="))
+            .is_some_and(|md5| md5.len() == 32 && md5.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        url.set_query(None);
+    }
+}
+
 pub(crate) fn validate_download_url(source: &str) -> Result<http::Uri> {
     let mut url = url::Url::parse(source).map_err(|_| error::invalid_download_url())?;
     if !matches!(url.scheme(), "http" | "https") {

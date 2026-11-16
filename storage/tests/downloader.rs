@@ -297,3 +297,114 @@ async fn shared_source_observers_count_each_download_once() {
         assert_eq!(independent.snapshot().bytes_read, expected);
     }
 }
+
+#[tokio::test]
+async fn s3_checksum_query_is_metadata_only_for_downloads() {
+    let storage = open_arrow_sink_test_support::memory_storage("s3://pmc-oa-opendata/");
+    let path = ObjectPath::parse("PMC10009416.1/article name.pdf").unwrap();
+    storage.write(&path, BODY.into()).await.unwrap();
+    let mut url = storage.url(&path).unwrap();
+    let downloads = pool(1, 1, BODY.len()).with_source_storage(storage.clone());
+    for checksum in [
+        "0123456789abcdef0123456789abcdef",
+        "0123456789ABCDEF0123456789ABCDEF",
+    ] {
+        url.set_query(Some(&format!("md5={checksum}")));
+        // General storage APIs still reject queries, even on registered stores.
+        assert!(storage.path(&url).is_err());
+        assert!(open_arrow_sink_storage::Storage::from_url(&url).is_err());
+        assert_eq!(
+            downloads.download(url.as_str()).await.unwrap().as_ref(),
+            BODY
+        );
+        assert_eq!(downloads.buffered_bytes(), 0);
+    }
+    for query in [
+        "md5=",
+        "md5=opaque",
+        "md5=0123456789abcdef0123456789abcdeg",
+        "md5=0123456789abcdef0123456789abcdef&versionId=other",
+        "md5=0123456789abcdef0123456789abcdef&md5=0123456789abcdef0123456789abcdef",
+        "versionId=other",
+        "",
+    ] {
+        url.set_query(Some(query));
+        assert!(downloads.download(url.as_str()).await.is_err(), "{query}");
+        assert_eq!(downloads.buffered_bytes(), 0);
+    }
+    url.set_query(Some("md5=0123456789abcdef0123456789abcdef"));
+    url.set_fragment(Some("fragment"));
+    assert!(downloads.download(url.as_str()).await.is_err());
+    url.set_fragment(None);
+    url.set_username("user").unwrap();
+    assert!(downloads.download(url.as_str()).await.is_err());
+}
+
+#[tokio::test]
+async fn checksum_query_is_not_stripped_from_other_protocols() {
+    struct QueryTransport;
+    impl HttpTransport for QueryTransport {
+        async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            assert_eq!(request.uri().query(), Some("md5=opaque&token=keep"));
+            Transport.fetch(request).await
+        }
+    }
+    let downloads = pool(1, 1, BODY.len()).with_downloader(Arc::new(
+        OpenDalDownloader::new(StorageConfig::default())
+            .unwrap()
+            .with_http_transport(HttpTransporter::new(QueryTransport)),
+    ));
+    assert_eq!(
+        downloads
+            .download(&format!("{URL}/blob?md5=opaque&token=keep"))
+            .await
+            .unwrap()
+            .as_ref(),
+        BODY
+    );
+    let storage = open_arrow_sink_test_support::memory_storage("memory://source/");
+    storage
+        .write(&ObjectPath::parse("blob").unwrap(), BODY.into())
+        .await
+        .unwrap();
+    let downloads = pool(1, 1, BODY.len()).with_source_storage(storage);
+    assert!(
+        downloads
+            .download("memory://source/blob?md5=0123456789abcdef0123456789abcdef")
+            .await
+            .is_err()
+    );
+}
+
+#[cfg(feature = "aws")]
+#[tokio::test]
+async fn pmc_download_uses_registered_anonymous_s3_operator() {
+    struct PublicS3;
+    impl HttpTransport for PublicS3 {
+        async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            assert_eq!(request.uri().host(), Some("s3.us-east-1.amazonaws.com"));
+            assert_eq!(
+                request.uri().path(),
+                "/pmc-oa-opendata/PMC10009416.1/PMC10009416.1.pdf"
+            );
+            assert!(request.uri().query().is_none());
+            assert!(!request.headers().contains_key("authorization"));
+            Transport.fetch(request).await
+        }
+    }
+    let operator = opendal::Operator::new(
+        opendal::services::S3::default()
+            .bucket("pmc-oa-opendata")
+            .region("us-east-1")
+            .skip_signature(),
+    )
+    .unwrap();
+    let storage =
+        open_arrow_sink_storage::Storage::new(operator, "s3://pmc-oa-opendata/".parse().unwrap())
+            .unwrap()
+            .with_http_transport(HttpTransporter::new(PublicS3));
+    let downloads = pool(1, 1, BODY.len()).with_source_storage(storage);
+    let url =
+        "s3://pmc-oa-opendata/PMC10009416.1/PMC10009416.1.pdf?md5=0123456789abcdef0123456789abcdef";
+    assert_eq!(downloads.download(url).await.unwrap().as_ref(), BODY);
+}
