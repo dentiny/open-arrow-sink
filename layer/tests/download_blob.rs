@@ -14,7 +14,6 @@ use open_arrow_sink_core::{
     async_trait, validation,
 };
 use open_arrow_sink_layer::DownloadBlobLayer;
-use open_arrow_sink_storage::opendal;
 use open_arrow_sink_test_support::http::{HttpStatus, Reply, Server, serve};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -616,16 +615,25 @@ async fn opendal_preserves_signed_queries_and_escaped_paths() {
 #[tokio::test]
 async fn opendal_timeout_on_body_releases_pool_capacity() {
     use open_arrow_sink_layer::DownloadPool;
-    use opendal::layers::TimeoutLayer;
+    use open_arrow_sink_storage::{StorageConfig, TimeoutConfig};
 
     let (server, mut events) = gated_server().await;
+    let http = DownloadPool::http_storage(StorageConfig {
+        timeout: Some(TimeoutConfig {
+            io_timeout: Duration::from_millis(100),
+            ..TimeoutConfig::default()
+        }),
+        ..StorageConfig::default()
+    })
+    .unwrap();
     let pool = Arc::new(
         DownloadPool::new(
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
         )
         .unwrap()
-        .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_millis(100))),
+        .with_http_storage(http)
+        .unwrap(),
     );
     let layer = download_layer(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
     let input = batch(vec![Some(&server.url)]);
@@ -674,7 +682,7 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
 #[tokio::test]
 async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bool) {
     use open_arrow_sink_layer::DownloadPool;
-    use opendal::layers::{RetryLayer, TimeoutLayer};
+    use open_arrow_sink_storage::{RetryConfig, StorageConfig, TimeoutConfig};
 
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = attempts.clone();
@@ -694,14 +702,20 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
     )
     .unwrap();
     if retry {
-        pool = pool
-            .with_layer(TimeoutLayer::default().with_io_timeout(Duration::from_secs(1)))
-            .with_layer(
-                RetryLayer::default()
-                    .with_min_delay(Duration::from_millis(1))
-                    .with_max_delay(Duration::from_millis(1))
-                    .with_max_times(1),
-            );
+        let http = DownloadPool::http_storage(StorageConfig {
+            retry: Some(RetryConfig {
+                max_retries: 1,
+                min_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                ..RetryConfig::default()
+            }),
+            timeout: Some(TimeoutConfig {
+                io_timeout: Duration::from_secs(1),
+                ..TimeoutConfig::default()
+            }),
+        })
+        .unwrap();
+        pool = pool.with_http_storage(http).unwrap();
     }
     let capture = Capture::default();
     let input = batch(vec![Some(&url)]);

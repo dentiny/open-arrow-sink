@@ -117,10 +117,11 @@ can exceed the transfer-buffer budget; retaining chunks holds their reservations
 Stream concurrency and byte budgets belong to each pool; every constructor
 honors its limits. Without a configured pool, each opened writer gets independent
 default limits. Share an `Arc<DownloadPool>` when writers should share stream and
-transfer budgets. For an HTTP-only budget shared with other pools or storage,
-install clones of one `HttpConcurrencyLimitLayer` using `with_layer`. Transfer
+transfer budgets. HTTP(S) downloads go through the pool's HTTP `Storage`; replace
+it with `with_http_storage(DownloadPool::http_storage(config)?)` to configure
+retries, timeouts, or a request budget shared with other storage. Transfer
 budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
-default; OpenDAL I/O policies can be applied to the pool.
+default.
 
 A failed or cancelled write poisons the session and cancels remaining downloads;
 commit then aborts the inner writer. Existing accepted batches may have created
