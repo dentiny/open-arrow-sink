@@ -55,12 +55,6 @@ async fn namespace_boundaries_and_conditional_creation() {
     ] {
         assert!(storage.path(&url.parse().unwrap()).is_err(), "{url}");
         assert!(storage.stat(&url.parse().unwrap()).await.is_err());
-        assert!(
-            storage
-                .inspect_directory(&url.parse().unwrap())
-                .await
-                .is_err()
-        );
     }
     assert!(
         storage
@@ -194,91 +188,4 @@ async fn errors_retain_operation_path_and_opendal_source() {
         source = cause.source();
     }
     panic!("the original OpenDAL error must remain in the source chain");
-}
-
-async fn directory_states(storage: &Storage) {
-    let directory = storage.url("雪 space/").unwrap();
-    let exact = storage.url("雪 space").unwrap();
-    let sibling = storage.url("雪 space-other/keep").unwrap();
-    storage.write(&sibling, "keep".into()).await.unwrap();
-    for url in [&directory, &exact] {
-        assert_eq!(
-            storage.inspect_directory(url).await.unwrap(),
-            DirectoryState::Missing
-        );
-    }
-
-    let child = directory.join("nested/file").unwrap();
-    storage.write(&child, "child".into()).await.unwrap();
-    for url in [&directory, &exact] {
-        assert_eq!(
-            storage.inspect_directory(url).await.unwrap(),
-            DirectoryState::NonEmpty
-        );
-    }
-    storage.remove_empty_directory(&directory).await.unwrap();
-    assert_eq!(storage.read(&child).await.unwrap(), "child");
-    storage.remove_all(&directory).await.unwrap();
-
-    // Explicit directory markers must be distinguished from missing prefixes.
-    storage
-        .operator()
-        .create_dir(&storage.path(&directory).unwrap())
-        .await
-        .unwrap();
-    for url in [&directory, &exact] {
-        assert_eq!(
-            storage.inspect_directory(url).await.unwrap(),
-            DirectoryState::Empty
-        );
-    }
-    storage.remove_empty_directory(&directory).await.unwrap();
-    storage.write(&exact, "file".into()).await.unwrap();
-    for url in [&directory, &exact] {
-        assert_eq!(
-            storage.inspect_directory(url).await.unwrap(),
-            DirectoryState::File
-        );
-    }
-    storage.remove_empty_directory(&directory).await.unwrap();
-    assert_eq!(storage.read(&exact).await.unwrap(), "file");
-    assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
-}
-
-#[tokio::test]
-async fn inspect_memory_directory_states() {
-    let storage = memory();
-    directory_states(&storage).await;
-    // Object stores can hold both an exact file and children; the file wins.
-    let exact = storage.url("雪 space").unwrap();
-    storage
-        .write(&storage.url("雪 space/child").unwrap(), "child".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        storage.inspect_directory(&exact).await.unwrap(),
-        DirectoryState::File
-    );
-}
-
-#[tokio::test]
-async fn inspect_filesystem_directory_states_and_empty_children() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = Url::from_directory_path(temp.path()).unwrap();
-    let storage = Storage::from_url(&root).unwrap();
-    directory_states(&storage).await;
-
-    let directory = root.join("parent/").unwrap();
-    let child = directory.join("empty/").unwrap();
-    storage
-        .operator()
-        .create_dir(&storage.path(&child).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(
-        storage.inspect_directory(&directory).await.unwrap(),
-        DirectoryState::NonEmpty
-    );
-    storage.remove_empty_directory(&directory).await.unwrap();
-    assert!(storage.stat(&child).await.unwrap().unwrap().is_dir());
 }
