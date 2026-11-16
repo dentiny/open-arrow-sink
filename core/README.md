@@ -23,10 +23,16 @@ partition specs. Index-capable implementations also call `validate_indexes`.
 one exact top-level name; dots are literal and duplicate names are ambiguous.
 
 `WriteSummary.rows_written` is the successful session's committed row count.
-`Error::Unsupported` covers rejected requests, `SchemaMismatch` covers batch
-schemas, and `Backend` retains an error source. `IndexCommitError`, wrapped in
-`Backend`, identifies index construction failure after data publication and
-retains the successful data write in its `summary` field.
+`Error::Unsupported` covers unavailable capabilities; `InvalidConfig` covers
+malformed options and `InvalidInput` covers malformed URLs, paths, and blob
+placements. `DestinationExists` reports a destination conflict, `NotFound`
+reports a missing destination detected by validation, and `SchemaMismatch`
+covers batch schemas. Native I/O failures remain in `Backend`, which retains
+the original source chain and backend context.
+
+`Error::IndexCommit(IndexCommitError)` identifies index construction failure
+after data publication and retains the successful data write in `summary`.
+Match this variant directly; retry indexing rather than replaying the write.
 
 `Error`, `WriteOptions`, `SinkCapability`, and `CompressionCapability` are
 non-exhaustive so new errors and options can be added after release. Construct

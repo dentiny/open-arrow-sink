@@ -111,7 +111,8 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let url = Url::parse(source).map_err(Error::backend)?;
+        let url = Url::parse(source)
+            .map_err(|error| Error::InvalidInput(format!("invalid blob URL: {error}")))?;
         let stream_slot = self
             .stream_slots
             .clone()
@@ -182,29 +183,26 @@ fn http_operator(config: StorageConfig) -> Result<Operator> {
     config.apply(operator)
 }
 
-fn invalid(message: &str) -> Error {
-    Error::backend(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        message,
-    ))
-}
-
 fn validate_limit(limit: NonZeroUsize) -> Result<()> {
     if limit.get() > Semaphore::MAX_PERMITS {
-        return Err(invalid("download pool limits exceed semaphore capacity"));
+        return Err(Error::InvalidConfig(
+            "download pool limits exceed semaphore capacity".into(),
+        ));
     }
     Ok(())
 }
 
 fn validate_download_url(source: &str) -> Result<Uri> {
-    let mut url = Url::parse(source).map_err(|_| invalid("invalid blob URL"))?;
+    let mut url = Url::parse(source).map_err(|_| Error::InvalidInput("invalid blob URL".into()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(invalid("blob URL must use HTTP or HTTPS"));
+        return Err(Error::InvalidInput(
+            "blob URL must use HTTP or HTTPS".into(),
+        ));
     }
     url.set_fragment(None);
     url.as_str()
         .parse()
-        .map_err(|_| invalid("invalid blob URL"))
+        .map_err(|_| Error::InvalidInput("invalid blob URL".into()))
 }
 
 fn download_response(response: Response<HttpBody>) -> Response<HttpBody> {

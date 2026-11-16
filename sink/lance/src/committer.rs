@@ -43,9 +43,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         }
         let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
         let summary = WriteSummary { rows_written };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
+        build_indexes(&mut dataset, &self.options.indexes, &summary).await?;
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {

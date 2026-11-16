@@ -1,8 +1,6 @@
 use futures::{TryStreamExt, stream};
-use open_arrow_sink_core::Result;
+use open_arrow_sink_core::{Error, Result};
 use open_arrow_sink_storage::{DirectoryState, Storage, Url};
-
-use crate::error;
 
 // Bound footer readers independently of storage transport or directory size.
 const APPEND_SCHEMA_CONCURRENCY: usize = 32;
@@ -13,8 +11,16 @@ pub(crate) async fn validate_append_directory(
     schema: &open_arrow_sink_core::SchemaRef,
 ) -> Result<()> {
     match storage.inspect_directory(directory).await? {
-        DirectoryState::Missing => return Err(error::missing_directory()),
-        DirectoryState::File => return Err(error::not_directory()),
+        DirectoryState::Missing => {
+            return Err(Error::NotFound(
+                "destination directory does not exist".into(),
+            ));
+        }
+        DirectoryState::File => {
+            return Err(Error::InvalidInput(
+                "destination must be a directory".into(),
+            ));
+        }
         DirectoryState::Empty => return Ok(()),
         DirectoryState::NonEmpty => {}
     }
@@ -30,7 +36,7 @@ pub(crate) async fn validate_append_directory(
             {
                 let actual = crate::reader::schema(storage.clone(), file).await?;
                 if &actual != schema {
-                    return Err(open_arrow_sink_core::Error::SchemaMismatch);
+                    return Err(Error::SchemaMismatch);
                 }
             }
             Ok(())

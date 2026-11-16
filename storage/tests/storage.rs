@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use open_arrow_sink_core::Error;
+
 use open_arrow_sink_storage::{
     DirectoryState, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
 };
@@ -53,8 +55,17 @@ async fn namespace_boundaries_and_conditional_creation() {
         "memory:///warehouse/file?x=y",
         "memory:///warehouse/%2e%2e%2ffile",
     ] {
-        assert!(storage.path(&url.parse().unwrap()).is_err(), "{url}");
-        assert!(storage.stat(&url.parse().unwrap()).await.is_err());
+        assert!(
+            matches!(
+                storage.path(&url.parse().unwrap()),
+                Err(Error::InvalidInput(_))
+            ),
+            "{url}"
+        );
+        assert!(matches!(
+            storage.stat(&url.parse().unwrap()).await,
+            Err(Error::InvalidInput(_))
+        ));
     }
     assert!(
         storage
@@ -62,7 +73,10 @@ async fn namespace_boundaries_and_conditional_creation() {
             .await
             .is_err()
     );
-    assert!(storage.url("../outside").is_err());
+    assert!(matches!(
+        storage.url("../outside"),
+        Err(Error::InvalidInput(_))
+    ));
     assert!(storage.remove_all(storage.base_url()).await.is_err());
     assert!(storage.directory_url(storage.base_url()).is_err());
     assert!(

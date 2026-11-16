@@ -110,7 +110,7 @@ through Lance, potentially publishing another dataset version. Names are determi
 when one fails, and the original dataset handle is refreshed after they finish.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
-`Error::Backend` contains an `IndexCommitError` identifying the failed index type
+`Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
 than rewriting already committed rows. Dropping the commit future aborts
