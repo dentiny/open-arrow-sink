@@ -7,15 +7,11 @@ use open_arrow_sink_storage::{
 };
 
 fn memory() -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 
 #[tokio::test]
-async fn streaming_close_abort_and_shared_namespace() {
+async fn streaming_close_publishes_chunks_in_the_shared_namespace() {
     let storage = memory();
     let url = storage.url("雪 space/file").unwrap();
     let mut writer = storage.writer(&url).await.unwrap();
@@ -24,21 +20,44 @@ async fn streaming_close_abort_and_shared_namespace() {
     assert_eq!(writer.close().await.unwrap(), 11);
     assert!(writer.write("late".into()).await.is_err());
     assert_eq!(storage.clone().read(&url).await.unwrap(), "hello world");
+}
+
+#[tokio::test]
+async fn reads_ranges_and_lists_object_metadata() {
+    let storage = memory();
+    let url = storage.url("雪 space/file").unwrap();
+    storage.write(&url, "hello world".into()).await.unwrap();
     assert_eq!(storage.read_range(&url, 6..11).await.unwrap(), "world");
     let metadata = storage.stat(&url).await.unwrap().unwrap();
     assert!(metadata.is_file());
     assert_eq!(metadata.content_length(), 11);
-    assert_eq!(
-        storage.list(storage.base_url()).await.unwrap(),
-        vec![url.clone()]
-    );
+    assert_eq!(storage.list(storage.base_url()).await.unwrap(), vec![url]);
+}
+
+#[tokio::test]
+async fn create_collision_preserves_existing_content() {
+    let storage = memory();
+    let url = storage.url("file").unwrap();
+    storage.create(&url, "original".into()).await.unwrap();
     assert!(storage.create(&url, "replace".into()).await.is_err());
-    assert_eq!(storage.read(&url).await.unwrap(), "hello world");
-    let aborted = storage.url("aborted").unwrap();
-    let mut writer = storage.writer(&aborted).await.unwrap();
+    assert_eq!(storage.read(&url).await.unwrap(), "original");
+}
+
+#[tokio::test]
+async fn abort_discards_incomplete_upload() {
+    let storage = memory();
+    let url = storage.url("aborted").unwrap();
+    let mut writer = storage.writer(&url).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(storage.stat(&aborted).await.unwrap().is_none());
+    assert!(storage.stat(&url).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn delete_is_idempotent_and_removes_the_listing() {
+    let storage = memory();
+    let url = storage.url("file").unwrap();
+    storage.write(&url, "data".into()).await.unwrap();
     storage.delete(&url).await.unwrap();
     assert!(storage.stat(&url).await.unwrap().is_none());
     storage.delete(&url).await.unwrap();

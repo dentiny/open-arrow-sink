@@ -33,6 +33,7 @@ percent-encoding = "2"
 url = "2"
 
 [dev-dependencies]
+open-arrow-sink-test-support.workspace = true
 tempfile.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }

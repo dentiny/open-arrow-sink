@@ -6,14 +6,9 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
-use open_arrow_sink_storage::opendal;
 
 fn storage() -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 fn input() -> RecordBatch {
     let field = Field::new("blob", DataType::LargeBinary, true)

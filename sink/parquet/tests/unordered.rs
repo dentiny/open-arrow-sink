@@ -1,19 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_layer::UnorderedWriteLayer;
-use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
-use open_arrow_sink_storage::opendal;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use open_arrow_sink_parquet::ParquetDirectorySink;
 
 #[tokio::test]
 async fn unordered_commit_preserves_all_rows() {
-    let storage = Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap();
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
     let directory = storage.url("雪 output/").unwrap();
     let make_batch = |id| {
         RecordBatch::try_from_iter([
@@ -33,59 +27,36 @@ async fn unordered_commit_preserves_all_rows() {
         .open(
             directory.clone(),
             make_batch(0).schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
-                .with_target_file_size(Some(1)),
+            open_arrow_sink_test_support::unordered_options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
-    let mut expected = Vec::new();
-    for id in 0..8 {
-        writer.write(make_batch(id)).await.unwrap();
-        expected.extend([
-            (Some(id * 2), Some("雪".to_owned())),
-            (None, Some(String::new())),
-            (Some(id * 2 + 1), None),
-        ]);
+    let expected: Vec<_> = (0..8).map(make_batch).collect();
+    for batch in &expected {
+        writer.write(batch.clone()).await.unwrap();
     }
+    assert_eq!(writer.commit().await.unwrap().rows_written, 24);
+    let actual = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
     assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        expected.len() as u64
+        open_arrow_sink_test_support::concat_sorted(
+            &make_batch(0).schema(),
+            &actual,
+            &["id", "text"]
+        )
+        .unwrap(),
+        open_arrow_sink_test_support::concat_sorted(
+            &make_batch(0).schema(),
+            &expected,
+            &["id", "text"]
+        )
+        .unwrap(),
     );
-    let mut actual = Vec::new();
-    for file in storage.list(&directory).await.unwrap() {
-        assert!(file.path().ends_with(".parquet"));
-        for batch in ParquetRecordBatchReaderBuilder::try_new(storage.read(&file).await.unwrap())
-            .unwrap()
-            .build()
-            .unwrap()
-        {
-            let batch = batch.unwrap();
-            let ids = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            let text = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            actual.extend(
-                ids.iter()
-                    .zip(text.iter().map(|value| value.map(str::to_owned))),
-            );
-        }
-    }
-    actual.sort_unstable();
-    expected.sort_unstable();
-    assert_eq!(actual, expected);
     assert!(
         ParquetDirectorySink::new(storage)
             .open(
                 directory,
                 make_batch(0).schema(),
-                WriteOptions::default().with_ordering(Ordering::Unordered)
+                open_arrow_sink_test_support::unordered_options()
             )
             .await
             .is_err()

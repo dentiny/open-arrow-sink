@@ -1,24 +1,17 @@
 use arrow_array::RecordBatch;
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
-use open_arrow_sink_storage::opendal;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::num::NonZeroUsize;
 
 fn storage() -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 fn batch() -> RecordBatch {
     open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
 fn options() -> WriteOptions {
-    WriteOptions::default()
-        .with_ordering(Ordering::Unordered)
+    open_arrow_sink_test_support::unordered_options()
         .with_target_file_size(Some(1))
         .with_upload(
             UploadConfig::default()
@@ -69,23 +62,11 @@ async fn rolling_collision_is_preserved() {
 }
 
 async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> usize {
-    let mut rows = 0;
-    for file in storage
-        .list(directory)
+    open_arrow_sink_test_support::read_parquet_dir(storage, directory)
         .await
-        .unwrap()
-        .into_iter()
-        .filter(|url| url.path().ends_with(".parquet"))
-    {
-        for batch in ParquetRecordBatchReaderBuilder::try_new(storage.read(&file).await.unwrap())
-            .unwrap()
-            .build()
-            .unwrap()
-        {
-            rows += batch.unwrap().num_rows();
-        }
-    }
-    rows
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum()
 }
 
 #[rstest::rstest]

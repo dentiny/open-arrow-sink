@@ -226,28 +226,48 @@ impl FileWrite for OpenDalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_arrow_sink_storage::opendal;
+
+    struct Fixture {
+        storage: Storage,
+        factory: OpenDalStorageFactory,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+            Self {
+                factory: OpenDalStorageFactory::new(storage.clone()),
+                storage,
+            }
+        }
+        async fn upload(&self, path: &str, bytes: &'static str) -> Box<dyn FileWrite> {
+            let url = self.storage.url(path).unwrap();
+            let mut writer = self
+                .factory
+                .file_io()
+                .new_output(url.as_str())
+                .unwrap()
+                .writer()
+                .await
+                .unwrap();
+            writer.write(bytes.into()).await.unwrap();
+            writer
+        }
+        async fn cleanup(&self) {
+            self.factory
+                .clone()
+                .file_io()
+                .delete_prefix(self.storage.url("session-a/").unwrap().as_str())
+                .await
+                .unwrap();
+        }
+    }
 
     #[tokio::test]
-    async fn prefix_cleanup_aborts_unfinished_writers_without_touching_other_sessions() {
-        let storage = Storage::new(
-            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-            "memory:///warehouse/".parse().unwrap(),
-        )
-        .unwrap();
-        let factory = OpenDalStorageFactory::new(storage.clone());
-        let file_io = factory.file_io();
-        let abandoned = storage.url("session-a/abandoned").unwrap();
-        let active = storage.url("session-a/active").unwrap();
-        let keep = storage.url("session-ab/keep").unwrap();
-        let mut abandoned_writer = file_io
-            .new_output(abandoned.as_str())
-            .unwrap()
-            .writer()
-            .await
-            .unwrap();
-        abandoned_writer.write("abandoned".into()).await.unwrap();
-        let native_writer = factory
+    async fn prefix_cleanup_aborts_dropped_native_handles() {
+        let fixture = Fixture::new();
+        let writer = fixture.upload("session-a/abandoned", "abandoned").await;
+        let native = fixture
+            .factory
             .uploads
             .lock()
             .values()
@@ -255,67 +275,66 @@ mod tests {
             .unwrap()
             .writer
             .clone();
-        // The native SDK drops FileWrite before calling delete_prefix on abort.
-        drop(abandoned_writer);
-        let mut active_writer = file_io
-            .new_output(active.as_str())
-            .unwrap()
-            .writer()
-            .await
-            .unwrap();
-        active_writer.write("active".into()).await.unwrap();
-        let mut keep_writer = file_io
-            .new_output(keep.as_str())
-            .unwrap()
-            .writer()
-            .await
-            .unwrap();
-        keep_writer.write("keep".into()).await.unwrap();
-        // A factory clone and a new FileIO must share the unfinished-upload registry.
-        factory
-            .clone()
-            .file_io()
-            .delete_prefix(storage.url("session-a/").unwrap().as_str())
-            .await
-            .unwrap();
-        // Observe the dropped writer's native handle to prove explicit abort.
+        // The native SDK drops FileWrite before requesting prefix cleanup.
+        drop(writer);
+        fixture.cleanup().await;
+        assert!(native.lock().await.write("more".into()).await.is_err());
+        assert!(fixture.factory.uploads.lock().is_empty());
         assert!(
-            native_writer
-                .lock()
+            fixture
+                .storage
+                .stat(&fixture.storage.url("session-a/abandoned").unwrap())
                 .await
-                .write("more".into())
-                .await
-                .is_err()
+                .unwrap()
+                .is_none()
         );
-        assert_eq!(factory.uploads.lock().len(), 1);
-        assert!(active_writer.write("more".into()).await.is_err());
-        assert!(active_writer.close().await.is_err());
-        assert!(storage.stat(&abandoned).await.unwrap().is_none());
-        assert!(storage.stat(&active).await.unwrap().is_none());
-        keep_writer.write(" more".into()).await.unwrap();
-        keep_writer.close().await.unwrap();
-        assert!(factory.uploads.lock().is_empty());
-        assert_eq!(storage.read(&keep).await.unwrap(), "keep more");
-        // Successful close also removes a new upload from the registry.
-        let mut completed = file_io
-            .new_output(abandoned.as_str())
-            .unwrap()
-            .writer()
-            .await
-            .unwrap();
-        completed.write("complete".into()).await.unwrap();
-        completed.close().await.unwrap();
-        assert!(factory.uploads.lock().is_empty());
-        // Clean up the completed object, then repeat cleanup on the empty prefix.
-        file_io
-            .delete_prefix(storage.url("session-a/").unwrap().as_str())
-            .await
-            .unwrap();
-        assert!(storage.stat(&abandoned).await.unwrap().is_none());
-        // Repeated abort cleanup is harmless.
-        file_io
-            .delete_prefix(storage.url("session-a/").unwrap().as_str())
-            .await
-            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn prefix_cleanup_aborts_active_uploads_and_preserves_other_sessions() {
+        let fixture = Fixture::new();
+        let mut active = fixture.upload("session-a/active", "active").await;
+        let mut keep = fixture.upload("session-ab/keep", "keep").await;
+        fixture.cleanup().await;
+        assert_eq!(fixture.factory.uploads.lock().len(), 1);
+        assert!(active.write("more".into()).await.is_err());
+        assert!(active.close().await.is_err());
+        assert!(
+            fixture
+                .storage
+                .stat(&fixture.storage.url("session-a/active").unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        keep.write(" more".into()).await.unwrap();
+        keep.close().await.unwrap();
+        assert!(fixture.factory.uploads.lock().is_empty());
+        assert_eq!(
+            fixture
+                .storage
+                .read(&fixture.storage.url("session-ab/keep").unwrap())
+                .await
+                .unwrap(),
+            "keep more"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_uploads_leave_the_registry_and_prefix_cleanup_is_idempotent() {
+        let fixture = Fixture::new();
+        let mut writer = fixture.upload("session-a/completed", "complete").await;
+        writer.close().await.unwrap();
+        assert!(fixture.factory.uploads.lock().is_empty());
+        fixture.cleanup().await;
+        assert!(
+            fixture
+                .storage
+                .stat(&fixture.storage.url("session-a/completed").unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        fixture.cleanup().await;
     }
 }

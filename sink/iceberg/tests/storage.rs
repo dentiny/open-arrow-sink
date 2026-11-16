@@ -1,13 +1,8 @@
-use open_arrow_sink_iceberg::{OpenDalStorageFactory, Storage};
-use open_arrow_sink_storage::opendal;
+use open_arrow_sink_iceberg::OpenDalStorageFactory;
 
 #[tokio::test]
 async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
-    let storage = Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap();
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
     let url = storage.url("data/part").unwrap();
     let mut writer = file_io

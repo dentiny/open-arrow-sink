@@ -1,11 +1,7 @@
 use open_arrow_sink_storage::{Storage, StorageResolver, Url, opendal};
 
 fn memory(base: &str) -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        base.parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage(base)
 }
 
 #[tokio::test]
