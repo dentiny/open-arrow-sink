@@ -43,7 +43,7 @@ impl BlobSession {
     }
     pub fn check(&self) -> Result<()> {
         if self.failed.load(Ordering::Acquire) {
-            return Err(Error::Poisoned);
+            return Err(crate::error::poisoned());
         }
         Ok(())
     }

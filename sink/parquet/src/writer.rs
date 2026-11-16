@@ -1,6 +1,5 @@
 use open_arrow_sink_core::{
-    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
-    validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
@@ -8,18 +7,17 @@ use std::sync::Arc;
 use crate::{destination::Destination, file_writer::FileWriter};
 
 pub(crate) struct ParquetDirectoryWriter {
-    pub(crate) destination: Arc<Destination>,
+    destination: Arc<Destination>,
     schema: SchemaRef,
     // None only during rolling or after finish. Poison gates every operation
     // before accessing it; retain Option for ownership transfer during cleanup.
     writer: Option<AsyncArrowWriter<FileWriter>>,
-    options: WriteOptions,
+    target_file_size: Option<usize>,
     state: Poison,
     properties: WriterProperties,
     rows_written: u64,
     files_created: usize,
-    first_file: usize,
-    file_stride: usize,
+    writer_index: usize,
 }
 
 #[async_trait]
@@ -49,7 +47,8 @@ impl DataWriter for ParquetDirectoryWriter {
             let writer = self
                 .destination
                 .open_writer(
-                    self.file_index(self.files_created),
+                    self.writer_index,
+                    self.files_created,
                     self.schema.clone(),
                     self.properties.clone(),
                 )
@@ -66,7 +65,7 @@ impl DataWriter for ParquetDirectoryWriter {
         // Only force an early group boundary when buffered encoded data could
         // reach the file target; rolling still uses actual flushed bytes.
         if writer.in_progress_rows() > 0
-            && self.options.target_file_size.is_some_and(|size| {
+            && self.target_file_size.is_some_and(|size| {
                 writer
                     .bytes_written()
                     .saturating_add(writer.in_progress_size())
@@ -93,7 +92,12 @@ impl DataWriter for ParquetDirectoryWriter {
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.state.poison();
-        self.cleanup().await
+        // Stop this upload before the committer removes any session-owned files.
+        if let Some(writer) = self.writer.take() {
+            writer.into_inner().abort().await
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -102,22 +106,20 @@ impl ParquetDirectoryWriter {
         destination: Arc<Destination>,
         schema: SchemaRef,
         writer: AsyncArrowWriter<FileWriter>,
-        options: WriteOptions,
+        target_file_size: Option<usize>,
         properties: WriterProperties,
-        first_file: usize,
-        file_stride: usize,
+        writer_index: usize,
     ) -> Self {
         Self {
             destination,
             schema,
             writer: Some(writer),
             state: Poison::default(),
-            options,
+            target_file_size,
             properties,
             rows_written: 0,
             files_created: 1,
-            first_file,
-            file_stride,
+            writer_index,
         }
     }
 
@@ -129,32 +131,7 @@ impl ParquetDirectoryWriter {
         !writer.flushed_row_groups().is_empty()
             && incoming_rows > 0
             && self
-                .options
                 .target_file_size
                 .is_some_and(|size| writer.bytes_written() >= size)
-    }
-
-    fn file_index(&self, index: usize) -> usize {
-        self.first_file + index * self.file_stride
-    }
-
-    async fn cleanup(&mut self) -> Result<()> {
-        if !self.options.cleanup_on_error {
-            return Ok(());
-        }
-        let mut result = if let Some(writer) = self.writer.take() {
-            writer.into_inner().abort().await
-        } else {
-            Ok(())
-        };
-        for index in 0..self.files_created {
-            if let Err(error) = self.destination.remove_file(self.file_index(index)).await {
-                result = Err(error);
-            }
-        }
-        if let Err(error) = self.destination.remove_empty_directory().await {
-            result = Err(error);
-        }
-        result
     }
 }

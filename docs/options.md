@@ -100,6 +100,10 @@ overrides do not reset codecs or their levels. Both policies apply recursively t
 nested descendants. Empty policies preserve existing schema metadata and backend
 defaults. `CompressionLayer` replaces all four fields together.
 
+Lance accepts `Compression::Lz4Raw` as its native `lz4` policy for global,
+per-column, and nested overrides. Native framing and codec selection still apply:
+Miniblock uses LZ4, while some Fullzip per-value paths in Lance 14 substitute Zstd.
+
 `CompressionCapability.structural_encodings` advertises supported layouts for
 both scopes. Lance supports both; Parquet and Iceberg reject nonempty structural
 policy before destination I/O. Lance rejects structural overrides on native blob

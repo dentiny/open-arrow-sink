@@ -2,26 +2,30 @@ use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
+use std::sync::Mutex;
 
 use crate::file_writer::FileWriter;
 
-/// Session-owned parts in a destination directory.
-pub(crate) struct Destination {
-    storage: Storage,
-    directory: ObjectPath,
-    prefix: String,
-    // Only Create may clean up the empty destination directory.
-    // Append shares an existing directory and must preserve it.
-    owns_directory: bool,
-    cleanup_on_error: bool,
+/// Whether this session owns the directory or only its newly created parts.
+pub(crate) enum Destination {
+    Owned(Directory),
+    Shared(Directory),
 }
+
+pub(crate) struct Directory {
+    pub(crate) storage: Storage,
+    pub(crate) path: ObjectPath,
+    prefix: String,
+    // Record claims before opening uploads so failed opens are cleaned up too.
+    files: Mutex<Vec<ObjectPath>>,
+}
+
 impl Destination {
     pub(crate) async fn open(
         storage: Storage,
         directory: Url,
         schema: &SchemaRef,
         mode: WriteMode,
-        cleanup_on_error: bool,
     ) -> Result<Self> {
         let directory = storage.resolve(&directory)?.as_dir();
         if directory.is_root() {
@@ -29,16 +33,16 @@ impl Destination {
                 "destination must not be the storage root".into(),
             ));
         }
-        if mode == WriteMode::Create
-            && storage.inspect_directory(&directory).await? != DirectoryState::Missing
-        {
-            return Err(Error::DestinationExists);
-        }
-        let (prefix, owns_directory) = match mode {
-            WriteMode::Create => ("part-".into(), true),
+        let prefix = match mode {
+            WriteMode::Create => {
+                if storage.inspect_directory(&directory).await? != DirectoryState::Missing {
+                    return Err(Error::DestinationExists);
+                }
+                "part-".into()
+            }
             WriteMode::Append => {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
-                (format!("part-{}-", uuid::Uuid::new_v4()), false)
+                format!("part-{}-", uuid::Uuid::new_v4())
             }
             WriteMode::Overwrite => {
                 return Err(Error::Unsupported(
@@ -46,45 +50,49 @@ impl Destination {
                 ));
             }
         };
-        Ok(Self {
+        let directory = Directory {
             storage,
-            directory,
+            path: directory,
             prefix,
-            owns_directory,
-            cleanup_on_error,
+            files: Mutex::new(Vec::new()),
+        };
+        Ok(match mode {
+            WriteMode::Create => Self::Owned(directory),
+            WriteMode::Append => Self::Shared(directory),
+            WriteMode::Overwrite => unreachable!(),
         })
     }
-    fn child(&self, name: &str) -> ObjectPath {
-        self.directory.join(name).unwrap()
+
+    pub(crate) fn directory(&self) -> &Directory {
+        match self {
+            Self::Owned(directory) | Self::Shared(directory) => directory,
+        }
     }
-    fn file(&self, index: usize) -> ObjectPath {
-        self.child(&format!("{}{index:05}.parquet", self.prefix))
+
+    pub(crate) fn claimed_files(&self) -> Vec<ObjectPath> {
+        std::mem::take(&mut *self.directory().files.lock().unwrap())
     }
+
     pub(crate) async fn open_writer(
         &self,
-        index: usize,
+        writer: usize,
+        sequence: usize,
         schema: SchemaRef,
         properties: WriterProperties,
     ) -> Result<AsyncArrowWriter<FileWriter>> {
-        let path = self.file(index);
-        self.storage.create(&path, Bytes::new()).await?;
-        let result = async {
-            let file = FileWriter(self.storage.writer(&path).await?);
-            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
-        }
-        .await;
-        if result.is_err() && self.cleanup_on_error {
-            let _ = self.storage.delete(&path).await;
-        }
-        result
-    }
-    pub(crate) async fn remove_file(&self, index: usize) -> Result<()> {
-        self.storage.delete(&self.file(index)).await
-    }
-    pub(crate) async fn remove_empty_directory(&self) -> Result<()> {
-        if !self.owns_directory {
-            return Ok(());
-        }
-        self.storage.remove_empty_directory(&self.directory).await
+        let directory = self.directory();
+        let path = directory
+            .path
+            .join(&format!(
+                "{}{writer}-{sequence:05}.parquet",
+                directory.prefix
+            ))
+            .unwrap();
+        directory.storage.create(&path, Bytes::new()).await?;
+        // No await between successful conditional creation and ownership tracking.
+        // A colliding file is never added to this session's cleanup list.
+        directory.files.lock().unwrap().push(path.clone());
+        let file = FileWriter(directory.storage.writer(&path).await?);
+        AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
     }
 }
