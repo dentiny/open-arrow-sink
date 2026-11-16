@@ -17,6 +17,7 @@ pub(crate) struct FragmentWriter {
     worker: FragmentTask,
     /// Prevents reuse after an error, cancellation, or finish.
     state: Poison,
+    blob_plan: crate::blob_input::BlobInputPlan,
     /// Blob download policy and recursive input materialization.
     blobs: crate::blob_input::BlobMaterializer,
 }
@@ -29,8 +30,10 @@ impl FragmentWriter {
         options: &WriteOptions,
     ) -> Self {
         let worker = FragmentTask::new(schemas.logical.clone(), destination, params);
+        let blob_plan = crate::blob_input::BlobInputPlan::new(schemas.logical.clone());
         Self {
             schemas,
+            blob_plan,
             worker,
             state: Poison::default(),
             blobs: crate::blob_input::BlobMaterializer::new(
@@ -50,9 +53,9 @@ impl DataWriter for FragmentWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
         validation::validate_batch(&self.schemas.input, &batch)?;
-        if crate::blob_input::has_blobs(&self.schemas.logical) {
+        if !self.blob_plan.is_empty() {
             self.blobs
-                .send_rows(&batch, &self.schemas.logical, &mut self.worker)
+                .send_rows(&batch, &self.blob_plan, &mut self.worker)
                 .await?;
         } else {
             let batch = writer_batch(batch, &self.schemas.logical)?;

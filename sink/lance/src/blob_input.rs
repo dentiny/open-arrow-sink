@@ -6,7 +6,7 @@ use arrow_array::{
     RecordBatchOptions, StringArray, StructArray,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field};
+use arrow_schema::DataType;
 use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
 use open_arrow_sink_core::{
     DownloadRecovery, ExternalBlobMode, IoObservers, RecordBatch, Result, SchemaRef, WriteOptions,
@@ -15,36 +15,80 @@ use open_arrow_sink_storage::{BlobDownload, BlobDownloader};
 
 use open_arrow_sink_core::Error;
 
-fn contains_blob(field: &Field) -> bool {
-    crate::blob::is_native_blob(field)
-        || open_arrow_sink_core::is_blob_field(field)
-        || match field.data_type() {
-            DataType::Struct(fields) => fields.iter().any(|field| contains_blob(field)),
-            DataType::List(field)
-            | DataType::LargeList(field)
-            | DataType::FixedSizeList(field, _)
-            | DataType::Map(field, _) => contains_blob(field),
-            _ => false,
-        }
+/// Only blob-bearing branches are visited while processing batches.
+pub(crate) struct BlobInputPlan {
+    schema: SchemaRef,
+    columns: Vec<(usize, BlobField)>,
 }
 
-pub(crate) fn has_blobs(schema: &SchemaRef) -> bool {
-    schema.fields().iter().any(|field| contains_blob(field))
+struct BlobField {
+    field: arrow_schema::FieldRef,
+    native: bool,
+    children: Vec<(usize, BlobField)>,
+}
+
+impl BlobField {
+    fn new(field: &arrow_schema::FieldRef) -> Option<Self> {
+        let native = crate::blob::is_native_blob(field);
+        let children = if native {
+            Vec::new()
+        } else {
+            match field.data_type() {
+                DataType::Struct(fields) => fields
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, field)| Self::new(field).map(|plan| (index, plan)))
+                    .collect(),
+                DataType::List(child)
+                | DataType::LargeList(child)
+                | DataType::FixedSizeList(child, _)
+                | DataType::Map(child, _) => Self::new(child)
+                    .map(|plan| vec![(0, plan)])
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        };
+        (native || !children.is_empty()).then(|| Self {
+            field: field.clone(),
+            native,
+            children,
+        })
+    }
+}
+
+impl BlobInputPlan {
+    pub fn new(schema: SchemaRef) -> Self {
+        let columns = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| BlobField::new(field).map(|plan| (index, plan)))
+            .collect();
+        Self { schema, columns }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.columns.is_empty()
+    }
 }
 
 // Batch only known top-level payloads. Unknown URI sizes and nested blobs keep
 // row admission, so combining rows cannot reject an otherwise admissible row.
-fn known_row_bytes(batch: &RecordBatch, row: usize, mode: ExternalBlobMode) -> Option<usize> {
-    batch
-        .columns()
+fn known_row_bytes(
+    batch: &RecordBatch,
+    plan: &BlobInputPlan,
+    row: usize,
+    mode: ExternalBlobMode,
+) -> Option<usize> {
+    plan.columns
         .iter()
-        .zip(batch.schema().fields())
-        .try_fold(0_usize, |total, (array, field)| {
-            let bytes = if !contains_blob(field) || array.is_null(row) {
+        .try_fold(0_usize, |total, (index, field)| {
+            let array = batch.column(*index);
+            let bytes = if array.is_null(row) {
                 0
             } else if let Some(data) = array.as_any().downcast_ref::<LargeBinaryArray>() {
                 data.value(row).len()
-            } else if crate::blob::is_native_blob(field) {
+            } else if field.native && matches!(array.data_type(), DataType::Struct(_)) {
                 let blob = array.as_any().downcast_ref::<StructArray>()?;
                 let data = blob
                     .column_by_name("data")?
@@ -58,9 +102,7 @@ fn known_row_bytes(batch: &RecordBatch, row: usize, mode: ExternalBlobMode) -> O
                 } else {
                     0
                 }
-            } else if open_arrow_sink_core::is_blob_field(field)
-                && mode == ExternalBlobMode::Reference
-            {
+            } else if field.native && mode == ExternalBlobMode::Reference {
                 0
             } else {
                 return None;
@@ -71,6 +113,7 @@ fn known_row_bytes(batch: &RecordBatch, row: usize, mode: ExternalBlobMode) -> O
 
 fn next_range(
     batch: &RecordBatch,
+    plan: &BlobInputPlan,
     start: usize,
     mode: ExternalBlobMode,
     limit: usize,
@@ -78,7 +121,8 @@ fn next_range(
     let mut end = start;
     let mut bytes = 0_usize;
     while end < batch.num_rows() && end - start < 1024 {
-        let Some(next) = known_row_bytes(batch, end, mode).and_then(|size| bytes.checked_add(size))
+        let Some(next) =
+            known_row_bytes(batch, plan, end, mode).and_then(|size| bytes.checked_add(size))
         else {
             break;
         };
@@ -132,7 +176,7 @@ impl BlobMaterializer {
     pub(crate) async fn send_rows(
         &self,
         batch: &RecordBatch,
-        schema: &SchemaRef,
+        plan: &BlobInputPlan,
         worker: &mut crate::worker::FragmentTask,
     ) -> Result<()> {
         let mut next = 0;
@@ -144,10 +188,15 @@ impl BlobMaterializer {
                 if next == batch.num_rows() {
                     break;
                 }
-                let range =
-                    next_range(batch, next, self.mode, self.downloader.max_download_bytes());
+                let range = next_range(
+                    batch,
+                    plan,
+                    next,
+                    self.mode,
+                    self.downloader.max_download_bytes(),
+                );
                 next = range.end;
-                active.push_back(self.materialize_batch(batch, range, schema));
+                active.push_back(self.materialize_batch(batch, range, plan));
             }
             if active.is_empty() && ready.is_empty() {
                 if let Some(config) = self.recovery.as_ref() {
@@ -174,16 +223,20 @@ impl BlobMaterializer {
         &self,
         batch: &RecordBatch,
         range: std::ops::Range<usize>,
-        schema: &SchemaRef,
+        plan: &BlobInputPlan,
     ) -> Result<RecordBatch> {
+        let schema = &plan.schema;
         let input = crate::blob::logical_batch(batch.slice(range.start, range.len()), schema)?;
         let mut group = self.downloader.begin().await?;
-        let mut columns = Vec::with_capacity(input.num_columns());
+        let mut columns = input.columns().to_vec();
         let mut failed = false;
-        for (array, field) in input.columns().iter().zip(schema.fields()) {
-            let result = self.materialize(array, field, &mut group, None).await;
+        for (index, field_plan) in &plan.columns {
+            let field = &field_plan.field;
+            let result = self
+                .materialize(input.column(*index), field_plan, &mut group, None)
+                .await;
             match result {
-                Ok(array) => columns.push(array),
+                Ok(array) => columns[*index] = array,
                 Err(error) => {
                     let recover = self
                         .recovery
@@ -194,8 +247,8 @@ impl BlobMaterializer {
                         config.metrics.failure(!failed);
                         failed = true;
                         if config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail {
-                            columns
-                                .push(arrow_array::new_null_array(field.data_type(), range.len()));
+                            columns[*index] =
+                                arrow_array::new_null_array(field.data_type(), range.len());
                             continue;
                         }
                     }
@@ -221,14 +274,12 @@ impl BlobMaterializer {
     fn materialize<'a>(
         &'a self,
         array: &'a ArrayRef,
-        field: &'a Field,
+        plan: &'a BlobField,
         group: &'a mut BlobDownload,
         parent_nulls: Option<NullBuffer>,
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
-            if !contains_blob(field) {
-                return Ok(array.clone());
-            }
+            let field = &plan.field;
             let nulls = NullBuffer::union(array.nulls(), parent_nulls.as_ref());
             // Lists can contain several logical blobs in one input row. Slice their
             // child range before materializing so a sliced batch cannot retain/read
@@ -246,7 +297,9 @@ impl BlobMaterializer {
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
                     );
-                    let child = self.materialize(&child, $child, group, visibility).await?;
+                    let child = self
+                        .materialize(&child, &plan.children[0].1, group, visibility)
+                        .await?;
                     let offsets = OffsetBuffer::new(ScalarBuffer::from(
                         offsets
                             .iter()
@@ -270,7 +323,7 @@ impl BlobMaterializer {
                         std::iter::repeat_n(*size as usize, values.len()),
                     );
                     let child_values = self
-                        .materialize(&child_values, child, group, visibility)
+                        .materialize(&child_values, &plan.children[0].1, group, visibility)
                         .await?;
                     return Ok(Arc::new(
                         FixedSizeListArray::try_new(
@@ -296,7 +349,9 @@ impl BlobMaterializer {
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
                     );
-                    let entries = self.materialize(&entries, child, group, visibility).await?;
+                    let entries = self
+                        .materialize(&entries, &plan.children[0].1, group, visibility)
+                        .await?;
                     let offsets = OffsetBuffer::new(ScalarBuffer::from(
                         offsets
                             .iter()
@@ -324,10 +379,10 @@ impl BlobMaterializer {
                 return Ok(array.clone());
             };
             let values = array.as_any().downcast_ref::<StructArray>().unwrap();
-            if crate::blob::is_native_blob(field) && values.null_count() == values.len() {
+            if plan.native && values.null_count() == values.len() {
                 return Ok(array.clone());
             }
-            if crate::blob::is_native_blob(field) && values.column_by_name("kind").is_none() {
+            if plan.native && values.column_by_name("kind").is_none() {
                 let malformed = || {
                     Error::backend(std::io::Error::other(format!(
                         "invalid logical blob field {}",
@@ -431,9 +486,11 @@ impl BlobMaterializer {
                         .map_err(Error::backend)?,
                 ) as ArrayRef);
             }
-            let mut columns = Vec::with_capacity(fields.len());
-            for (array, field) in values.columns().iter().zip(fields) {
-                columns.push(self.materialize(array, field, group, nulls.clone()).await?);
+            let mut columns = values.columns().to_vec();
+            for (index, child) in &plan.children {
+                columns[*index] = self
+                    .materialize(values.column(*index), child, group, nulls.clone())
+                    .await?;
             }
             Ok(Arc::new(
                 StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
