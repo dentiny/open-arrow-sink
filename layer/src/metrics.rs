@@ -1,6 +1,6 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, Error, Layer, ParallelSink, RecordBatch, Result,
+    BlobPlacement, BlobWriter, DataWriter, Layer, ParallelSink, Poison, RecordBatch, Result,
     SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary,
     Writer, async_trait,
 };
@@ -142,15 +142,6 @@ impl Drop for Observation {
         });
     }
 }
-fn active(failed: bool) -> Result<()> {
-    if failed {
-        Err(Error::Unsupported(
-            "metrics writer failed; abort or drop it".into(),
-        ))
-    } else {
-        Ok(())
-    }
-}
 
 #[async_trait]
 impl<S: Sink> Sink for MetricsSink<S> {
@@ -172,14 +163,14 @@ impl<S: Sink> Sink for MetricsSink<S> {
         Ok(Box::new(MetricsWriter {
             inner,
             metrics: self.metrics.clone(),
-            failed: false,
+            state: Poison::default(),
         }))
     }
 }
 struct MetricsWriter {
     inner: Box<dyn Writer>,
     metrics: WriteMetrics,
-    failed: bool,
+    state: Poison,
 }
 impl MetricsWriter {
     async fn accept(
@@ -187,8 +178,7 @@ impl MetricsWriter {
         batch: RecordBatch,
         blobs: Option<Vec<BlobPlacement>>,
     ) -> Result<()> {
-        active(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         match blobs {
@@ -196,7 +186,7 @@ impl MetricsWriter {
             None => self.inner.write(batch).await?,
         }
         self.metrics.accepted(rows);
-        self.failed = false;
+        self.state.complete();
         observation.success();
         Ok(())
     }
@@ -217,17 +207,16 @@ impl Writer for MetricsWriter {
         self.accept(batch, Some(blobs)).await
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        active(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let blob = self.inner.create_blob().await?;
-        self.failed = false;
+        self.state.complete();
         observation.success();
         Ok(blob)
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        if let Err(error) = active(self.failed) {
+        if let Err(error) = self.state.check() {
             if self.inner.abort().await.is_ok() {
                 self.metrics.update(|s| s.sessions_aborted += 1);
             }
@@ -250,7 +239,7 @@ impl Writer for MetricsWriter {
 struct MetricsDataWriter<T: Send + 'static> {
     inner: Box<dyn DataWriter<Output = T>>,
     metrics: WriteMetrics,
-    failed: bool,
+    state: Poison,
 }
 #[async_trait]
 impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
@@ -259,19 +248,17 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        active(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         self.inner.write(batch).await?;
         self.metrics.accepted(rows);
-        self.failed = false;
+        self.state.complete();
         observation.success();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        active(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let output = self.inner.finish().await?;
         observation.success();
@@ -331,7 +318,7 @@ impl<S: ParallelSink> ParallelSink for MetricsSink<S> {
                     Box::new(MetricsDataWriter {
                         inner,
                         metrics: self.metrics.clone(),
-                        failed: false,
+                        state: Poison::default(),
                     }) as Box<dyn DataWriter<Output = Self::Output>>
                 })
                 .collect(),

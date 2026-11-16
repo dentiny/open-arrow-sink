@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, WriteMode};
 use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -20,12 +20,7 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[rstest::rstest]
 #[case::default(None)]
@@ -39,10 +34,7 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            WriteOptions {
-                target_file_size,
-                ..options()
-            },
+            options().with_target_file_size(target_file_size),
         )
         .await
         .unwrap();
@@ -99,10 +91,7 @@ async fn abort_removes_output_and_preserves_sibling_files() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            WriteOptions {
-                target_file_size: Some(1),
-                ..options()
-            },
+            options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -132,10 +121,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            WriteOptions {
-                target_file_size: Some(1),
-                ..options()
-            },
+            options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -187,11 +173,8 @@ async fn row_count(directory: &std::path::Path) -> usize {
     rows
 }
 
-#[rstest::rstest]
-#[case::append(WriteMode::Append, 4)]
-#[case::overwrite(WriteMode::Overwrite, 3)]
 #[tokio::test]
-async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
+async fn append_adds_rows() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let batch = batch();
@@ -209,11 +192,11 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
         .open(
             Url::from_directory_path(&path).unwrap(),
             batch.schema(),
-            WriteOptions { mode, ..options() },
+            options().with_mode(WriteMode::Append),
         )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    assert_eq!(row_count(&path).await, expected_rows);
+    assert_eq!(row_count(&path).await, 4);
 }

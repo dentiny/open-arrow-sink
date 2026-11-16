@@ -30,22 +30,28 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ```rust,no_run
-use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use open_arrow_sink::{Ordering, Sink, WriteOptions, parquet::{ParquetDirectorySink, Url}};
+use open_arrow_sink::{
+    Ordering, Sink, WriteOptions,
+    parquet::{ParquetDirectorySink, Url},
+};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = Url::from_directory_path(std::path::absolute("new-output")?)
         .map_err(|_| "invalid destination path")?;
     let batch = RecordBatch::try_from_iter([(
-        "id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+        "id",
+        Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
     )])?;
-    let mut writer = ParquetDirectorySink::default().open(
-        destination,
-        batch.schema(),
-        WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
-    ).await?;
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            destination,
+            batch.schema(),
+            WriteOptions::default().with_ordering(Ordering::Unordered),
+        )
+        .await?;
     if let Err(error) = writer.write(batch).await {
         let _ = writer.abort().await;
         return Err(error.into());
@@ -68,7 +74,7 @@ The default write mode is `Create`. Iceberg requires explicit `WriteMode::Append
 
 | Destination | Facade feature | Request | Modes | Publication |
 | --- | --- | --- | --- | --- |
-| [Parquet directory](sink/parquet/README.md) | `sink-parquet` | `Url` | Create, Append, filesystem Overwrite | Files can be visible before commit; no directory transaction |
+| [Parquet directory](sink/parquet/README.md) | `sink-parquet` | `Url` | Create, Append | Files can be visible before commit; no directory transaction |
 | [Iceberg table](sink/iceberg/README.md) | `sink-iceberg` | SDK `TableIdent` | Append to an existing table | One native fast-append transaction |
 | [Lance dataset](sink/lance/README.md) | `sink-lance` | `Url` | Create, Append, versioned Overwrite | Native data manifest, then optional index commits |
 

@@ -42,7 +42,25 @@ impl Default for PartitionOptions {
     }
 }
 
+/// Session options. Start from [`Self::default`] and use the `with_*` methods
+/// or mutate public fields; this allows future options to receive defaults.
+///
+/// ```
+/// use open_arrow_sink_core::{Ordering, WriteMode, WriteOptions};
+/// let mut options = WriteOptions::default()
+///     .with_mode(WriteMode::Append)
+///     .with_ordering(Ordering::Unordered);
+/// options.target_file_size = Some(64 * 1024 * 1024);
+/// ```
+///
+/// External struct literals are deliberately unsupported, including updates:
+///
+/// ```compile_fail,E0639
+/// use open_arrow_sink_core::{WriteMode, WriteOptions};
+/// let options = WriteOptions { mode: WriteMode::Append, ..WriteOptions::default() };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WriteOptions {
     /// Optional shared I/O observer. Layers forward it; instrumented backends
     /// record measured payloads independently of commit success.
@@ -87,5 +105,58 @@ impl Default for WriteOptions {
             storage_version: None,
             cleanup_on_error: true,
         }
+    }
+}
+
+impl WriteOptions {
+    /// Set `io_metrics` while preserving all other options.
+    pub fn with_io_metrics(mut self, io_metrics: Option<crate::IoMetrics>) -> Self {
+        self.io_metrics = io_metrics;
+        self
+    }
+    /// Set `blob_handle` while preserving all other options.
+    pub fn with_blob_handle(mut self, blob_handle: Option<crate::BlobHandleConfig>) -> Self {
+        self.blob_handle = blob_handle;
+        self
+    }
+    /// Set `mode` while preserving all other options.
+    pub fn with_mode(mut self, mode: WriteMode) -> Self {
+        self.mode = mode;
+        self
+    }
+    /// Set `ordering` while preserving all other options.
+    pub fn with_ordering(mut self, ordering: Ordering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+    /// Set `compression` while preserving all other options.
+    pub fn with_compression(mut self, compression: CompressionOptions) -> Self {
+        self.compression = compression;
+        self
+    }
+    /// Set `partition` while preserving all other options.
+    pub fn with_partition(mut self, partition: Option<PartitionOptions>) -> Self {
+        self.partition = partition;
+        self
+    }
+    /// Set `indexes` while preserving all other options.
+    pub fn with_indexes(mut self, indexes: Vec<IndexSpec>) -> Self {
+        self.indexes = indexes;
+        self
+    }
+    /// Set `target_file_size` while preserving all other options.
+    pub fn with_target_file_size(mut self, target_file_size: Option<usize>) -> Self {
+        self.target_file_size = target_file_size;
+        self
+    }
+    /// Set `storage_version` while preserving all other options.
+    pub fn with_storage_version(mut self, storage_version: Option<String>) -> Self {
+        self.storage_version = storage_version;
+        self
+    }
+    /// Set `cleanup_on_error` while preserving all other options.
+    pub fn with_cleanup_on_error(mut self, cleanup_on_error: bool) -> Self {
+        self.cleanup_on_error = cleanup_on_error;
+        self
     }
 }

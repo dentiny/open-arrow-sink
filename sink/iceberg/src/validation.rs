@@ -70,20 +70,6 @@ pub(crate) fn validate_table(
     Ok(())
 }
 
-pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
-    if failed {
-        return Err(error::failed_write());
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_commit_state(failed: bool) -> Result<()> {
-    if failed {
-        return Err(error::failed_commit());
-    }
-    Ok(())
-}
-
 /// Parse native SDK locations before validating them against the storage scope.
 pub(crate) fn storage_location(path: &str) -> iceberg::Result<open_arrow_sink_storage::Url> {
     if path.starts_with('/') {
