@@ -86,7 +86,9 @@ partition writers, and an empty session does not publish a snapshot.
 row-group buffering and file footers may make actual files larger.
 
 `abort` drops the file writer and attempts to delete only that session's unique
-data prefix when `cleanup_on_error` is enabled. Drop and failed/cancelled commits can leave orphan files. Commit
+data prefix when `cleanup_on_error` is enabled. With `OpenDalStorageFactory`,
+prefix cleanup also aborts unfinished uploads before deleting completed objects.
+Drop and failed/cancelled commits can leave orphan files. Commit
 errors may have an unknown publication outcome: reload/reconcile the table before
 retrying; files are deliberately retained on failure to avoid deleting committed
 data. SDK catalog commit behavior (including its retry policy) applies.
@@ -172,8 +174,13 @@ reconstruct them with the configured operator in another process.
 
 Native Iceberg owns publication and commit-failure handling. This adapter does
 not change those semantics or introduce a second table transaction. Iceberg's
-`FileWrite` interface has no asynchronous abort method; dropped uploads may need
-backend lifecycle cleanup even when session-owned published files are removed.
+`FileWrite` interface has no asynchronous abort method, so this factory retains
+unfinished native upload handles until successful close or explicit prefix
+cleanup. Factory clones and their `FileIO` instances share these handles;
+cleaning one prefix does not abort writers in another prefix. With cleanup
+disabled, abandoned handles remain until prefix cleanup or factory destruction.
+Drop performs no asynchronous work. Process crashes and other caller-provided
+storage factories still require backend lifecycle cleanup for unfinished uploads.
 
 ### Supported write modes
 
