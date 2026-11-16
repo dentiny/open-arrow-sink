@@ -1,4 +1,5 @@
 use crate::{CompressionOptions, IndexSpec, PartitionType};
+use std::num::NonZeroUsize;
 
 /// How a session treats its destination. Support is declared by each sink.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,6 +43,30 @@ impl Default for PartitionOptions {
     }
 }
 
+/// Per-session streaming upload overrides. Unset fields preserve storage defaults.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UploadConfig {
+    /// Upload part size in bytes. The backend may enforce a larger minimum.
+    pub part_size: Option<NonZeroUsize>,
+    /// Concurrent upload requests per writer, independently of the session's
+    /// writer count and aggregate HTTP budget.
+    pub concurrency: Option<NonZeroUsize>,
+}
+
+impl UploadConfig {
+    /// Override the storage upload part size.
+    pub fn with_part_size(mut self, size: Option<NonZeroUsize>) -> Self {
+        self.part_size = size;
+        self
+    }
+
+    /// Override the storage upload concurrency for each writer.
+    pub fn with_concurrency(mut self, concurrency: Option<NonZeroUsize>) -> Self {
+        self.concurrency = concurrency;
+        self
+    }
+}
+
 /// Session options. Start from [`Self::default`] and use the `with_*` methods
 /// or mutate public fields; this allows future options to receive defaults.
 ///
@@ -80,6 +105,8 @@ pub struct WriteOptions {
     /// Indexes to construct after writing. Empty by default; unsupported sinks
     /// reject nonempty requests before opening a writer.
     pub indexes: Vec<IndexSpec>,
+    /// Streaming upload overrides. Unset fields preserve storage defaults.
+    pub upload: UploadConfig,
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
@@ -101,6 +128,7 @@ impl Default for WriteOptions {
             compression: CompressionOptions::default(),
             partition: None,
             indexes: Vec::new(),
+            upload: UploadConfig::default(),
             target_file_size: None,
             storage_version: None,
             cleanup_on_error: true,
@@ -142,6 +170,11 @@ impl WriteOptions {
     /// Set `indexes` while preserving all other options.
     pub fn with_indexes(mut self, indexes: Vec<IndexSpec>) -> Self {
         self.indexes = indexes;
+        self
+    }
+    /// Set `upload` while preserving all other options.
+    pub fn with_upload(mut self, upload: UploadConfig) -> Self {
+        self.upload = upload;
         self
     }
     /// Set `target_file_size` while preserving all other options.

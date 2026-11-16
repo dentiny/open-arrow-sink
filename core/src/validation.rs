@@ -22,6 +22,11 @@ pub fn validate_options(
     if options.blob_handle.is_some() && !capability.supports_blob_handle {
         return Err(Error::Unsupported("blob handle configuration".into()));
     }
+    if (options.upload.part_size.is_some() || options.upload.concurrency.is_some())
+        && !capability.supports_upload_options
+    {
+        return Err(Error::Unsupported("upload part size or concurrency".into()));
+    }
     validate_storage_version_options(
         options.storage_version.as_deref(),
         capability.supports_storage_version,

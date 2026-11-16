@@ -23,7 +23,6 @@ lance-file = { version = "14.0.1", default-features = false }
 lance-table = { version = "14.0.1", default-features = false }
 lance-io = { version = "14.0.1", default-features = false }
 object_store = { version = "0.14.2", default-features = false }
-object_store_opendal = { version = "0.60.2", default-features = false }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

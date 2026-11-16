@@ -17,3 +17,14 @@ pub use url::Url;
 
 mod download_pool;
 pub use download_pool::DownloadPool;
+
+mod object_store;
+
+impl Storage {
+    /// Adapt this namespace's operator to the object_store API. Multipart uploads
+    /// share the byte writer's part-size and concurrency settings; other operations
+    /// retain the upstream OpenDAL adapter semantics.
+    pub fn object_store(&self) -> std::sync::Arc<dyn ::object_store::ObjectStore> {
+        std::sync::Arc::new(object_store::UploadStore::new(self.clone()))
+    }
+}
