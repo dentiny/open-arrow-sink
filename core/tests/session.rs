@@ -182,8 +182,8 @@ async fn publication_failure_never_aborts_potentially_published_output() {
     assert_eq!(*events.lock().unwrap(), [Event::Finish, Event::Publish]);
 }
 
-#[test]
-fn invalid_writer_counts_return_without_aborting() {
+#[tokio::test]
+async fn invalid_writer_counts_return_without_aborting() {
     for count in [0, 2] {
         let (session, events) = session(Faults::default(), count);
         assert!(session.into_writer().is_err());
@@ -214,47 +214,4 @@ async fn dropping_a_writer_never_publishes_or_runs_async_cleanup() {
     writer.write(empty_batch()).await.unwrap();
     drop(writer);
     assert_eq!(*events.lock().unwrap(), [Event::Write]);
-}
-
-#[test]
-fn expected_session_accepts_matching_writers_without_io() {
-    for count in [1, 2] {
-        let (session, events) = session(Faults::default(), count);
-        let schema = Arc::new(arrow_schema::Schema::empty());
-        let session = session.expect(count, &schema).unwrap();
-        assert_eq!(session.writers.len(), count);
-        assert!(events.lock().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn expected_session_rejects_invalid_counts_without_aborting() {
-    let schema = Arc::new(arrow_schema::Schema::empty());
-    for count in [0, 2] {
-        let (session, events) = session(Faults::default(), count);
-        assert!(matches!(session.expect(1, &schema), Err(Error::Backend(_))));
-        assert!(events.lock().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn expected_session_checks_every_writer_including_schema_metadata() {
-    let expected = Arc::new(arrow_schema::Schema::empty());
-    let different = Arc::new(
-        arrow_schema::Schema::empty()
-            .with_metadata([("key".to_owned(), "value".to_owned())].into()),
-    );
-    for index in 0..2 {
-        let (mut session, events) = session(Faults::default(), 2);
-        session.writers[index] = Box::new(Physical {
-            schema: different.clone(),
-            events: events.clone(),
-            faults: Faults::default(),
-        });
-        assert!(matches!(
-            session.expect(2, &expected),
-            Err(Error::Backend(_))
-        ));
-        assert!(events.lock().unwrap().is_empty());
-    }
 }

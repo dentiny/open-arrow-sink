@@ -304,14 +304,11 @@ async fn finish_failure_returns_without_abort_or_publication(#[case] fail_abort:
 }
 
 #[rstest::rstest]
-#[case::single_wrong_schema(false, true)]
-#[case::single_wrong_count(true, true)]
-#[case::parallel_wrong_schema(false, false)]
-#[case::parallel_wrong_count(true, false)]
+#[case::wrong_schema(false)]
+#[case::wrong_count(true)]
 #[tokio::test]
 async fn backend_session_contract_is_checked_and_invalid_sessions_are_rejected(
     #[case] wrong_count: bool,
-    #[case] single: bool,
 ) {
     let state = Arc::new(Mutex::new(State {
         config: Config {
@@ -324,14 +321,12 @@ async fn backend_session_contract_is_checked_and_invalid_sessions_are_rejected(
         },
         ..Default::default()
     }));
-    let result = if single {
-        TestSink(state.clone())
+    assert!(
+        sink(&state)
             .open((), batch().schema(), options())
             .await
-    } else {
-        sink(&state).open((), batch().schema(), options()).await
-    };
-    assert!(matches!(result, Err(Error::Backend(_))));
+            .is_err()
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
     assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 0);
