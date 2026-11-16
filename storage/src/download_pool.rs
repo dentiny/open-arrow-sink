@@ -59,11 +59,16 @@ impl DownloadPool {
         opendal::install_default();
         let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
         let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(Error::backend)?;
-        Storage::try_new(
-            operator,
-            HTTP_PLACEHOLDER.parse().map_err(Error::backend)?,
-            config,
-        )
+        Storage::new(operator, HTTP_PLACEHOLDER.parse().map_err(Error::backend)?)?
+            .with_config(config)
+    }
+
+    /// Apply policies to HTTP downloads and URL-resolved non-HTTP sources.
+    /// Explicit source stores retain their own configuration.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.sources = self.sources.with_config(config.clone())?;
+        self.http = self.http.with_config(config)?;
+        Ok(self)
     }
 
     /// Route HTTP(S) downloads through `storage`, keeping its policies, request
