@@ -102,7 +102,9 @@ when one fails, and the original dataset handle is refreshed after they finish.
 The first observed error is returned after all tasks complete. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
 `Error::Backend` contains an `IndexCommitError` identifying the failed index type
-and column, or a task failure if a worker panics. Dropping the commit future aborts
+and column, or a task failure if a worker panics. Its `summary` retains the
+committed row count even when indexing fails; retry index construction rather
+than rewriting already committed rows. Dropping the commit future aborts
 the task set; native publication may still have an uncertain outcome.
 
 A runnable index construction example (destination must not exist):

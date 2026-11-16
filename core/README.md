@@ -25,7 +25,8 @@ one exact top-level name; dots are literal and duplicate names are ambiguous.
 `WriteSummary.rows_written` is the successful session's committed row count.
 `Error::Unsupported` covers rejected requests, `SchemaMismatch` covers batch
 schemas, and `Backend` retains an error source. `IndexCommitError`, wrapped in
-`Backend`, identifies index construction failure after data publication.
+`Backend`, identifies index construction failure after data publication and
+retains the successful data write in its `summary` field.
 
 See [architecture](../docs/architecture.md), [options](../docs/options.md),
 [implementing sinks](../docs/extending-sinks.md), and
