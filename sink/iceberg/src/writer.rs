@@ -6,13 +6,12 @@ use open_arrow_sink_core::{
 pub(crate) struct IcebergTableWriter {
     schema: SchemaRef,
     inner: Box<dyn IcebergWriter>,
-    rows: u64,
     state: Poison,
 }
 
 #[async_trait]
 impl DataWriter for IcebergTableWriter {
-    type Output = (u64, Vec<iceberg::spec::DataFile>);
+    type Output = Vec<iceberg::spec::DataFile>;
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -20,9 +19,7 @@ impl DataWriter for IcebergTableWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
-        let rows = batch.num_rows() as u64;
         self.inner.write(batch).await.map_err(Error::backend)?;
-        self.rows += rows;
         self.state.complete();
         Ok(())
     }
@@ -30,7 +27,7 @@ impl DataWriter for IcebergTableWriter {
     async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
         let files = self.inner.close().await.map_err(Error::backend)?;
-        Ok((self.rows, files))
+        Ok(files)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())
@@ -42,7 +39,6 @@ impl IcebergTableWriter {
         Self {
             schema,
             inner,
-            rows: 0,
             state: Poison::default(),
         }
     }

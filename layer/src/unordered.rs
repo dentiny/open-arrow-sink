@@ -3,8 +3,7 @@ use std::num::NonZeroUsize;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
     DataWriter, GuardedWriter, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef,
-    SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait,
-    validation,
+    SessionCommitter, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
 };
 
 /// Pre-open independent writers and dispatch batches to available writers.
@@ -152,7 +151,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(mut self: Box<Self>) -> Result<()> {
         self.drain_all().await?;
         let outputs =
             futures::future::try_join_all(self.idle.iter_mut().map(|writer| writer.finish()))

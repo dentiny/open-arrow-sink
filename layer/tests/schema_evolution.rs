@@ -40,7 +40,7 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit(#[case] paral
     assert_eq!(writer.schema(), &input.schema());
     writer.write(input.clone()).await.unwrap();
     writer.write(input.slice(0, 0)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    writer.commit().await.unwrap();
     let state = state.lock().unwrap();
     assert_eq!(state.committed_rows(), Some(3));
     assert_eq!(state.schemas.len(), 1);

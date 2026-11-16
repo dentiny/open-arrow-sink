@@ -6,7 +6,7 @@ use arrow_array::{ArrayRef, Int64Array};
 use counting_sink::CountingSink;
 use open_arrow_sink_core::{
     Error, GuardedWriter, Layer, Ordering, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
-    SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
+    SinkExt, WriteOptions, Writer, async_trait,
 };
 use std::sync::{
     Arc,
@@ -77,7 +77,7 @@ impl Writer for LimitedWriter {
         self.inner.write(batch).await?;
         Ok(())
     }
-    async fn commit(self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>) -> Result<()> {
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         .open(published.clone(), batch.schema(), options.clone())
         .await?;
     writer.write(batch.clone()).await?;
-    assert_eq!(writer.commit().await?.rows_written, 3);
+    writer.commit().await?;
     assert_eq!(published.load(AtomicOrdering::SeqCst), 3);
 
     // Rejection must poison the wrapper: commit cannot publish earlier rows.

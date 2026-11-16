@@ -123,14 +123,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only publish after all writers finish successfully.
     let committed = session.committer.commit(outputs).await;
     drop(writers);
-    let summary = committed?;
+    committed?;
     assert_eq!(downloader.buffered_bytes(), 0);
     source.delete(&source.path(&packed_source)?).await?;
     source.delete(&source.path(&dedicated_source)?).await?;
 
     let dataset = Arc::new(sink.dataset_builder(url)?.load().await?);
     let rows = WRITERS * ROWS_PER_WRITER;
-    assert_eq!(summary.rows_written, rows as u64);
+
     assert_eq!(dataset.count_rows(None).await?, rows);
     assert_eq!(dataset.get_fragments().len(), WRITERS);
     assert_eq!(dataset.version().version, 1);

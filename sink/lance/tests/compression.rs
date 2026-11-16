@@ -78,10 +78,7 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
         .unwrap();
     writer.write(input.clone()).await.unwrap();
     writer.write(input.clone()).await.unwrap();
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        2 * input.num_rows() as u64
-    );
+    writer.commit().await.unwrap();
 
     let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
     let arrow_schema = arrow_schema::Schema::from(dataset.schema());
@@ -299,10 +296,7 @@ async fn compressed_dataset(count: usize) -> (tempfile::TempDir, lance::Dataset,
     assert_eq!(writer.schema(), &schema);
     writer.write(expected.clone()).await.unwrap();
     writer.write(expected.clone()).await.unwrap();
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        2 * count as u64
-    );
+    writer.commit().await.unwrap();
 
     let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
     (temp, dataset, expected)

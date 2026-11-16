@@ -5,7 +5,7 @@
 use futures::channel::oneshot;
 use open_arrow_sink_core::{
     DataWriter, Error, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter,
-    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
+    Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
 };
 use std::{
     collections::HashSet,
@@ -253,7 +253,7 @@ impl DataWriter for TestWriter {
 struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoObservers>);
 #[async_trait]
 impl SessionCommitter<u64> for TestCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
         let mut state = self.0.lock().unwrap();
         assert_eq!(state.count(Event::Finish), state.count(Event::Open));
         state.events.push(Event::CommitAttempt);
@@ -265,7 +265,7 @@ impl SessionCommitter<u64> for TestCommitter {
         }
         let rows = outputs.into_iter().sum();
         state.events.push(Event::Commit { rows });
-        Ok(WriteSummary { rows_written: rows })
+        Ok(())
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.0.lock().unwrap().events.push(Event::SessionAbort);

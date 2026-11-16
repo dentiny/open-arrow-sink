@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     writer.write(batch).await?;
-    let summary = writer.commit().await?;
-    println!("Wrote {} rows", summary.rows_written);
+    writer.commit().await?;
+    println!("Write committed");
     Ok(())
 }

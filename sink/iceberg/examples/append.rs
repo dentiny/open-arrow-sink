@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     writer.write(batch).await?;
-    let summary = writer.commit().await?;
+    writer.commit().await?;
     let table = catalog.load_table(&identifier).await?;
     let batches: Vec<RecordBatch> = table
         .scan()
@@ -70,8 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_collect()
         .await?;
     println!(
-        "committed={}, read={}",
-        summary.rows_written,
+        "Read {} committed rows",
         batches.iter().map(RecordBatch::num_rows).sum::<usize>()
     );
     Ok(())

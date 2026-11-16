@@ -38,7 +38,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
         release(&state);
         third.await.unwrap();
     }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    writer.commit().await.unwrap();
     let state = state.lock().unwrap();
     assert_eq!(state.committed_rows().is_some() as usize, 1);
     assert_eq!(state.committed_rows(), Some(9));
@@ -89,7 +89,7 @@ async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
     if abort {
         writer.abort().await.unwrap();
     } else {
-        assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+        writer.commit().await.unwrap();
     }
     let state = state.lock().unwrap();
     assert_eq!(state.count(Event::WriteCompleted), 1);
@@ -199,7 +199,7 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
     assert_eq!(state.lock().unwrap().count(Event::WriteStarted), 3);
     assert_eq!(state.lock().unwrap().count(Event::WriteCompleted), 2);
     release(&state);
-    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    writer.commit().await.unwrap();
 }
 
 #[tokio::test]

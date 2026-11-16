@@ -41,11 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
     writer.write(batch).await?;
-    let summary = writer.commit().await?;
+    writer.commit().await?;
     let dataset = sink.dataset_builder(destination.clone())?.load().await?;
     println!(
-        "Committed {} rows and built {} indexes in {}",
-        summary.rows_written,
+        "Committed data and built {} indexes in {}",
         dataset.load_indices().await?.len(),
         destination
     );

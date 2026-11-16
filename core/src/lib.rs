@@ -10,7 +10,6 @@ pub use io_metrics::{IoMetrics, IoObservers, IoSnapshot};
 mod layer;
 mod poison;
 mod request;
-mod result;
 pub use poison::Poison;
 mod session;
 mod sink;
@@ -29,7 +28,6 @@ pub use error::{Error, IndexCommitError, Result};
 pub use index::{ExistingIndexPolicy, IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, UploadConfig, WriteMode, WriteOptions};
-pub use result::WriteSummary;
 pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;
 

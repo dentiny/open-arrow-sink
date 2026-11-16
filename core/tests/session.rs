@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use open_arrow_sink_core::{
-    DataWriter, Error, RecordBatch, Result, SchemaRef, SessionCommitter, WriteSession,
-    WriteSummary, async_trait,
+    DataWriter, Error, RecordBatch, Result, SchemaRef, SessionCommitter, WriteSession, async_trait,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,13 +67,13 @@ impl DataWriter for Physical {
 }
 #[async_trait]
 impl SessionCommitter<u64> for Committer {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
         self.events.lock().unwrap().push(Event::Publish);
         assert_eq!(outputs, vec![7]);
         if self.faults.publish {
             Err(Error::SchemaMismatch)
         } else {
-            Ok(WriteSummary { rows_written: 7 })
+            Ok(())
         }
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -114,7 +113,7 @@ async fn success_finishes_before_exactly_one_publication() {
     let (session, events) = session(Faults::default(), 1);
     let mut writer = session.into_writer().unwrap();
     writer.write(empty_batch()).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 7);
+    writer.commit().await.unwrap();
     assert_eq!(
         *events.lock().unwrap(),
         [Event::Write, Event::Finish, Event::Publish]

@@ -1,4 +1,4 @@
-use crate::{RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
+use crate::{RecordBatch, Result, SchemaRef, async_trait};
 
 /// One write session. Drop never commits; callers explicitly commit or abort.
 /// After a write error or cancellation, callers must abort or drop the writer.
@@ -17,7 +17,7 @@ pub trait Writer: Send {
 
     /// Finish buffered writes and commit using the backend's documented semantics.
     /// Consumes the writer even on failure; no automatic cleanup or retry is provided.
-    async fn commit(self: Box<Self>) -> Result<WriteSummary>;
+    async fn commit(self: Box<Self>) -> Result<()>;
 
     /// Stop writing and end the session without deleting persisted output.
     async fn abort(self: Box<Self>) -> Result<()>;
