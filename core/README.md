@@ -30,3 +30,19 @@ schemas, and `Backend` retains an error source. `IndexCommitError`, wrapped in
 See [architecture](../docs/architecture.md), [options](../docs/options.md),
 [implementing sinks](../docs/extending-sinks.md), and
 [implementing layers](../docs/extending-layers.md) for lifecycle requirements.
+
+### Publication outcome on errors
+
+`Error::publication_outcome()` returns typed `PublicationOutcome` context:
+`NotPublished` means a transactional backend guarantees this session published no
+metadata; `Published` means data committed and a later operation (such as index
+construction or reservation cleanup) failed; `Unknown` requires checking the
+actual destination before retrying. Unclassified errors and third-party sinks
+conservatively return `Unknown`. Error context retains the original source chain;
+postcommit `IndexCommitError` is still directly downcastable from `Error::Backend`.
+
+This is not an automatic retry decision. Even `NotPublished` can leave reservations
+and orphan files, and retrying Create may need cleanup or a different mode. Parquet
+Create/Append files are visible before commit, so their precommit errors remain
+`Unknown`. An error-free result does not arise on cancellation: cancelling commit
+can lose its result, and its publication outcome must also be treated as unknown.

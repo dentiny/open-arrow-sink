@@ -166,13 +166,18 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
+        let pre_commit_outcome = self
+            .committer
+            .as_ref()
+            .expect("session has a committer")
+            .pre_commit_outcome();
         if let Err(error) = crate::validation::validate_writer_state(self.failed) {
             let _ = self.cleanup().await;
-            return Err(error);
+            return Err(error.with_publication_outcome(pre_commit_outcome));
         }
         if let Err(error) = self.drain().await {
             let _ = self.cleanup().await;
-            return Err(error);
+            return Err(error.with_publication_outcome(pre_commit_outcome));
         }
         // Finish in parallel, retaining every writer until all finish results
         // are known. A preparation error must never publish a partial session.
@@ -196,7 +201,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
         }
         if let Some(error) = first_error {
             let _ = self.cleanup().await;
-            return Err(error);
+            return Err(error.with_publication_outcome(pre_commit_outcome));
         }
         // From here publication and any ambiguous failure belong to the backend.
         self.committer

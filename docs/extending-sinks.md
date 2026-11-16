@@ -146,3 +146,15 @@ Reference implementations:
 [committer](../sink/iceberg/src/committer.rs),
 [Lance sink](../sink/lance/src/sink.rs) and
 [committer](../sink/lance/src/committer.rs).
+
+## Typed publication failures
+
+Implement `SessionCommitter::pre_commit_outcome` only when the backend can prove
+its publication boundary. The default is `PublicationOutcome::Unknown`, suitable
+for direct-file backends. Lance/Iceberg return `NotPublished` before entering
+native metadata commit; the one-writer and unordered adapters preserve this fact
+on write/finish failure during commit. Native publication errors remain `Unknown`.
+Wrap errors with `Error::with_publication_outcome` at a proven boundary; it retains
+the source chain and a known inner outcome. A successful native publication followed
+by cleanup or index failure is `Published`. Never classify a generic network error
+as unpublished merely because no response was received.

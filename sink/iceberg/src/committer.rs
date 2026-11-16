@@ -16,6 +16,9 @@ pub(crate) struct IcebergCommitter {
 
 #[async_trait]
 impl SessionCommitter<(u64, Vec<iceberg::spec::DataFile>)> for IcebergCommitter {
+    fn pre_commit_outcome(&self) -> open_arrow_sink_core::PublicationOutcome {
+        open_arrow_sink_core::PublicationOutcome::NotPublished
+    }
     async fn commit(
         self: Box<Self>,
         outputs: Vec<(u64, Vec<iceberg::spec::DataFile>)>,
@@ -32,9 +35,16 @@ impl SessionCommitter<(u64, Vec<iceberg::spec::DataFile>)> for IcebergCommitter 
                 .fast_append()
                 .add_data_files(files)
                 .apply(tx)
-                .map_err(backend)?;
+                .map_err(|error| {
+                    backend(error).with_publication_outcome(
+                        open_arrow_sink_core::PublicationOutcome::NotPublished,
+                    )
+                })?;
             // Retain data on error: catalog publication may have succeeded.
-            tx.commit(self.catalog.as_ref()).await.map_err(backend)?;
+            tx.commit(self.catalog.as_ref()).await.map_err(|error| {
+                backend(error)
+                    .with_publication_outcome(open_arrow_sink_core::PublicationOutcome::Unknown)
+            })?;
         }
         Ok(WriteSummary { rows_written })
     }

@@ -29,6 +29,7 @@ struct State {
     requested_ordering: Option<Ordering>,
     wrong_schema: bool,
     prepared: usize,
+    pre_commit_outcome: Option<open_arrow_sink_core::PublicationOutcome>,
     commit_attempts: usize,
     session_aborted: usize,
 }
@@ -151,6 +152,13 @@ impl DataWriter for TestWriter {
 struct TestCommitter(Arc<Mutex<State>>);
 #[async_trait]
 impl SessionCommitter<u64> for TestCommitter {
+    fn pre_commit_outcome(&self) -> open_arrow_sink_core::PublicationOutcome {
+        self.0
+            .lock()
+            .unwrap()
+            .pre_commit_outcome
+            .unwrap_or(open_arrow_sink_core::PublicationOutcome::Unknown)
+    }
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
         let mut state = self.0.lock().unwrap();
         assert_eq!(state.prepared, state.opened);
@@ -380,17 +388,26 @@ async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     assert_eq!(state.lock().unwrap().aborted, 2);
 }
 
+#[rstest::rstest]
+#[case::direct_files(open_arrow_sink_core::PublicationOutcome::Unknown)]
+#[case::transactional(open_arrow_sink_core::PublicationOutcome::NotPublished)]
 #[tokio::test]
-async fn finish_failure_aborts_even_successfully_finished_writers_without_publication() {
+async fn finish_failure_aborts_even_successfully_finished_writers_without_publication(
+    #[case] outcome: open_arrow_sink_core::PublicationOutcome,
+) {
     let state = Arc::new(Mutex::new(State {
         fail_finish: true,
+        pre_commit_outcome: Some(outcome),
         ..Default::default()
     }));
     let writer = sink(&state)
         .open((), batch().schema(), options())
         .await
         .unwrap();
-    assert!(writer.commit().await.is_err());
+    assert_eq!(
+        writer.commit().await.unwrap_err().publication_outcome(),
+        outcome
+    );
     let state = state.lock().unwrap();
     assert_eq!(
         (
@@ -525,4 +542,33 @@ async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
         }
         session.committer.abort().await.unwrap();
     }
+}
+
+#[rstest::rstest]
+#[case::direct_files(open_arrow_sink_core::PublicationOutcome::Unknown)]
+#[case::transactional(open_arrow_sink_core::PublicationOutcome::NotPublished)]
+#[tokio::test]
+async fn ordered_session_reports_backend_precommit_guarantee(
+    #[case] outcome: open_arrow_sink_core::PublicationOutcome,
+) {
+    let state = Arc::new(Mutex::new(State {
+        fail_finish: true,
+        pre_commit_outcome: Some(outcome),
+        ..Default::default()
+    }));
+    let session = TestSink(state.clone())
+        .open_writers(
+            (),
+            batch().schema(),
+            options(),
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .await
+        .unwrap();
+    let writer = session.into_writer().await.unwrap();
+    assert_eq!(
+        writer.commit().await.unwrap_err().publication_outcome(),
+        outcome
+    );
+    assert_eq!(state.lock().unwrap().commit_attempts, 0);
 }

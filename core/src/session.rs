@@ -19,6 +19,13 @@ pub trait DataWriter: Send {
 /// Backend-owned publication boundary for all writers in one session.
 #[async_trait]
 pub trait SessionCommitter<T: Send + 'static>: Send {
+    /// What this backend guarantees before `commit` is invoked. Transactional
+    /// metadata backends can return `NotPublished`; direct-file sinks must keep
+    /// `Unknown`, because completed files may already be visible to readers.
+    fn pre_commit_outcome(&self) -> crate::PublicationOutcome {
+        crate::PublicationOutcome::Unknown
+    }
+
     /// Called exactly once, after every data writer finishes successfully.
     /// Owns publication-failure cleanup. Publication may have succeeded despite
     /// an error, so callers must never abort writers after entering this method.
@@ -90,8 +97,9 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
         match output {
             Ok(output) => self.committer.commit(vec![output]).await,
             Err(error) => {
+                let outcome = self.committer.pre_commit_outcome();
                 let _ = self.abort().await;
-                Err(error)
+                Err(error.with_publication_outcome(outcome))
             }
         }
     }

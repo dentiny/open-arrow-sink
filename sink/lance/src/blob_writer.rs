@@ -74,17 +74,29 @@ impl Writer for BlobDatasetWriter {
         if let Err(error) = crate::validation::validate_blob_commit(self.failed, &self.blob_session)
         {
             let _ = self.abort().await;
-            return Err(error);
+            return Err(error
+                .with_publication_outcome(open_arrow_sink_core::PublicationOutcome::NotPublished));
         }
         if let Err(error) = self.blob_session.cleanup().await {
             let _ = self.abort().await;
-            return Err(error);
+            return Err(error
+                .with_publication_outcome(open_arrow_sink_core::PublicationOutcome::NotPublished));
         }
         let sender = self.sender.take().unwrap();
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        let mut dataset = self
+            .task
+            .await
+            .map_err(|error| {
+                backend(error)
+                    .with_publication_outcome(open_arrow_sink_core::PublicationOutcome::Unknown)
+            })?
+            .map_err(|error| {
+                backend(error)
+                    .with_publication_outcome(open_arrow_sink_core::PublicationOutcome::Unknown)
+            })?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;

@@ -290,6 +290,9 @@ struct MetricsCommitter<T: Send + 'static> {
 }
 #[async_trait]
 impl<T: Send + 'static> SessionCommitter<T> for MetricsCommitter<T> {
+    fn pre_commit_outcome(&self) -> open_arrow_sink_core::PublicationOutcome {
+        self.inner.pre_commit_outcome()
+    }
     async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
         let summary = self.inner.commit(outputs).await?;

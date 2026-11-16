@@ -236,7 +236,10 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
     if fail_commit {
         // Dropping an unfinished blob makes commit fail before publication.
         drop(writer.create_blob().await.unwrap());
-        assert!(writer.commit().await.is_err());
+        assert_eq!(
+            writer.commit().await.unwrap_err().publication_outcome(),
+            open_arrow_sink_core::PublicationOutcome::NotPublished
+        );
     } else {
         writer.abort().await.unwrap();
     }
