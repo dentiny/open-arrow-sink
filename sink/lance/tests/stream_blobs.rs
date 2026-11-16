@@ -124,7 +124,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
     writer.abort().await.unwrap();
     assert!(
         storage
-            .list(&url.join("_blobs/").unwrap())
+            .list(&storage.resolve(&url.join("_blobs/").unwrap()).unwrap())
             .await
             .unwrap()
             .is_empty()
@@ -157,7 +157,13 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
         drop(blob.take());
     }
     assert!(writer.commit().await.is_err());
-    assert!(storage.list(&url).await.unwrap().is_empty());
+    assert!(
+        storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     if let Some(mut blob) = blob {
         assert!(blob.write(BlobChunk::new("late")).await.is_err());
         assert!(blob.finish().await.is_err());

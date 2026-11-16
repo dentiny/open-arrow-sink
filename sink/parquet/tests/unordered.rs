@@ -53,8 +53,12 @@ async fn unordered_commit_preserves_all_rows() {
         expected.len() as u64
     );
     let mut actual = Vec::new();
-    for file in storage.list(&directory).await.unwrap() {
-        assert!(file.path().ends_with(".parquet"));
+    for file in storage
+        .list(&storage.resolve(&directory).unwrap())
+        .await
+        .unwrap()
+    {
+        assert!(file.as_str().ends_with(".parquet"));
         for batch in ParquetRecordBatchReaderBuilder::try_new(storage.read(&file).await.unwrap())
             .unwrap()
             .build()

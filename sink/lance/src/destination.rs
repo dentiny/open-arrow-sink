@@ -5,7 +5,7 @@ use lance::{
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and owned publication reservation.
@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub(crate) struct LanceDestination {
     pub storage: Storage,
     pub url: Url,
+    pub path: ObjectPath,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     new_destination: bool,
@@ -24,7 +25,14 @@ impl LanceDestination {
         sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
-        let url = storage.directory_url(&url)?;
+        let path = storage.resolve(&url)?.as_dir();
+        if path.is_root() {
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
+        }
+        // Lance's native API requires a URL at its boundary.
+        let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
         let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
         let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
@@ -34,6 +42,7 @@ impl LanceDestination {
         Ok(Self {
             storage,
             url,
+            path,
             session,
             io_tracker,
             new_destination: false,
@@ -53,7 +62,7 @@ impl LanceDestination {
             )
             .await;
         }
-        if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
+        if self.storage.inspect_directory(&self.path).await? != DirectoryState::Missing {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {
@@ -81,7 +90,7 @@ impl LanceDestination {
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.new_destination {
-            self.storage.remove_all(&self.url).await?;
+            self.storage.remove_all(&self.path).await?;
         }
         Ok(())
     }
@@ -120,7 +129,10 @@ mod tests {
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();
         source
-            .write(&source_url, "custom backend".into())
+            .write(
+                &source.resolve(&source_url).unwrap(),
+                "custom backend".into(),
+            )
             .await
             .unwrap();
         let destination = Storage::new(

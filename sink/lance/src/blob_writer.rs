@@ -39,7 +39,7 @@ impl Writer for BlobDatasetWriter {
         crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
         self.state.poison();
         let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+            crate::blob::create_blob(&self.destination.path, self.blob_session.clone()).await?;
         self.state.complete();
         Ok(blob)
     }
@@ -138,7 +138,7 @@ impl BlobDatasetWriter {
             encoding_schema,
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
-                &destination.url,
+                &destination.path,
                 destination.io_tracker.clone(),
             )),
             sender: Some(sender),
