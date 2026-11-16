@@ -161,6 +161,7 @@ impl ParallelSink for LanceDatasetSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use open_arrow_sink_core::UploadConfig;
     use open_arrow_sink_storage::opendal;
 
     #[tokio::test]
@@ -172,11 +173,13 @@ mod tests {
         .unwrap();
         let url = storage.url("dataset/").unwrap();
         let sink = LanceDatasetSink::new(storage);
-        let options = WriteOptions::default()
-            .with_upload_part_size(NonZeroUsize::new(16 * 1024 * 1024))
-            .with_upload_concurrency(NonZeroUsize::new(4));
+        let options = WriteOptions::default().with_upload(
+            UploadConfig::default()
+                .with_part_size(NonZeroUsize::new(16 * 1024 * 1024))
+                .with_concurrency(NonZeroUsize::new(4)),
+        );
         let session = sink.resolve(url.clone(), &options).unwrap();
-        assert_eq!(session.storage.upload_part_size(), options.upload_part_size);
+        assert_eq!(session.storage.upload_part_size(), options.upload.part_size);
         assert_eq!(session.storage.upload_concurrency().get(), 4);
         let next = sink.resolve(url, &WriteOptions::default()).unwrap();
         assert_eq!(next.storage.upload_part_size(), None);

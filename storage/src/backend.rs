@@ -135,10 +135,10 @@ impl Storage {
     /// Other sink write options do not affect storage. Configure a clone to keep
     /// the original storage and other sessions unchanged.
     pub fn with_write_options(mut self, options: &open_arrow_sink_core::WriteOptions) -> Self {
-        if let Some(size) = options.upload_part_size {
+        if let Some(size) = options.upload.part_size {
             self.upload_part_size = Some(size);
         }
-        if let Some(concurrency) = options.upload_concurrency {
+        if let Some(concurrency) = options.upload.concurrency {
             self.upload_concurrency = concurrency;
         }
         self
@@ -396,7 +396,7 @@ impl StorageWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_arrow_sink_core::WriteOptions;
+    use open_arrow_sink_core::{UploadConfig, WriteOptions};
     use opendal::options::WriteOptions as NativeWriteOptions;
 
     #[test]
@@ -419,9 +419,11 @@ mod tests {
             (Some(16), Some(4)),
             (None, None),
         ] {
-            let options = WriteOptions::default()
-                .with_upload_part_size(size.and_then(NonZeroUsize::new))
-                .with_upload_concurrency(concurrency.and_then(NonZeroUsize::new));
+            let options = WriteOptions::default().with_upload(
+                UploadConfig::default()
+                    .with_part_size(size.and_then(NonZeroUsize::new))
+                    .with_concurrency(concurrency.and_then(NonZeroUsize::new)),
+            );
             let session = storage.clone().with_write_options(&options);
             let native = session.upload_options(NativeWriteOptions::default());
             assert_eq!(native.chunk, Some(size.unwrap_or(8 * 1024 * 1024)));

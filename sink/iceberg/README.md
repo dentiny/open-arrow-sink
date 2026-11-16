@@ -182,7 +182,7 @@ disabled, abandoned handles remain until prefix cleanup or factory destruction.
 Drop performs no asynchronous work. Process crashes and other caller-provided
 storage factories still require backend lifecycle cleanup for unfinished uploads.
 
-Per-session `WriteOptions.upload_part_size` and `upload_concurrency` overrides are
+Per-session `WriteOptions.upload.part_size` and `WriteOptions.upload.concurrency` overrides are
 unsupported because the catalog supplies FileIO. Configure
 `Storage::with_upload_part_size` and `Storage::with_upload_concurrency` before
 constructing `OpenDalStorageFactory` instead.
