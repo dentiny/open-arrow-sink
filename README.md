@@ -1,123 +1,94 @@
 # open-arrow-sink
 
-A Rust library for data developers writing Apache Arrow `RecordBatch` values to
-Parquet directories, Iceberg tables, and Lance datasets. Compose a destination
-with write layers for compression, concurrency, or URL-to-blob ingestion.
-Use it in an ingestion pipeline, export job, or application that already produces Arrow batches.
+A Rust library for writing Apache Arrow `RecordBatch` values to Parquet
+directories, Iceberg tables, and Lance datasets. Use it as the output stage of
+a data preparation or ingestion pipeline.
 
-The library is independent of
-[open-arrow-access](https://github.com/dentiny/open-arrow-access): any Arrow
-producer can supply batches. Your application owns its runtime, credentials,
-batch production, and decision to commit or abort.
+[open-arrow-access](https://github.com/dentiny/open-arrow-access) is the upstream
+read side: it discovers and decodes source data into Arrow batches. Your pipeline
+processes those batches, then passes them to open-arrow-sink for writing. The two
+libraries have no compile-time dependency; any compatible Arrow producer works.
 
-## Write your first dataset
+```text
+Sources → open-arrow-access → Arrow batches → your processing → open-arrow-sink → datasets
+```
 
-From a checkout, run the local Parquet example against a **new** directory:
+## Architecture
+
+```mermaid
+flowchart LR
+    App["Application: Arrow batches"] --> Layers["Optional layers"]
+    Layers --> Sink["Sink: open a write session"]
+    Sink --> Writers["DataWriter(s): encode output"]
+    Writers --> Storage["Storage: OpenDAL byte I/O"]
+    Writers --> Committer["SessionCommitter: publish outputs"]
+    Storage --> Destination["Parquet / Iceberg / Lance"]
+    Committer --> Destination
+```
+
+| Component | Responsibility | Code |
+| --- | --- | --- |
+| Core | Sink, writer, session, layer, options, and capability contracts | [core/src](core/src) |
+| Layers | Compression policy, concurrent writes, metrics, schema adaptation, URL-to-blob selection | [layer/src](layer/src) |
+| Storage | OpenDAL operators, credentials, byte streams, HTTP and download budgets | [storage/src](storage/src) |
+| Sinks | Destination validation, encoding, and backend-specific publication | [sink](sink) |
+| Facade | Re-exports and opt-in backend features | [src/lib.rs](src/lib.rs) |
+
+Core is independent of storage and backends. Layers and backends build on these
+contracts; the application owns the runtime and input pipeline.
+
+A reusable `Sink` opens an owned `Writer` with a fixed schema. The lifecycle is
+`open → write batches → commit` or `abort`. Writes accept data; commit finishes
+writers and publishes their outputs through one session committer. Drop never
+commits or performs async cleanup. Failed or cancelled writes make the writer
+terminal; abort stops I/O and retains persisted output. A commit error can leave
+publication uncertain, so check the destination before retrying.
+
+`Layer<S>` wraps a sink while preserving its request type.
+`sink.layer(a).layer(b)` runs through `b → a → sink`.
+`UnorderedWriteLayer` uses `ParallelSink` to create several data writers with one
+committer. Arrow layers control writes; OpenDAL layers control byte I/O.
+
+## Backends and examples
+
+| Backend | Facade feature | Modes | Publication | Example |
+| --- | --- | --- | --- | --- |
+| Parquet directory | `sink-parquet` | Create, Append | Files may be visible before commit; no directory transaction | [write_directory.rs](sink/parquet/examples/write_directory.rs) |
+| Iceberg table | `sink-iceberg` | Append to an existing table | One native fast-append transaction | [append.rs](sink/iceberg/examples/append.rs) |
+| Lance dataset | `sink-lance` | Create, Append, Overwrite | Data manifest, then optional index commits | [write_lance.rs](sink/lance/examples/write_lance.rs) |
+
+Facade features default to empty. Enable the backend you need; see
+[Cargo.toml](Cargo.toml) for cloud and codec features. Options default to Create
+and Unordered; Iceberg requires explicit Append. Bundled sinks reject
+PreserveInput. Check `Sink::capability()` and backend validation for supported
+options.
+
+Run the Parquet example with a new destination directory:
 
 ```sh
 cargo run --locked -p open-arrow-sink-parquet --example write_directory -- /tmp/my-first-arrow-output
 ```
 
-For an application, use the repository dependency below until your intended
-release is published. Pin `rev` to a reviewed commit for reproducible builds;
-after publication, use the matching crates.io version instead.
+For integration details, start with the examples above and the
+[write options](core/src/request.rs). Generate API documentation locally:
 
-```toml
-[dependencies]
-open-arrow-sink = { git = "https://github.com/dentiny/open-arrow-sink", default-features = false, features = ["sink-parquet"] }
-arrow-array = "58.4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```sh
+cargo doc --workspace --all-features --no-deps --locked --open
 ```
 
-```rust,no_run
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use open_arrow_sink::{
-    Ordering, Sink, WriteOptions,
-    parquet::{ParquetDirectorySink, Url},
-};
-use std::sync::Arc;
+## Extending and developing
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let destination = Url::from_directory_path(std::path::absolute("new-output")?)
-        .map_err(|_| "invalid destination path")?;
-    let batch = RecordBatch::try_from_iter([(
-        "id",
-        Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-    )])?;
-    let mut writer = ParquetDirectorySink::default()
-        .open(
-            destination,
-            batch.schema(),
-            WriteOptions::default().with_ordering(Ordering::Unordered),
-        )
-        .await?;
-    writer.write(batch).await?;
-    let summary = writer.commit().await?;
-    println!("Committed {} rows", summary.rows_written);
-    Ok(())
-}
+Implement a **sink** for a new destination, or a **layer** for reusable policy or
+batch transformation. Read [Extending](docs/extending.md) for the contracts and
+runnable examples. Extensions can live in separate crates without registration.
+
+Use a Rust toolchain supporting edition 2024. Lance dependencies also need
+`protoc`. Run the workspace checks from the repository root:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-`open` fixes the schema. `write` accepts batches; only `commit` finishes and
-publishes according to the backend's rules. Drop never commits or performs async
-cleanup. After a failed or cancelled write, abort or drop that writer.
-
-All bundled sinks accept the default `Ordering::Unordered`; none guarantees input
-row order on scans. Explicit `Ordering::PreserveInput` requests are rejected.
-The default write mode is `Create`. Iceberg requires explicit `WriteMode::Append`.
-
-## Choose a destination
-
-| Destination | Facade feature | Request | Modes | Publication |
-| --- | --- | --- | --- | --- |
-| [Parquet directory](sink/parquet/README.md) | `sink-parquet` | `Url` | Create, Append | Files can be visible before commit; no directory transaction |
-| [Iceberg table](sink/iceberg/README.md) | `sink-iceberg` | SDK `TableIdent` | Append to an existing table | One native fast-append transaction |
-| [Lance dataset](sink/lance/README.md) | `sink-lance` | `Url` | Create, Append, versioned Overwrite | Native data manifest, then optional index commits |
-
-See the [support matrix](docs/support.md) for partitioning, codecs, indexes, blobs,
-storage versions, and restrictions. Features are opt-in and the facade defaults
-are empty. Core contracts, layers, and shared storage are always exported;
-enabling a feature exposes a sink, while constructing it selects its behavior.
-
-## How the pieces compose
-
-```mermaid
-flowchart LR
-    Producer["Your application: Arrow batches"] --> Layers["Optional write layers"]
-    Layers --> Sink["Sink: destination and fixed-schema session"]
-    Sink --> Writers["Data writers: encode files / fragments"]
-    Writers --> Storage["Shared OpenDAL byte I/O"]
-    Writers --> Committer["Session committer: publish all outputs"]
-    Committer --> Destination["Parquet directory / Iceberg table / Lance dataset"]
-    Storage --> Destination
-```
-
-A sink owns backend semantics and a typed request. A layer wraps a sink while
-preserving that request type. Ordinary bundled writes use one data writer;
-`UnorderedWriteLayer` uses several writers in one backend publication session.
-OpenDAL layers configure byte I/O separately from Arrow write layers.
-
-```rust,ignore
-use std::num::NonZeroUsize;
-use open_arrow_sink::{SinkExt, parquet::ParquetDirectorySink, layer::UnorderedWriteLayer};
-
-let sink = ParquetDirectorySink::default()
-    .layer(UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()));
-// Open with Ordering::Unordered, write batches, then commit once.
-```
-
-## Documentation
-
-| Goal | Guide |
-| --- | --- |
-| Configure features, local/cloud storage, and write lifecycles | [Usage](docs/usage.md) |
-| Understand ownership, execution, and publication boundaries | [Architecture](docs/architecture.md) |
-| Choose options and handle failures | [Options and contracts](docs/options.md) |
-| Compose ordering, compression, concurrent writes, and downloads | [Layers](layer/README.md) |
-| Add a new destination | [Extend a sink](docs/extending-sinks.md) |
-| Add a new write decorator | [Extend a layer](docs/extending-layers.md) |
-| Build, validate documentation, and prepare a release | [Development](docs/development.md) |
-
-See the [documentation index](docs/README.md) for the full reading path.
 MIT licensed.
