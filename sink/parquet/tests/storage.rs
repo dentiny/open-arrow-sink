@@ -1,10 +1,10 @@
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::RecordBatch;
 use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteMode, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
 use open_arrow_sink_storage::opendal;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::{num::NonZeroUsize, sync::Arc};
+use std::num::NonZeroUsize;
 
 fn storage() -> Storage {
     Storage::new(
@@ -14,11 +14,7 @@ fn storage() -> Storage {
     .unwrap()
 }
 fn batch() -> RecordBatch {
-    RecordBatch::try_from_iter([(
-        "value",
-        Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-    )])
-    .unwrap()
+    open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
 fn options() -> WriteOptions {
     WriteOptions::default()

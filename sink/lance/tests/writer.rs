@@ -3,20 +3,14 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 
 fn batch() -> RecordBatch {
-    RecordBatch::try_from_iter([(
-        "value",
-        Arc::new(Int64Array::from(vec![Some(3), None, Some(1), Some(3)])) as ArrayRef,
-    )])
-    .unwrap()
+    open_arrow_sink_test_support::int64_batch("value", vec![Some(3), None, Some(1), Some(3)])
 }
 
-fn options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[tokio::test]
 async fn commit_round_trips_multiple_batches() {
