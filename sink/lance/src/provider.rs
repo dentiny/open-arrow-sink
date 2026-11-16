@@ -1,24 +1,16 @@
 use crate::error::native_storage as native;
+use crate::storage_router::StorageRouter;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, providers::ObjectStoreProvider};
 use object_store::path::Path;
 use object_store_opendal::OpendalStore;
 use open_arrow_sink_core::async_trait;
-use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+use open_arrow_sink_storage::Url;
 use std::sync::Arc;
 
+/// Adapt routed storage to Lance; namespace selection belongs to StorageRouter.
 #[derive(Debug)]
 pub(crate) struct Provider {
-    pub destination: Storage,
-    pub sources: StorageResolver,
-}
-impl Provider {
-    fn resolve(&self, url: &Url) -> open_arrow_sink_core::Result<Storage> {
-        if self.destination.path(url).is_ok() {
-            Ok(self.destination.clone())
-        } else {
-            self.sources.resolve(url)
-        }
-    }
+    pub storage: StorageRouter,
 }
 #[async_trait]
 impl ObjectStoreProvider for Provider {
@@ -27,7 +19,7 @@ impl ObjectStoreProvider for Provider {
         base_path: Url,
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
-        let storage = self.resolve(&base_path).map_err(native)?;
+        let storage = self.storage.resolve(&base_path).map_err(native)?;
         let object_store: Arc<dyn object_store::ObjectStore> = match storage.upload_part_size() {
             Some(size) => Arc::new(crate::upload::UploadStore::new(
                 storage.operator(),
@@ -54,7 +46,8 @@ impl ObjectStoreProvider for Provider {
         // OpendalStore decodes object-store keys. Encode literal percent signs
         // as PathParts so a URL containing %2520 stays a literal "%20" key.
         Ok(Path::from(
-            self.resolve(url)
+            self.storage
+                .resolve(url)
                 .map_err(native)?
                 .path(url)
                 .map_err(native)?,
@@ -65,6 +58,11 @@ impl ObjectStoreProvider for Provider {
         url: &Url,
         _: Option<&std::collections::HashMap<String, String>>,
     ) -> lance::Result<String> {
-        Ok(self.resolve(url).map_err(native)?.base_url().to_string())
+        Ok(self
+            .storage
+            .resolve(url)
+            .map_err(native)?
+            .base_url()
+            .to_string())
     }
 }

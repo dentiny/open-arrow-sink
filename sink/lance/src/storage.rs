@@ -1,4 +1,5 @@
 use crate::provider::Provider;
+use crate::storage_router::StorageRouter;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
@@ -20,14 +21,9 @@ impl NativeStorage {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
         let provider = Arc::new(Provider {
-            destination: storage.clone(),
-            sources: sources.clone(),
+            storage: StorageRouter::new(storage.clone(), sources),
         });
-        for scheme in ["file", "s3", "http", "https", "gs", "az", "abfs", "abfss"]
-            .into_iter()
-            .chain(sources.schemes())
-            .chain(std::iter::once(url.scheme()))
-        {
+        for scheme in provider.storage.schemes() {
             session.store_registry().insert(scheme, provider.clone());
         }
         Ok(Self {
