@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{Storage, StorageConfig, StorageResolver, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -15,16 +15,30 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
+    // Clones share URL-derived backends and their HTTP request budgets.
+    resolved: StorageResolver,
     sources: Arc<StorageResolver>,
+    config: StorageConfig,
 }
 
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
+            resolved: StorageResolver::default(),
             sources: Arc::default(),
+            config: StorageConfig::default(),
         }
     }
+    /// Configure retry/timeout policies for explicit or URL-derived destination storage.
+    /// Validation happens now, before opening a destination or performing I/O.
+    /// External source stores retain their independently configured policies.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        config.validate()?;
+        self.config = config;
+        Ok(self)
+    }
+
     /// Share source namespaces, credentials, and the URL-derived cache with a download pool.
     /// This replaces any previously configured source stores.
     pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
@@ -41,8 +55,9 @@ impl LanceDatasetSink {
     fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
-            None => Storage::from_url(&url)?,
+            None => self.resolved.resolve(&url)?,
         }
+        .with_config(self.config.clone())?
         .with_write_options(options);
         LanceDestination::new(
             storage,

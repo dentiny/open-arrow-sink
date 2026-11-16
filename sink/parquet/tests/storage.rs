@@ -148,3 +148,28 @@ async fn session_observer_counts_parquet_output() {
     writer.commit().await.unwrap();
     assert!(metrics.snapshot().bytes_written > 0);
 }
+
+#[tokio::test]
+async fn url_derived_storage_survives_sessions_and_sink_clones() {
+    use open_arrow_sink_storage::opendal;
+
+    // A fresh Memory operator loses previous writes, so this also detects a
+    // per-session backend (and HTTP-budget) reconstruction.
+    opendal::OperatorRegistry::get()
+        .register::<opendal::services::Memory>("parquet-shared-destination");
+    let url: open_arrow_sink_storage::Url = "parquet-shared-destination://warehouse/output/"
+        .parse()
+        .unwrap();
+    let sink = ParquetDirectorySink::default();
+    let cloned = sink.clone();
+    let mut writer = sink
+        .open(url.clone(), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    assert!(matches!(
+        cloned.open(url, batch().schema(), options()).await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(_))
+    ));
+}

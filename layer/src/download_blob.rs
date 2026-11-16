@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use arrow_array::{
     Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
@@ -16,21 +19,36 @@ use crate::{DownloadPool, error, validation::validate_download_config};
 /// Stream selected URL columns into native blobs and attach their descriptors.
 /// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
 /// Input batch boundaries, row order, nulls, and unselected columns are preserved.
+/// A default pool is initialized lazily and shared across opens and layer clones.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
     columns: HashSet<String>,
-    download_pool: Option<Arc<DownloadPool>>,
+    download_pool: Arc<Mutex<Option<Arc<DownloadPool>>>>,
 }
 impl DownloadBlobLayer {
     pub fn new(columns: HashSet<String>) -> Self {
         Self {
             columns,
-            download_pool: None,
+            download_pool: Arc::default(),
         }
     }
+    /// Override the pool for this layer; existing clones retain their pool.
     pub fn with_download_pool(mut self, pool: Arc<DownloadPool>) -> Self {
-        self.download_pool = Some(pool);
+        self.download_pool = Arc::new(Mutex::new(Some(pool)));
         self
+    }
+
+    fn pool(&self) -> Result<Arc<DownloadPool>> {
+        let mut pool = self
+            .download_pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pool) = pool.as_ref() {
+            return Ok(pool.clone());
+        }
+        let created = Arc::new(DownloadPool::with_defaults()?);
+        *pool = Some(created.clone());
+        Ok(created)
     }
 }
 
@@ -81,10 +99,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             );
         }
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
-        let pool = match &self.config.download_pool {
-            Some(pool) => pool.clone(),
-            None => Arc::new(DownloadPool::with_defaults()?),
-        };
+        let pool = self.config.pool()?;
         let io_metrics = options.io_metrics.clone();
         let inner = self
             .inner
@@ -215,5 +230,38 @@ impl Writer for DownloadBlobWriter {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.inner.abort().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::TryStreamExt;
+
+    #[tokio::test]
+    async fn default_transfer_budget_is_shared_by_layer_clones() {
+        let layer = DownloadBlobLayer::new(HashSet::new());
+        // Clone before lazy initialization, as layer() does for each wrapped sink.
+        let cloned = layer.clone();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"blob").unwrap();
+        let url = open_arrow_sink_storage::Url::from_file_path(file.path()).unwrap();
+        let first = layer.pool().unwrap();
+        let second = cloned.pool().unwrap();
+        let mut stream = first.stream(url.as_str()).await.unwrap();
+        let chunk = stream.try_next().await.unwrap().unwrap();
+        assert!(second.buffered_bytes() >= chunk.as_ref().len());
+        drop(stream);
+        // Consumer-held chunks retain their reservation after cancellation.
+        assert!(second.buffered_bytes() > 0);
+        assert_eq!(
+            DownloadBlobLayer::new(HashSet::new())
+                .pool()
+                .unwrap()
+                .buffered_bytes(),
+            0
+        );
+        drop(chunk);
+        assert_eq!(second.buffered_bytes(), 0);
     }
 }

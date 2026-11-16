@@ -259,7 +259,8 @@ The former `DownloadPool::global()` and
 `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` override have been removed.
 `DownloadPool::with_defaults()` creates an independent pool with 64 stream slots
 and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
-`DownloadBlobLayer` creates one default pool per opened writer.
+`DownloadBlobLayer` lazily creates one default pool shared by all opened writers
+and clones of that layer. Separate layer instances retain independent budgets.
 
 HTTP(S) downloads use a directly owned OpenDAL operator and provider transport.
 The pool's stream semaphore is their only built-in concurrency limiter; it covers
@@ -456,3 +457,17 @@ requests per writer). Overrides affect only the current session. OpenDAL enforce
 backend part-size limits. These options differ from `target_file_size`, which
 controls file rolling, and from the shared aggregate HTTP request budget. Memory
 use grows with part size, upload concurrency, and the number of writers.
+
+### Destination storage policies and shared budgets
+
+`ParquetDirectorySink::with_config` and `LanceDatasetSink::with_config` accept
+`StorageConfig` for destination retry/timeout policies, whether the sink receives
+an explicit `Storage` or resolves URLs automatically. Lance external blob source
+stores retain their independent policies. Iceberg uses the catalog's FileIO
+configuration.
+
+URL-derived destination stores are cached per sink namespace. Repeated sessions
+and sink clones reuse the backend and its HTTP request budget; session upload
+settings and I/O metrics remain independent. Separate sink instances have
+independent caches. To share an HTTP budget across separately constructed sinks,
+pass clones of a configured `Storage` to their constructors.
