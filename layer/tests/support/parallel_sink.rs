@@ -210,7 +210,10 @@ impl DataWriter for TestWriter {
         }
         let mut state = self.state.lock().unwrap();
         if state.config.failures.contains(&Failure::Write) {
-            return Err(failure());
+            return Err(Error::Unsupported(format!(
+                "injected write failure for writer {}",
+                self.id
+            )));
         }
         state.events.push(Event::WriteCompleted(self.id));
         self.rows += batch.num_rows() as u64;

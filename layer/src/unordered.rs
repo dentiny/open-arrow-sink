@@ -95,19 +95,19 @@ impl<T: Send + 'static> UnorderedWriter<T> {
         result
     }
 
-    async fn drain(&mut self) -> Result<()> {
+    async fn drain_all(&mut self) -> Result<()> {
+        let mut first_error = None;
         while let Some(completed) = self.pending.next().await {
-            self.complete(completed)?;
+            if let Err(error) = self.complete(completed) {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn stop(&mut self) -> Result<()> {
         // Finish in-flight I/O before explicitly stopping writers; never detach workers.
-        while let Some(completed) = self.pending.next().await {
-            let _ = self.complete(completed);
-        }
-        let mut first_error = None;
+        let mut first_error = self.drain_all().await.err();
         for writer in self.idle.drain(..) {
             if let Err(error) = writer.abort().await {
                 first_error.get_or_insert(error);
@@ -156,7 +156,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        self.drain().await?;
+        self.drain_all().await?;
         let outputs =
             futures::future::try_join_all(self.idle.iter_mut().map(|writer| writer.finish()))
                 .await?;
