@@ -19,11 +19,11 @@ fn batch() -> RecordBatch {
 fn options() -> WriteOptions {
     WriteOptions::default()
         .with_ordering(Ordering::Unordered)
-        .with_target_file_size(Some(1))
+        .with_target_file_size(1)
         .with_upload(
             UploadConfig::default()
-                .with_part_size(NonZeroUsize::new(16))
-                .with_concurrency(NonZeroUsize::new(2)),
+                .with_part_size(NonZeroUsize::new(16).unwrap())
+                .with_concurrency(NonZeroUsize::new(2).unwrap()),
         )
 }
 

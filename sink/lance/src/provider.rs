@@ -88,3 +88,63 @@ impl ObjectStoreProvider for Provider {
         Ok(self.resolve(url).map_err(native)?.base_url().to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_arrow_sink_storage::opendal;
+
+    fn memory(base: &str) -> Storage {
+        Storage::new(
+            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            base.parse().unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn destination_owns_its_namespace_even_with_a_more_specific_source() {
+        let destination = memory("s3://destination/");
+        let overlap = memory("s3://destination/nested/");
+        let external = memory("s3://source/");
+        let local_url = destination.url("nested/key").unwrap();
+        let external_url = external.url("key").unwrap();
+        destination
+            .write(&local_url, "destination".into())
+            .await
+            .unwrap();
+        overlap.write(&local_url, "overlap".into()).await.unwrap();
+        external
+            .write(&external_url, "source".into())
+            .await
+            .unwrap();
+
+        let provider = Provider::new(
+            destination,
+            Arc::new(
+                StorageResolver::default()
+                    .with_storage(overlap)
+                    .with_storage(external),
+            ),
+            crate::io_metrics::TrackedIo::new(None),
+        );
+        assert_eq!(
+            provider
+                .resolve(&local_url)
+                .unwrap()
+                .read(&local_url)
+                .await
+                .unwrap(),
+            "destination"
+        );
+        assert_eq!(
+            provider
+                .resolve(&external_url)
+                .unwrap()
+                .read(&external_url)
+                .await
+                .unwrap(),
+            "source"
+        );
+    }
+}

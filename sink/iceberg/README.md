@@ -30,9 +30,9 @@ use open_arrow_sink_core::{
 let options = WriteOptions::default()
     .with_mode(WriteMode::Append)
     .with_ordering(Ordering::Unordered)
-    .with_partition(Some(PartitionOptions {
+    .with_partition(PartitionOptions {
         partition_type: PartitionType::Identity,
-    }));
+    });
 ```
 
 The table's default partition spec and current schema are fixed when the session

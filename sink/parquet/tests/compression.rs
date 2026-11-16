@@ -59,7 +59,7 @@ async fn compression_survives_rolling_and_round_trips(
             batch.schema(),
             WriteOptions::default()
                 .with_ordering(Ordering::Unordered)
-                .with_target_file_size(Some(1))
+                .with_target_file_size(1)
                 .with_compression(CompressionOptions {
                     global: None,
                     columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
@@ -141,7 +141,7 @@ async fn option_layers_compose_before_backend_validation() {
             sink.open(
                 Url::from_directory_path(&directory).unwrap(),
                 batch.schema(),
-                options.clone().with_target_file_size(Some(0)),
+                options.clone().with_target_file_size(0),
             )
             .await
             .is_err()

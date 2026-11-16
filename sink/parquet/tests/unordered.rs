@@ -35,7 +35,7 @@ async fn unordered_commit_preserves_all_rows() {
             make_batch(0).schema(),
             WriteOptions::default()
                 .with_ordering(Ordering::Unordered)
-                .with_target_file_size(Some(1)),
+                .with_target_file_size(1),
         )
         .await
         .unwrap();

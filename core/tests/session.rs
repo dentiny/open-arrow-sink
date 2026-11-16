@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use open_arrow_sink_core::{
-    DataWriter, Error, RecordBatch, Result, SchemaRef, SessionCommitter, WriteSession,
-    WriteSummary, async_trait,
+    DataWriter, Error, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter, Sink,
+    SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -225,4 +225,79 @@ async fn dropping_a_writer_never_publishes_or_runs_async_cleanup() {
     writer.write(empty_batch()).await.unwrap();
     drop(writer);
     assert_eq!(*events.lock().unwrap(), [Event::Write]);
+}
+
+// Exercise the default adapter, including cleanup for a backend that violates
+// the requested writer count. The existing lifecycle tests cover into_writer.
+struct ParallelFixture;
+
+#[async_trait]
+impl Sink for ParallelFixture {
+    type Request = WriteSession<u64>;
+
+    fn capability(&self) -> SinkCapability {
+        SinkCapability::default()
+    }
+
+    async fn open(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<dyn Writer>> {
+        self.open_writer(request, schema, options).await
+    }
+}
+
+#[async_trait]
+impl ParallelSink for ParallelFixture {
+    type Output = u64;
+
+    async fn open_writers(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        options: WriteOptions,
+        writers: std::num::NonZeroUsize,
+    ) -> Result<WriteSession<u64>> {
+        assert_eq!(writers.get(), 1);
+        assert_eq!(schema.as_ref(), empty_batch().schema().as_ref());
+        assert_eq!(options.mode, open_arrow_sink_core::WriteMode::Append);
+        Ok(request)
+    }
+}
+
+#[tokio::test]
+async fn parallel_default_requests_one_writer_and_publishes_once() {
+    let (session, events) = session(Faults::default(), 1);
+    let writer = ParallelFixture
+        .open(
+            session,
+            empty_batch().schema(),
+            WriteOptions::default().with_mode(open_arrow_sink_core::WriteMode::Append),
+        )
+        .await
+        .unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 7);
+    assert_eq!(*events.lock().unwrap(), [Event::Finish, Event::Publish]);
+}
+
+#[tokio::test]
+async fn parallel_default_aborts_a_session_with_invalid_writer_count() {
+    for count in [0, 2] {
+        let (session, events) = session(Faults::default(), count);
+        assert!(
+            ParallelFixture
+                .open(
+                    session,
+                    empty_batch().schema(),
+                    WriteOptions::default().with_mode(open_arrow_sink_core::WriteMode::Append),
+                )
+                .await
+                .is_err()
+        );
+        let mut expected = vec![Event::AbortWriter; count];
+        expected.push(Event::AbortSession);
+        assert_eq!(*events.lock().unwrap(), expected);
+    }
 }
