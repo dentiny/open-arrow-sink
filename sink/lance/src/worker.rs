@@ -38,12 +38,18 @@ impl FragmentTask {
     }
     pub async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         let rows = batch.num_rows() as u64;
-        self.sender
+        if self
+            .sender
             .as_ref()
             .expect("fragment task is open while its writer is usable")
             .send(batch)
             .await
-            .map_err(|_| worker_stopped())?;
+            .is_err()
+        {
+            // Receiver closure belongs to the worker. Preserve its native error
+            // and retain task ownership across cancellation while joining it.
+            return Err(self.finish().await.err().unwrap_or_else(worker_stopped));
+        }
         self.rows += rows;
         Ok(())
     }
@@ -74,5 +80,35 @@ impl Drop for FragmentTask {
         if let Some(task) = &self.task {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn closed_input_returns_the_native_worker_error() {
+        let (sender, receiver) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            drop(receiver);
+            Err(lance::Error::invalid_input("injected fragment failure"))
+        });
+        let mut worker = FragmentTask {
+            rows: 0,
+            sender: Some(sender),
+            task: Some(task),
+        };
+        let batch = RecordBatch::new_empty(std::sync::Arc::new(arrow_schema::Schema::empty()));
+        // Wait for receiver closure rather than racing the background task.
+        worker.sender.as_ref().unwrap().closed().await;
+        let error = worker.write(batch).await.err().unwrap();
+        let Error::Backend(source) = error else {
+            panic!("expected the native backend error");
+        };
+        assert!(source.is::<lance::Error>());
+        assert!(source.to_string().contains("injected fragment failure"));
+        assert_eq!(worker.rows, 0);
+        worker.abort().await;
     }
 }
