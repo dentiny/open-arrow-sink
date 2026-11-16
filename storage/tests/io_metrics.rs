@@ -11,7 +11,7 @@ async fn storage_counts_read_and_write_bytes_once() {
     .unwrap()
     .with_io_metrics(metrics.clone())
     .with_write_options(&WriteOptions::default().with_io_metrics(metrics.clone()));
-    let path = storage.resolve(&storage.url("payload").unwrap()).unwrap();
+    let path = open_arrow_sink_test_support::path(&storage, "payload");
 
     storage.write(&path, "abcdef".into()).await.unwrap();
     assert_eq!(storage.read_range(&path, 1..4).await.unwrap(), "bcd");

@@ -1,6 +1,4 @@
 use arrow_array::cast::AsArray;
-use std::{num::NonZeroUsize, sync::Arc};
-
 use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, datatypes::BlobHandling};
@@ -8,9 +6,11 @@ use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink,
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_layer::{DownloadBlobLayer, UnorderedWriteLayer};
 use open_arrow_sink_storage::BlobDownloader;
-mod testutil;
 use open_arrow_sink_test_support::unordered_options as options;
+use std::{num::NonZeroUsize, sync::Arc};
 use testutil::server;
+
+mod testutil;
 
 #[tokio::test]
 async fn downloaded_payloads_use_sdk_layout_and_round_trip() {

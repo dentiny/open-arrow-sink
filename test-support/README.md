@@ -26,8 +26,10 @@ fixtures without duplicating a PRNG loop.
 
 `conformance::SinkFixture` lets a backend supply an isolated destination factory,
 its sink/request/options, a representative batch, a published-data reader, and an
-abort-state assertion. `assert_conforms::<Fixture>()` runs each shared contract on
-a fresh fixture: multi-batch round trip, readable empty commit, explicit abort,
+abort-state assertion, rolling input/file assertions, and sibling preservation hooks. `assert_conforms::<Fixture>()` runs each shared contract on
+a fresh fixture: multi-batch round trip, target-size rolling with full readback,
+unsupported-mode rejection without changing committed rows, readable empty commit,
+explicit abort with sibling preservation,
 schema-error termination, abort before input, and poisoned commit cleanup. Iceberg can supply Append while file backends use
 Create. Keep backend-specific checks (snapshot identity, row-group layout,
 partitions, indexes, compression metadata, cleanup of existing data) beside the
@@ -37,3 +39,6 @@ and publication-boundary tests.
 `memory_storage(base)` constructs an isolated memory operator rooted at an
 explicit namespace. `read_parquet_dir(storage, directory)` reads all Parquet
 files in path order through shared storage, for memory and filesystem fixtures.
+Its directory argument is a resolved `ObjectPath`. `path(storage, relative)` resolves
+a fixture-relative path; `sorted_list(storage, directory)` makes listing comparisons
+deterministic. `within(future)` bounds asynchronous fixture work to five seconds.

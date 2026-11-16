@@ -7,3 +7,21 @@ pub fn memory_storage(base: &str) -> open_arrow_sink_storage::Storage {
     )
     .unwrap()
 }
+
+/// Resolve a fixture-relative path, failing at the setup site on invalid input.
+pub fn path(
+    storage: &open_arrow_sink_storage::Storage,
+    relative: &str,
+) -> open_arrow_sink_storage::ObjectPath {
+    storage.resolve(&storage.url(relative).unwrap()).unwrap()
+}
+
+/// List a fixture directory in deterministic path order.
+pub async fn sorted_list(
+    storage: &open_arrow_sink_storage::Storage,
+    directory: &open_arrow_sink_storage::ObjectPath,
+) -> Vec<open_arrow_sink_storage::ObjectPath> {
+    let mut paths = storage.list(directory).await.unwrap();
+    paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    paths
+}

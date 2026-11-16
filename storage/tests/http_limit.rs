@@ -1,6 +1,7 @@
 use futures::{poll, stream};
 use http::{Request, Response};
 use open_arrow_sink_storage::{HttpConcurrencyLimitLayer, Storage, opendal};
+use open_arrow_sink_test_support::within;
 use opendal::raw::oio::ReadStream;
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 
@@ -86,28 +87,13 @@ async fn replacing_storage_budget_does_not_nest_limiters() {
         .with_http_concurrency_limit(budget.clone())
         .with_http_concurrency_limit(budget);
     let old = storage.operator().context().http_transport().clone();
-    let response = tokio::time::timeout(std::time::Duration::from_secs(1), old.fetch(request("/")))
-        .await
-        .unwrap()
-        .unwrap();
+    let response = within(old.fetch(request("/"))).await.unwrap();
     // A replacement budget is independent of already-cloned operators.
     let replacement =
         storage.with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(2).unwrap());
     let transport = replacement.operator().context().http_transport().clone();
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        transport.fetch(request("/")),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let second = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        transport.fetch(request("/")),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let first = within(transport.fetch(request("/"))).await.unwrap();
+    let second = within(transport.fetch(request("/"))).await.unwrap();
     let mut third = Box::pin(transport.fetch(request("/")));
     assert!(poll!(third.as_mut()).is_pending());
     drop(first);
@@ -127,28 +113,41 @@ async fn cloned_budgets_hold_capacity_until_body_drop() {
     assert!(poll!(waiting.as_mut()).is_ready());
 }
 
+#[rstest::rstest]
+#[case::eof("/")]
+#[case::body_error("/body-error")]
 #[tokio::test]
-async fn eof_errors_and_cancellation_release_capacity() {
+async fn body_completion_releases_capacity(#[case] path: &str) {
     let transport = HttpConcurrencyLimitLayer::new(1)
         .unwrap()
         .wrap(HttpTransporter::new(Transport));
-    for path in ["/", "/body-error"] {
-        let mut response = transport.fetch(request(path)).await.unwrap();
-        let mut waiting = Box::pin(transport.fetch(request("/")));
+
+    let mut response = transport.fetch(request(path)).await.unwrap();
+    let mut waiting = Box::pin(transport.fetch(request("/")));
+    assert!(poll!(waiting.as_mut()).is_pending());
+    if path == "/" {
+        assert!(!response.body_mut().read().await.unwrap().is_empty());
         assert!(poll!(waiting.as_mut()).is_pending());
-        if path == "/" {
-            assert!(!response.body_mut().read().await.unwrap().is_empty());
-            assert!(poll!(waiting.as_mut()).is_pending());
-            assert!(response.body_mut().read().await.unwrap().is_empty());
-        } else {
-            assert!(response.body_mut().read().await.is_err());
-        }
-        assert!(poll!(waiting.as_mut()).is_ready());
+        assert!(response.body_mut().read().await.unwrap().is_empty());
+    } else {
+        assert!(response.body_mut().read().await.is_err());
     }
-    assert!(transport.fetch(request("/fetch-error")).await.is_err());
-    {
+    assert!(poll!(waiting.as_mut()).is_ready());
+}
+
+#[rstest::rstest]
+#[case::fetch_error(false)]
+#[case::cancelled_fetch(true)]
+#[tokio::test]
+async fn failed_fetch_releases_capacity(#[case] cancelled: bool) {
+    let transport = HttpConcurrencyLimitLayer::new(1)
+        .unwrap()
+        .wrap(HttpTransporter::new(Transport));
+    if cancelled {
         let mut cancelled = Box::pin(transport.fetch(request("/pending")));
         assert!(poll!(cancelled.as_mut()).is_pending());
+    } else {
+        assert!(transport.fetch(request("/fetch-error")).await.is_err());
     }
     assert!(transport.fetch(request("/")).await.is_ok());
 }

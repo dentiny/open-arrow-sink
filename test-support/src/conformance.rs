@@ -1,7 +1,9 @@
 //! Reusable contracts for backend authors. Factories own isolated destinations;
 //! readers must open the published destination, not inspect buffered writer data.
 use crate::concat_sorted;
-use open_arrow_sink_core::{RecordBatch, SchemaRef, Sink, WriteOptions, async_trait};
+use open_arrow_sink_core::{
+    Error, RecordBatch, SchemaRef, Sink, WriteMode, WriteOptions, async_trait,
+};
 
 #[async_trait]
 pub trait SinkFixture: Send + Sync + Sized {
@@ -13,6 +15,14 @@ pub trait SinkFixture: Send + Sync + Sized {
     /// duplicates where supported. Complex backend-specific schemas stay local.
     fn batch(&self) -> RecordBatch;
     fn options(&self) -> WriteOptions;
+    /// Input large enough to cross this backend's page buffers when rolling.
+    fn rolling_batch(&self) -> RecordBatch {
+        self.batch()
+    }
+    async fn assert_rolled(&self);
+    /// Seed and verify an unrelated object next to the destination.
+    async fn create_sibling(&self);
+    async fn assert_sibling(&self);
     /// Return all published rows. This must succeed for an empty commit too.
     async fn read(&self) -> Vec<RecordBatch>;
     /// Check cleanup/preservation appropriate to this backend's destination.
@@ -23,6 +33,8 @@ pub trait SinkFixture: Send + Sync + Sized {
 /// can implement the same contracts without sharing state between cases.
 pub async fn assert_conforms<F: SinkFixture>() {
     round_trip(&F::new().await).await;
+    rolling(&F::new().await).await;
+    unsupported_modes::<F>().await;
     empty_commit(&F::new().await).await;
     abort(&F::new().await).await;
     schema_mismatch(&F::new().await).await;
@@ -88,10 +100,12 @@ async fn empty_commit<F: SinkFixture>(fixture: &F) {
 }
 
 async fn abort<F: SinkFixture>(fixture: &F) {
+    fixture.create_sibling().await;
     let mut writer = open(fixture).await;
     writer.write(fixture.batch()).await.unwrap();
     writer.abort().await.unwrap();
     fixture.assert_aborted().await;
+    fixture.assert_sibling().await;
 }
 
 async fn schema_mismatch<F: SinkFixture>(fixture: &F) {
@@ -122,4 +136,56 @@ async fn poisoned_commit<F: SinkFixture>(fixture: &F) {
         "a poisoned writer cannot publish accepted rows"
     );
     fixture.assert_aborted().await;
+}
+
+async fn rolling<F: SinkFixture>(fixture: &F) {
+    let expected = fixture.rolling_batch();
+    let mut writer = fixture
+        .sink()
+        .open(
+            fixture.request(),
+            expected.schema(),
+            fixture.options().with_target_file_size(1),
+        )
+        .await
+        .unwrap();
+    writer.write(expected.clone()).await.unwrap();
+    writer.write(expected.clone()).await.unwrap();
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        2 * expected.num_rows() as u64
+    );
+    assert_eq!(
+        sorted(&expected.schema(), &fixture.read().await),
+        sorted(&expected.schema(), &[expected.clone(), expected])
+    );
+    fixture.assert_rolled().await;
+}
+
+async fn unsupported_modes<F: SinkFixture>() {
+    let capability = F::new().await.sink().capability();
+    for mode in [WriteMode::Create, WriteMode::Append, WriteMode::Overwrite] {
+        if capability.supported_modes.contains(&mode) {
+            continue;
+        }
+        let fixture = F::new().await;
+        round_trip(&fixture).await;
+        let before = sorted(&fixture.batch().schema(), &fixture.read().await);
+        let result = fixture
+            .sink()
+            .open(
+                fixture.request(),
+                fixture.batch().schema(),
+                fixture.options().with_mode(mode),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Unsupported(_))),
+            "unadvertised mode {mode:?} must return Unsupported"
+        );
+        assert_eq!(
+            sorted(&fixture.batch().schema(), &fixture.read().await),
+            before
+        );
+    }
 }

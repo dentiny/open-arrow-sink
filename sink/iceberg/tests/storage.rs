@@ -1,7 +1,7 @@
 use open_arrow_sink_iceberg::OpenDalStorageFactory;
 
 #[tokio::test]
-async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
+async fn file_io_uses_shared_operator_for_reads_and_ranges() {
     let metrics = open_arrow_sink_core::IoMetrics::default();
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
         .with_io_metrics(metrics.clone());
@@ -28,6 +28,20 @@ async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
     );
     assert_eq!(metrics.snapshot().bytes_written, 11);
     assert_eq!(metrics.snapshot().bytes_read, 16);
+}
+
+#[tokio::test]
+async fn deleting_prefix_preserves_siblings() {
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
+    let url = storage.url("data/part").unwrap();
+    storage
+        .write(
+            &open_arrow_sink_test_support::path(&storage, "data/part"),
+            "data".into(),
+        )
+        .await
+        .unwrap();
     let keep = storage.url("keep").unwrap();
     storage
         .write(&storage.resolve(&keep).unwrap(), "keep".into())
@@ -51,6 +65,18 @@ async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
             .unwrap(),
         "keep"
     );
+}
+
+#[test]
+fn file_io_rejects_foreign_outputs() {
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let file_io = OpenDalStorageFactory::new(storage).file_io();
     assert!(file_io.new_output("memory:///outside/file").is_err());
+}
+
+#[test]
+fn file_io_does_not_serialize_live_operators() {
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let file_io = OpenDalStorageFactory::new(storage).file_io();
     assert!(file_io.serialize_all().is_err());
 }

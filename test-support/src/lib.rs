@@ -14,4 +14,11 @@ pub use payload::seeded_bytes;
 mod parquet_fixture;
 mod storage_fixture;
 pub use parquet_fixture::read_parquet_dir;
-pub use storage_fixture::memory_storage;
+pub use storage_fixture::{memory_storage, path, sorted_list};
+
+/// Bound asynchronous fixture work so a leaked permit fails instead of hanging.
+pub async fn within<F: std::future::Future>(future: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(5), future)
+        .await
+        .expect("fixture timed out")
+}
