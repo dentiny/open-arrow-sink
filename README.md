@@ -76,6 +76,12 @@ For integration details, start with the examples above and the
 cargo doc --workspace --all-features --no-deps --locked --open
 ```
 
+For S3 blob downloads, a single `md5=<32 hexadecimal digits>` query (as in PMC
+content URLs) is stripped before resolving source storage. The payload checksum
+is not verified. Other storage queries remain unsupported; HTTP(S) queries are
+preserved. For the public PMC bucket, register an unsigned S3 operator configured
+with `region("us-east-1")` and `skip_signature()` via `with_source_storage`.
+
 ## Extending and developing
 
 Implement a **sink** for a new destination, or a **layer** for reusable policy or
