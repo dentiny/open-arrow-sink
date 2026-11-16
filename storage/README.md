@@ -2,7 +2,7 @@
 
 `open-arrow-sink-storage` owns byte I/O through OpenDAL. It has no dependency on
 Parquet, Lance, Iceberg, or open-arrow-access. Sink crates own encoding, file
-naming, destination reservation, and transaction publication.
+naming, destination preparation, and transaction publication.
 
 A `Storage` binds a configured OpenDAL `Operator` to a base URL. The operator's
 root must match that URL. Clones share the operator, including caller-configured
@@ -39,7 +39,7 @@ Filesystem operators must leave OpenDAL's `atomic_write_dir` unset. In OpenDAL
 0.59 its check-then-rename staging does not enforce conditional creation atomically.
 The default filesystem resolver therefore uses non-staged writes. Abort drops
 those file handles; the owning sink removes its already-visible files. This
-keeps local reservation and concurrent manifest publication safe.
+keeps conditional file creation and concurrent manifest publication safe.
 
 ## Alignment with open-arrow-access
 
