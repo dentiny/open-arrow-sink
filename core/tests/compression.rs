@@ -32,7 +32,7 @@ fn structural_encoding_checks_capabilities_and_unique_column_names() {
 
 #[test]
 fn nested_paths_are_literal_and_cross_lists() {
-    use open_arrow_sink_core::{Compression, CompressionCodec};
+    use open_arrow_sink_core::{CompressionCodec, CompressionSpec};
     let children = vec![Arc::new(Field::new("literal.dot", DataType::Utf8, false))].into();
     let schema = Schema::new(vec![Field::new(
         "items",
@@ -55,7 +55,7 @@ fn nested_paths_are_literal_and_cross_lists() {
         let options = CompressionOptions {
             nested_columns: [(
                 path.into_iter().map(String::from).collect(),
-                Compression::Zstd { level: None },
+                CompressionSpec::Zstd { level: None },
             )]
             .into(),
             ..Default::default()

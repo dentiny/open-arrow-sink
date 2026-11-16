@@ -2,7 +2,7 @@
 use arrow_schema::{DataType, FieldRef, Fields, Schema};
 use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability,
+    CompressionOptions, CompressionSpec, Error, IndexSpec, IndexType, Result, SinkCapability,
     WriteOptions, is_blob_field, validation,
 };
 
@@ -262,12 +262,12 @@ pub(crate) fn parse_storage_version(
 }
 
 /// Convert shared codec requests to native Lance parameters before schema conversion.
-pub(crate) fn native_compression(compression: Compression) -> Result<CompressionConfig> {
+pub(crate) fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
     let (scheme, level) = match compression {
-        Compression::Uncompressed => (CompressionScheme::None, None),
+        CompressionSpec::Uncompressed => (CompressionScheme::None, None),
         // Preserve Lance's native codec policy, including Fullzip's native fallback.
-        Compression::Lz4Raw => (CompressionScheme::Lz4, None),
-        Compression::Zstd { level } => {
+        CompressionSpec::Lz4Raw => (CompressionScheme::Lz4, None),
+        CompressionSpec::Zstd { level } => {
             // Lance also accepts 0 as the native Zstd default.
             if let Some(level) = level
                 && level != 0

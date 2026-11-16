@@ -3,7 +3,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
 use arrow_schema::DataType;
 use more_asserts::assert_gt;
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Sink, SinkExt, StructuralEncoding, WriteMode,
+    CompressionOptions, CompressionSpec, Sink, SinkExt, StructuralEncoding, WriteMode,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_layer::CompressionLayer;
@@ -32,8 +32,8 @@ fn batch(count: usize) -> RecordBatch {
 
 fn policy() -> CompressionOptions {
     CompressionOptions {
-        global: Some(Compression::Zstd { level: Some(3) }),
-        columns: [("raw".into(), Compression::Uncompressed)].into(),
+        global: Some(CompressionSpec::Zstd { level: Some(3) }),
+        columns: [("raw".into(), CompressionSpec::Uncompressed)].into(),
         structural_encoding: Some(StructuralEncoding::Fullzip),
         column_encodings: [("raw".into(), StructuralEncoding::Miniblock)].into(),
         ..Default::default()
@@ -199,10 +199,10 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let options = options().with_compression(CompressionOptions {
-        global: Some(Compression::Zstd { level: Some(3) }),
+        global: Some(CompressionSpec::Zstd { level: Some(3) }),
         nested_columns: [(
             vec!["nested".into(), "text".into()],
-            Compression::Uncompressed,
+            CompressionSpec::Uncompressed,
         )]
         .into(),
         ..Default::default()
@@ -246,7 +246,7 @@ async fn compressed_dataset(count: usize) -> (tempfile::TempDir, lance::Dataset,
 
     use arrow_array::{FixedSizeBinaryArray, StringArray, StructArray};
     use arrow_schema::{DataType, Field, Schema};
-    use open_arrow_sink_core::{Compression, CompressionOptions, SinkExt};
+    use open_arrow_sink_core::{CompressionOptions, CompressionSpec, SinkExt};
     use open_arrow_sink_layer::CompressionLayer;
 
     let text = StringArray::from_iter_values(
@@ -278,10 +278,10 @@ async fn compressed_dataset(count: usize) -> (tempfile::TempDir, lance::Dataset,
     ));
     let expected = RecordBatch::try_new(schema.clone(), columns).unwrap();
     let sink = LanceDatasetSink::default().layer(CompressionLayer::new(CompressionOptions {
-        global: Some(Compression::Zstd { level: Some(9) }),
+        global: Some(CompressionSpec::Zstd { level: Some(9) }),
         columns: [
-            ("nested".into(), Compression::Zstd { level: Some(3) }),
-            ("raw_payload".into(), Compression::Uncompressed),
+            ("nested".into(), CompressionSpec::Zstd { level: Some(3) }),
+            ("raw_payload".into(), CompressionSpec::Uncompressed),
         ]
         .into(),
         ..Default::default()

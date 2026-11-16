@@ -37,7 +37,7 @@ pub(crate) fn invalid_compression_level(level: i32) -> Error {
     ))
 }
 
-pub(crate) fn unsupported_compression(compression: open_arrow_sink_core::Compression) -> Error {
+pub(crate) fn unsupported_compression(compression: open_arrow_sink_core::CompressionSpec) -> Error {
     Error::Unsupported(format!("Lance compression: {compression:?}"))
 }
 

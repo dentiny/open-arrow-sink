@@ -177,7 +177,7 @@ pub(crate) fn writer_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Rec
 mod tests {
     use super::*;
     use arrow_schema::Field;
-    use open_arrow_sink_core::Compression;
+    use open_arrow_sink_core::CompressionSpec;
 
     #[test]
     fn omitted_policies_preserve_defaults_and_unrelated_metadata() {
@@ -218,7 +218,7 @@ mod tests {
         let codec_only = apply_compression(
             &encoded,
             &CompressionOptions {
-                global: Some(Compression::Uncompressed),
+                global: Some(CompressionSpec::Uncompressed),
                 ..Default::default()
             },
         )
