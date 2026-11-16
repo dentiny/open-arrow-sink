@@ -262,7 +262,7 @@ Lance encoding/output buffers, input batches, and descriptor metadata are separa
 it is not a process RSS limit. Error response bodies are discarded before OpenDAL
 classifies the status to avoid collecting unbounded diagnostic payloads.
 
-HTTP(S), escaped paths, signed queries, and redirects are supported. No timeout or
+HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
 retry policy is enabled by default. Apply OpenDAL policies with
 `DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
 attempt gets its own I/O deadline. Dropping a stream cancels pending work and

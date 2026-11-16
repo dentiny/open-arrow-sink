@@ -5,7 +5,9 @@ mod backend;
 mod config;
 mod error;
 mod http_limit;
+mod resolver;
 mod validation;
+pub use resolver::StorageResolver;
 
 pub use backend::{Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};

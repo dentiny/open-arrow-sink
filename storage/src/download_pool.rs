@@ -29,6 +29,7 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug)]
 pub struct DownloadPool {
     operator: Operator,
+    sources: crate::StorageResolver,
     // Bound lazy streams separately from the common transport's HTTP requests.
     requests: Arc<Semaphore>,
     concurrency: NonZeroUsize,
@@ -60,6 +61,7 @@ impl DownloadPool {
             .layer(http_limit.clone());
         Ok(Self {
             operator,
+            sources: crate::StorageResolver::default(),
             requests: requests.clone(),
             concurrency: *concurrency,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
@@ -80,6 +82,12 @@ impl DownloadPool {
     /// retry attempt receives its own I/O deadline. Neither is added by default.
     pub fn with_layer(mut self, layer: impl Layer) -> Self {
         self.operator = self.operator.layer(layer);
+        self
+    }
+
+    /// Register a source store for non-HTTP downloads, including custom S3 credentials.
+    pub fn with_source_storage(mut self, storage: crate::Storage) -> Self {
+        self.sources = self.sources.with_storage(storage);
         self
     }
 
@@ -107,25 +115,32 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its request slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let uri = validation::validate_download_url(source)?;
+        let url = crate::Url::parse(source).map_err(backend)?;
         let request = self
             .requests
             .clone()
             .acquire_owned()
             .await
             .expect("pool is never closed");
-        let context = self.operator.base_context();
-        let transport = HttpTransporter::new(UrlTransport {
-            uri,
-            inner: context.http_transport().clone(),
-        });
-        // Replays timeout/retry layers outside the complete-URL adapter.
-        let operator = self
-            .operator
-            .clone()
-            .with_context(context.with_http_transport(transport));
+        let (operator, path) = if matches!(url.scheme(), "http" | "https") {
+            let uri = validation::validate_download_url(source)?;
+            let context = self.operator.base_context();
+            let transport = HttpTransporter::new(UrlTransport {
+                uri,
+                inner: context.http_transport().clone(),
+            });
+            (
+                self.operator
+                    .clone()
+                    .with_context(context.with_http_transport(transport)),
+                "blob".to_owned(),
+            )
+        } else {
+            let storage = self.sources.resolve(&url)?;
+            (storage.operator(), storage.path(&url)?)
+        };
         let reader = operator
-            .reader("blob")
+            .reader(&path)
             .await
             .map_err(backend)?
             .into_stream(..)

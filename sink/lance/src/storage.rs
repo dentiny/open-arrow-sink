@@ -1,11 +1,12 @@
 use crate::provider::Provider;
+use crate::storage_router::StorageRouter;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -16,12 +17,15 @@ pub(crate) struct NativeStorage {
     reserved: bool,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, url: Url) -> Result<Self> {
+    pub fn new(storage: Storage, url: Url, sources: StorageResolver) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
-        session
-            .store_registry()
-            .insert(url.scheme(), Arc::new(Provider(storage.clone())));
+        let provider = Arc::new(Provider {
+            storage: StorageRouter::new(storage.clone(), sources),
+        });
+        for scheme in provider.storage.schemes() {
+            session.store_registry().insert(&scheme, provider.clone());
+        }
         Ok(Self {
             storage,
             url,

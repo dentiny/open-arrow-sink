@@ -130,7 +130,9 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
     let temp = tempfile::tempdir().unwrap();
     let real = temp.path().join("real");
     std::fs::create_dir(&real).unwrap();
-    std::fs::write(real.join("keep"), "original").unwrap();
+    tokio::fs::write(real.join("keep"), "original")
+        .await
+        .unwrap();
     let link = temp.path().join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     let sink = ParquetDirectorySink::default();

@@ -206,3 +206,57 @@ async fn ingests_blob_with_configured_layout(
     assert_eq!(blob.kind(), kind);
     assert_eq!(blob.read().await.unwrap().as_ref(), payload.as_bytes());
 }
+
+#[tokio::test]
+async fn external_blobs_resolve_independent_buckets() {
+    let make = |base: &str| {
+        Storage::new(
+            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            base.parse().unwrap(),
+        )
+        .unwrap()
+    };
+    let destination = make("s3://destination/");
+    let first = make("s3://source-a/");
+    let second = make("s3://source-b/");
+    let mut values = BlobArrayBuilder::new(2);
+    for (storage, bytes) in [(&first, "first"), (&second, "second")] {
+        let uri = storage.url("same-key").unwrap();
+        storage
+            .write(&uri, bytes.as_bytes().to_vec().into())
+            .await
+            .unwrap();
+        values.push_uri(uri.as_str()).unwrap();
+    }
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![blob_field("blob", true)])),
+        vec![values.finish().unwrap()],
+    )
+    .unwrap();
+    let sink = LanceDatasetSink::new(destination.clone())
+        .with_source_storage(first.clone())
+        .with_source_storage(second.clone());
+    let url = destination.url("dataset/").unwrap();
+    let mut writer = sink
+        .open(url.clone(), batch.schema(), write_options())
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    first.delete(&first.url("same-key").unwrap()).await.unwrap();
+    second
+        .delete(&second.url("same-key").unwrap())
+        .await
+        .unwrap();
+    let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());
+    let blobs = dataset
+        .take_blobs_by_indices(&[0, 1], "blob")
+        .await
+        .unwrap();
+    let mut actual = Vec::new();
+    for blob in blobs {
+        actual.push(blob.unwrap().read().await.unwrap().to_vec());
+    }
+    actual.sort();
+    assert_eq!(actual, vec![b"first".to_vec(), b"second".to_vec()]);
+}
