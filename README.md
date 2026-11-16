@@ -63,9 +63,9 @@ and Unordered; Iceberg requires explicit Append. Bundled sinks reject
 PreserveInput. Check `Sink::capability()` and backend validation for supported
 options.
 
-Lance Overwrite can retry into empty directories or directories containing only
-recognized uncommitted Lance files. Orphans are retained; unrelated contents and
-invalid dataset metadata still fail. Create and Append are unchanged.
+Lance Overwrite creates a dataset when Lance reports that none exists, including
+in nonempty directories. Existing files are retained; other load errors still
+fail. Create and Append are unchanged.
 
 Run the Parquet example with a new destination directory:
 

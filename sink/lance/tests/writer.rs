@@ -132,10 +132,10 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
 
 #[rstest::rstest]
 #[case::empty(vec![])]
-#[case::empty_lance_directories(vec!["data/", "_versions/", "_blobs/"])]
-#[case::orphans(vec!["data/uncommitted.lance", "data/partial.lance-stage", "data/part/0.blob", "_blobs/uncommitted.blob", "_transactions/0-uncommitted.txn", "_indices/uncommitted/index.idx", "_index_staging/uncommitted.manifest"])]
+#[case::empty_versions(vec!["_versions/"])]
+#[case::retained_files(vec!["data/uncommitted.lance", "notes.txt"])]
 #[tokio::test]
-async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
+async fn overwrite_directory_without_dataset(#[case] paths: Vec<&str>) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     tokio::fs::create_dir(&path).await.unwrap();
@@ -147,7 +147,7 @@ async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
             tokio::fs::create_dir_all(file.parent().unwrap())
                 .await
                 .unwrap();
-            tokio::fs::write(file, b"orphan").await.unwrap();
+            tokio::fs::write(file, b"keep").await.unwrap();
         }
     }
     let url = Url::from_directory_path(&path).unwrap();
@@ -174,23 +174,18 @@ async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
     assert_eq!(dataset.version().version, 1);
     assert_eq!(dataset.scan().try_into_batch().await.unwrap(), batch());
     for relative in paths.into_iter().filter(|path| !path.ends_with('/')) {
-        assert_eq!(
-            tokio::fs::read(path.join(relative)).await.unwrap(),
-            b"orphan"
-        );
+        assert_eq!(tokio::fs::read(path.join(relative)).await.unwrap(), b"keep");
     }
 }
 
 #[rstest::rstest]
-#[case::unrelated("notes.txt")]
-#[case::nested_unrelated("data/notes.txt")]
-#[case::unrelated_staging_file("_index_staging/notes.txt")]
-#[case::corrupt_manifest("_versions/1.manifest")]
+#[case::exact_file("dataset")]
+#[case::corrupt_manifest("dataset/_versions/1.manifest")]
 #[tokio::test]
-async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
+async fn overwrite_rejects_invalid_destination(#[case] relative: &str) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let file = path.join(relative);
+    let file = temp.path().join(relative);
     tokio::fs::create_dir_all(file.parent().unwrap())
         .await
         .unwrap();

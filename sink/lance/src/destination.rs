@@ -1,5 +1,4 @@
 use crate::provider::Provider;
-use futures::TryStreamExt;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
@@ -72,52 +71,9 @@ impl LanceDestination {
         }
         match self.dataset_builder().load().await {
             Ok(dataset) => crate::validation::validate_dataset(dataset, None, None).map(Some),
-            Err(error @ (lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. })) => {
-                if state != DirectoryState::File && self.only_uncommitted_files().await? {
-                    Ok(None)
-                } else {
-                    Err(Error::backend(error))
-                }
-            }
+            Err(lance::Error::DatasetNotFound { .. }) if state != DirectoryState::File => Ok(None),
             Err(error) => Err(Error::backend(error)),
         }
-    }
-    /// Recognize unpublished Lance files without deleting them. Published version
-    /// metadata and unrelated contents must still go through dataset validation.
-    async fn only_uncommitted_files(&self) -> Result<bool> {
-        let operator = self.storage.operator();
-        let mut entries = operator
-            .lister_with(self.path.as_str())
-            .recursive(true)
-            .await
-            .map_err(Error::backend)?;
-        while let Some(entry) = entries.try_next().await.map_err(Error::backend)? {
-            let Some(relative) = entry.path().strip_prefix(self.path.as_str()) else {
-                return Ok(false);
-            };
-            if relative.is_empty() {
-                continue; // Directory marker returned by some backends.
-            }
-            let (namespace, name) = relative.split_once('/').unwrap_or((relative, ""));
-            let managed = match (namespace, entry.metadata().is_dir()) {
-                ("data" | "_blobs" | "_transactions" | "_indices" | "_index_staging", true) => true,
-                ("_versions", true) => name.is_empty(),
-                ("data", false) => {
-                    name.ends_with(".lance")
-                        || name.ends_with(".lance-stage")
-                        || name.ends_with(".blob")
-                }
-                ("_blobs", false) => name.ends_with(".blob"),
-                ("_transactions", false) => name.ends_with(".txn"),
-                ("_index_staging", false) => name.ends_with(".manifest"),
-                ("_indices", false) => !name.is_empty(),
-                _ => false,
-            };
-            if !managed {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {
