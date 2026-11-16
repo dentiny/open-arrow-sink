@@ -59,12 +59,12 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
             Url::from_directory_path(&path).unwrap(),
             schema.clone(),
             options()
-                .with_io_metrics(Some(io.clone()))
-                .with_blob_handle(Some(BlobHandleConfig {
+                .with_io_metrics(io.clone())
+                .with_blob_handle(BlobHandleConfig {
                     inline_size_threshold: Some(0),
                     dedicated_size_threshold: NonZeroUsize::new(32 * 1024 * 1024),
                     ..Default::default()
-                })),
+                }),
         )
         .await
         .unwrap();
