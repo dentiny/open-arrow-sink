@@ -7,9 +7,9 @@ use open_arrow_sink_core::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{compression::writer_batch, error::worker_stopped, storage::NativeStorage};
-
-type Output = (u64, Transaction);
+use crate::{
+    LanceFragments, compression::writer_batch, error::worker_stopped, storage::NativeStorage,
+};
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
@@ -58,7 +58,7 @@ impl FragmentWriter {
 
 #[async_trait]
 impl DataWriter for FragmentWriter {
-    type Output = Output;
+    type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -77,7 +77,7 @@ impl DataWriter for FragmentWriter {
         self.state.complete();
         Ok(())
     }
-    async fn finish(&mut self) -> Result<Output> {
+    async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
         drop(self.sender.take());
         // Retain the worker if this await is cancelled, so abort/drop can stop it.
@@ -88,7 +88,10 @@ impl DataWriter for FragmentWriter {
             .await;
         self.task.take();
         let transaction = result.map_err(Error::backend)?.map_err(Error::backend)?;
-        Ok((self.rows, transaction))
+        Ok(LanceFragments {
+            rows_written: self.rows,
+            transaction,
+        })
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         if let Some(task) = self.task.take() {

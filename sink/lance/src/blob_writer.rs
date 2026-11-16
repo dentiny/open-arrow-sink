@@ -10,7 +10,7 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    committer::LanceCommitter, compression::writer_batch, error::worker_stopped,
+    LanceFragments, committer::LanceCommitter, compression::writer_batch, error::worker_stopped,
     storage::NativeStorage,
 };
 
@@ -92,7 +92,10 @@ impl Writer for BlobDatasetWriter {
             destination: self.destination,
             options: self.options,
         })
-        .commit(vec![(self.rows, transaction)])
+        .commit(vec![LanceFragments {
+            rows_written: self.rows,
+            transaction,
+        }])
         .await
     }
 
