@@ -90,8 +90,12 @@ impl DataWriter for ParquetDirectoryWriter {
         self.writer = None;
         Ok(self.rows_written)
     }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        Ok(())
+    async fn abort(mut self: Box<Self>) -> Result<()> {
+        self.state.poison();
+        match self.writer.take() {
+            Some(writer) => writer.into_inner().0.abort().await,
+            None => Ok(()),
+        }
     }
 }
 
