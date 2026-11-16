@@ -31,9 +31,12 @@ async fn main() -> open_arrow_sink_core::Result<()> {
     writer.write(batch.clone()).await?;
     writer.write(batch).await?;
     assert_eq!(published.load(AtomicOrdering::SeqCst), 0);
-    let summary = writer.commit().await?;
-    assert_eq!(summary.rows_written, 6);
+    writer.commit().await?;
+
     assert_eq!(published.load(AtomicOrdering::SeqCst), 6);
-    println!("Published {} rows in one session", summary.rows_written);
+    println!(
+        "Published {} rows in one session",
+        published.load(AtomicOrdering::SeqCst)
+    );
     Ok(())
 }

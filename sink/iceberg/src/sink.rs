@@ -86,7 +86,7 @@ impl Sink for IcebergTableSink {
 
 #[async_trait]
 impl ParallelSink for IcebergTableSink {
-    type Output = (u64, Vec<iceberg::spec::DataFile>);
+    type Output = Vec<iceberg::spec::DataFile>;
     async fn open_writers(
         &self,
         request: TableIdent,

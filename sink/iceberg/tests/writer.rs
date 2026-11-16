@@ -272,7 +272,7 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
     assert_eq!(writer.schema(), &schema);
     writer.write(batch.slice(0, 1)).await.unwrap();
     writer.write(batch.slice(1, 2)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    writer.commit().await.unwrap();
     let table = catalog.load_table(&identifier).await.unwrap();
     let data_prefix = format!(
         "{}/data/",
@@ -294,7 +294,7 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
         .await
         .unwrap();
     writer.write(batch.slice(0, 1)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 1);
+    writer.commit().await.unwrap();
     assert_rows(
         catalog.as_ref(),
         &identifier,
@@ -334,7 +334,7 @@ async fn empty_commit_keeps_table_empty() {
         .open(identifier.clone(), schema, options())
         .await
         .unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 0);
+    writer.commit().await.unwrap();
     assert_eq!(snapshot(catalog.as_ref(), &identifier).await, before);
     assert_eq!(rows(catalog.as_ref(), &identifier).await.num_rows(), 0);
 }
@@ -368,7 +368,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
     for _ in 0..3 {
         writer.write(batch.clone()).await.unwrap();
     }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    writer.commit().await.unwrap();
     let table = catalog.load_table(&identifier).await.unwrap();
     let files = files(&table).await;
     assert_eq!(files.len(), file_count);
@@ -423,7 +423,7 @@ async fn identity_partitions_round_trip_and_record_metadata() {
     writer.write(batch.slice(0, 4)).await.unwrap();
     writer.write(batch.slice(4, 2)).await.unwrap();
     assert!(snapshot(catalog.as_ref(), &identifier).await.is_none());
-    assert_eq!(writer.commit().await.unwrap().rows_written, 6);
+    writer.commit().await.unwrap();
     assert_rows(catalog.as_ref(), &identifier, &[batch]).await;
     let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<Struct> = [
@@ -481,7 +481,7 @@ async fn partitioned_empty_sessions_do_not_publish(
 ) {
     let (catalog, identifier, data, mut writer) = partition_writer(transform, partition_type).await;
     writer.write(data.slice(0, 0)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 0);
+    writer.commit().await.unwrap();
     assert!(snapshot(catalog.as_ref(), &identifier).await.is_none());
 }
 
@@ -498,7 +498,7 @@ async fn partitioned_file_rolling_preserves_rows(
     writer.write(data.slice(0, 0)).await.unwrap();
     writer.write(data.clone()).await.unwrap();
     writer.write(data.clone()).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 6);
+    writer.commit().await.unwrap();
     let table = catalog.load_table(&identifier).await.unwrap();
     assert_eq!(files(&table).await.len(), file_count);
     assert_rows(catalog.as_ref(), &identifier, &[data.clone(), data]).await;
@@ -556,7 +556,7 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     writer.write(data.slice(0, 3)).await.unwrap();
     writer.write(data.slice(3, 2)).await.unwrap();
     writer.write(data.slice(1, 1)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 6);
+    writer.commit().await.unwrap();
     let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<_> = expected_keys
         .into_iter()
@@ -615,10 +615,7 @@ async fn numeric_partitions_round_trip_and_record_metadata(
         .write(data.slice(1, data.num_rows() - 1))
         .await
         .unwrap();
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        values.len() as u64
-    );
+    writer.commit().await.unwrap();
     assert_rows(catalog.as_ref(), &identifier, &[data]).await;
     let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<_> = keys
@@ -718,6 +715,6 @@ async fn unordered_commit_preserves_all_rows() {
         writer.write(batch.clone()).await.unwrap();
         expected.push(batch);
     }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 24);
+    writer.commit().await.unwrap();
     assert_rows(catalog.as_ref(), &identifier, &expected).await;
 }

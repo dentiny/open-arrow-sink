@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     writer.write(batch.clone()).await?;
     writer.write(batch).await?;
-    let summary = writer.commit().await?;
+    writer.commit().await?;
     let dataset = sink.dataset_builder(path.clone())?.load().await?;
     let output = dataset.scan().try_into_batch().await?;
     let rows = output.num_rows();
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_vec();
     values.sort_unstable();
     assert_eq!(values, vec![1, 1, 2, 2, 3, 3]);
-    assert_eq!(summary.rows_written, 6);
+
     assert_eq!(rows, 6);
     println!("committed and read back {rows} rows in {}", path);
     Ok(())

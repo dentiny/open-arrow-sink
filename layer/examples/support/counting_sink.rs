@@ -6,8 +6,7 @@ use std::sync::{
 
 use open_arrow_sink_core::{
     DataWriter, Error, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter, Sink,
-    SinkCapability, WriteMode, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
-    validation,
+    SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
 
 /// The request is a per-session counter, not a durable destination. Use a fresh
@@ -104,7 +103,7 @@ struct CountCommitter(Arc<AtomicU64>);
 
 #[async_trait]
 impl SessionCommitter<u64> for CountCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
         let rows_written = outputs.into_iter().try_fold(0_u64, |total, rows| {
             total
                 .checked_add(rows)
@@ -118,7 +117,7 @@ impl SessionCommitter<u64> for CountCommitter {
                 AtomicOrdering::SeqCst,
             )
             .map_err(|_| Error::Unsupported("use a fresh destination counter".into()))?;
-        Ok(WriteSummary { rows_written })
+        Ok(())
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

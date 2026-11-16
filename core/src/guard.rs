@@ -1,7 +1,5 @@
 //! Reusable terminal-state enforcement for writer decorators.
-use crate::{
-    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
-};
+use crate::{DataWriter, Poison, RecordBatch, Result, SchemaRef, Writer, async_trait};
 
 /// Enforce the writer lifecycle around validation, transformation, and I/O.
 /// Errors or cancellation of any write operation are terminal. A
@@ -38,7 +36,7 @@ impl Writer for GuardedWriter {
         Ok(())
     }
 
-    async fn commit(self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>) -> Result<()> {
         self.check()?;
         self.inner.commit().await
     }

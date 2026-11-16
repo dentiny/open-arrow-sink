@@ -21,7 +21,7 @@ its [committer](../sink/parquet/src/committer.rs).
    physical output and returns backend-owned metadata without publishing table
    or dataset state. The writer remains abortable after finish.
 3. Implement [`SessionCommitter<Output>`](../core/src/session.rs). Publish all
-   finished outputs once and return a combined `WriteSummary`. Publication and
+   finished outputs once and return `Result<()>`. Publication and
    visibility follow your backend's semantics; document them.
 4. Assemble a `WriteSession` with one writer and use `into_writer().await` for
    ordinary `Sink::open`. For concurrent writes, implement `ParallelSink`:

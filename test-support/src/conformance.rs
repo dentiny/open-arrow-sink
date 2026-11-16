@@ -136,10 +136,7 @@ pub async fn round_trip<F: SinkFixture>(fixture: &F) {
         .write(expected.slice(1, expected.num_rows() - 1))
         .await
         .unwrap();
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        expected.num_rows() as u64
-    );
+    writer.commit().await.unwrap();
     assert_eq!(
         sorted(&expected.schema(), &fixture.read().await),
         sorted(&expected.schema(), &[expected])
@@ -148,7 +145,7 @@ pub async fn round_trip<F: SinkFixture>(fixture: &F) {
 
 /// Verify an empty commit publishes a readable empty result.
 pub async fn empty_commit<F: SinkFixture>(fixture: &F) {
-    assert_eq!(open(fixture).await.commit().await.unwrap().rows_written, 0);
+    open(fixture).await.commit().await.unwrap();
     let expected = fixture.batch();
     let actual = sorted(&expected.schema(), &fixture.read().await);
     assert_eq!(actual, expected.slice(0, 0));
@@ -211,10 +208,7 @@ pub async fn rolling<F: SinkFixture>(fixture: &F) {
         .unwrap();
     writer.write(expected.clone()).await.unwrap();
     writer.write(expected.clone()).await.unwrap();
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        2 * expected.num_rows() as u64
-    );
+    writer.commit().await.unwrap();
     assert_eq!(
         sorted(&expected.schema(), &fixture.read().await),
         sorted(&expected.schema(), &[expected.clone(), expected])

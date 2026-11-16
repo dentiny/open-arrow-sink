@@ -42,7 +42,7 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     assert_eq!(writer.schema(), &expected.schema());
     writer.write(expected.slice(0, 1)).await.unwrap();
     writer.write(expected.slice(1, 2)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    writer.commit().await.unwrap();
 
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
@@ -210,7 +210,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         writer.write(expected.slice(offset, 3)).await.unwrap();
     }
     writer.write(expected.slice(0, 0)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 9);
+    writer.commit().await.unwrap();
     let directory = Url::from_directory_path(&directory).unwrap();
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
     assert_eq!(
@@ -296,15 +296,7 @@ async fn idle_writers_do_not_create_parquet_files() {
     for writer in &mut session.writers {
         outputs.push(writer.finish().await.unwrap());
     }
-    assert_eq!(
-        session
-            .committer
-            .commit(outputs)
-            .await
-            .unwrap()
-            .rows_written,
-        input.num_rows() as u64,
-    );
+    session.committer.commit(outputs).await.unwrap();
     let files = std::fs::read_dir(&directory)
         .unwrap()
         .collect::<Result<Vec<_>, _>>()

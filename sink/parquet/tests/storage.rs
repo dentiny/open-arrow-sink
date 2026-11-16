@@ -188,15 +188,7 @@ async fn empty_parallel_create_writes_one_file_and_append_adds_none(#[case] file
             outputs.push(writer.finish().await.unwrap());
         }
         assert_eq!(storage.list(&path).await.unwrap(), before);
-        assert_eq!(
-            session
-                .committer
-                .commit(outputs)
-                .await
-                .unwrap()
-                .rows_written,
-            0
-        );
+        session.committer.commit(outputs).await.unwrap();
         let files = storage.list(&path).await.unwrap();
         assert_eq!(files.len(), 1);
         if mode == WriteMode::Append {

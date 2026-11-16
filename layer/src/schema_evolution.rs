@@ -3,8 +3,7 @@ use arrow_array::{ArrayRef, RecordBatchOptions};
 use arrow_schema::{FieldRef, Schema};
 use open_arrow_sink_core::{
     DataWriter, Error, GuardedDataWriter, GuardedWriter, Layer, RecordBatch, Result, SchemaRef,
-    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
-    validation,
+    Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -200,7 +199,7 @@ impl Writer for EvolutionWriter {
         self.inner.write(self.output.apply(input)?).await?;
         Ok(())
     }
-    async fn commit(self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(self: Box<Self>) -> Result<()> {
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {

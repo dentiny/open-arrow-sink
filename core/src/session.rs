@@ -1,4 +1,4 @@
-use crate::{GuardedWriter, RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
+use crate::{GuardedWriter, RecordBatch, Result, SchemaRef, async_trait};
 
 /// Independent physical writer. Finishing data must not publish table/dataset
 /// metadata. Errors are returned without deleting output or invoking abort.
@@ -28,7 +28,7 @@ pub trait SessionCommitter<T: Send + 'static>: Send {
     /// Called exactly once, after every data writer finishes successfully.
     /// Errors leave output in place. Publication may have succeeded despite
     /// an error; no automatic rollback or retry is performed.
-    async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<WriteSummary>;
+    async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<()>;
     /// End an explicitly aborted session after all data writers have stopped.
     /// Leave persisted output in place.
     async fn abort(self: Box<Self>) -> Result<()>;
@@ -84,7 +84,7 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(mut self: Box<Self>) -> Result<()> {
         let output = self.writer.finish().await?;
         self.committer.commit(vec![output]).await
     }
