@@ -3,10 +3,10 @@ use crate::config::SessionOptions;
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
     Compression, CompressionOptions, Result, SinkCapability, ZSTD_COMPRESSION_LEVEL_RANGE,
-    validation,
+    is_blob_marked, validation,
 };
 
-use crate::error;
+use crate::{blob::is_native_blob, error};
 
 pub(crate) fn validate_options(
     schema: &Schema,
@@ -50,15 +50,9 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
     // Native blob descriptors are an opaque Lance representation. Generic Arrow
     // path resolution in core must not know about Lance extension types.
     for path in options.nested_columns.keys() {
-        if (1..path.len()).any(|end| {
-            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2")
-            })
-        }) {
+        if (1..path.len())
+            .any(|end| validation::nested_field(schema, &path[..end]).is_some_and(is_native_blob))
+        {
             return Err(open_arrow_sink_core::Error::Unsupported(format!(
                 "nested compression inside native blob column: {path:?}"
             )));
@@ -70,18 +64,7 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
             .get(field.name())
             .copied()
             .or(options.structural_encoding);
-        if encoding.is_some()
-            && (field
-                .metadata()
-                .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-                .map(String::as_str)
-                == Some("true")
-                || field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2"))
-        {
+        if encoding.is_some() && (is_blob_marked(field) || is_native_blob(field)) {
             return Err(open_arrow_sink_core::Error::Unsupported(format!(
                 "structural encoding on blob column {}",
                 field.name()
@@ -122,13 +105,7 @@ pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     for field in schema.fields() {
-        if field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-            && field.data_type() != &DataType::LargeBinary
-        {
+        if is_blob_marked(field) && field.data_type() != &DataType::LargeBinary {
             return Err(error::invalid_blob_column(field.name()));
         }
     }
@@ -136,13 +113,7 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
 }
 pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     validate_blob_schema(schema)?;
-    if schema.fields().iter().any(|field| {
-        field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-    }) {
+    if schema.fields().iter().any(|field| is_blob_marked(field)) {
         return Err(error::parallel_blobs());
     }
     Ok(())
@@ -168,7 +139,6 @@ pub(crate) fn validate_blob_placements(
 ) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
     use crate::blob::NativeBlob;
     use arrow_array::{Array, LargeBinaryArray};
-    use open_arrow_sink_core::BLOB_METADATA_KEY;
     let mut placements = std::collections::HashMap::new();
     for blob in blobs {
         let field = batch
@@ -176,9 +146,7 @@ pub(crate) fn validate_blob_placements(
             .fields()
             .get(blob.column)
             .ok_or_else(error::blob_column_out_of_bounds)?;
-        if blob.row >= batch.num_rows()
-            || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
-        {
+        if blob.row >= batch.num_rows() || !is_blob_marked(field) {
             return Err(error::blob_cell());
         }
         let array = batch

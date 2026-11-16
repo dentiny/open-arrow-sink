@@ -129,15 +129,6 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").unwrap();
-    }
-    encoded
-}
-
 /// Native names reflect Lance's implementation of each logical index category.
 fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
@@ -146,7 +137,7 @@ fn index_name(spec: &IndexSpec) -> String {
         IndexType::Text => "text",
         IndexType::BloomFilter => "bloom",
     };
-    format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
+    format!("oas_{kind}_{}", hex::encode(spec.column.as_bytes()))
 }
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
@@ -227,4 +218,19 @@ pub(crate) async fn validate_index_requests(
         validate_existing_indexes(&dataset, &options.indexes).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_names_preserve_lowercase_utf8_hex_encoding() {
+        let spec = IndexSpec {
+            column: "id/é".into(),
+            index_type: IndexType::Scalar,
+            existing: ExistingIndexPolicy::Error,
+        };
+        assert_eq!(index_name(&spec), "oas_btree_69642fc3a9");
+    }
 }

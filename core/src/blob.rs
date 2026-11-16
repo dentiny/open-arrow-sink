@@ -1,6 +1,12 @@
 use std::{any::Any, fmt};
 
-use crate::{Result, async_trait};
+use crate::{BLOB_METADATA_KEY, Result, async_trait};
+
+/// Whether a field explicitly opts into the shared binary blob protocol.
+/// Other values (including `false`) do not mark a field as a blob.
+pub fn is_blob_marked(field: &arrow_schema::Field) -> bool {
+    field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true")
+}
 
 /// A download chunk and the resources accounting for its buffered bytes.
 /// Keep the chunk alive until its bytes have been consumed by the blob writer.
@@ -73,4 +79,27 @@ pub trait BlobWriter: Send {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()>;
     async fn finish(self: Box<Self>) -> Result<BlobHandle>;
     async fn abort(self: Box<Self>) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::{DataType, Field};
+
+    #[test]
+    fn blob_marker_requires_explicit_true() {
+        let field = Field::new("data", DataType::LargeBinary, true);
+        assert!(!is_blob_marked(&field));
+        for (value, expected) in [
+            ("true", true),
+            ("false", false),
+            ("TRUE", false),
+            ("", false),
+        ] {
+            let field = field
+                .clone()
+                .with_metadata([(BLOB_METADATA_KEY.into(), value.into())].into());
+            assert_eq!(is_blob_marked(&field), expected);
+        }
+    }
 }

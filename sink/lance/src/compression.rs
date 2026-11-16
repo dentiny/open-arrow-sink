@@ -8,11 +8,12 @@ use open_arrow_sink_core::{
 
 use crate::error::backend;
 
-const CODEC: &str = "lance-encoding:compression";
-const STRUCTURAL: &str = "lance-encoding:structural-encoding";
-const LEVEL: &str = "lance-encoding:compression-level";
-const DICT_CODEC: &str = "lance-encoding:dict-values-compression";
-const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
+use lance_encoding::constants::{
+    COMPRESSION_LEVEL_META_KEY as LEVEL, COMPRESSION_META_KEY as CODEC,
+    DICT_VALUES_COMPRESSION_LEVEL_META_KEY as DICT_LEVEL,
+    DICT_VALUES_COMPRESSION_META_KEY as DICT_CODEC, STRUCTURAL_ENCODING_FULLZIP,
+    STRUCTURAL_ENCODING_META_KEY as STRUCTURAL, STRUCTURAL_ENCODING_MINIBLOCK,
+};
 
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> Result<SchemaRef> {
     if options.global.is_none()
@@ -125,8 +126,8 @@ fn compression_field(
         metadata.insert(
             STRUCTURAL.into(),
             match encoding {
-                StructuralEncoding::Miniblock => "miniblock",
-                StructuralEncoding::Fullzip => "fullzip",
+                StructuralEncoding::Miniblock => STRUCTURAL_ENCODING_MINIBLOCK,
+                StructuralEncoding::Fullzip => STRUCTURAL_ENCODING_FULLZIP,
             }
             .into(),
         );
