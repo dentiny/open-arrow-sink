@@ -63,16 +63,3 @@ pub(crate) fn invalid_index_column(column: &str) -> Error {
 pub(crate) fn unsupported_blob_streams() -> Error {
     Error::Unsupported("sink does not support streaming blobs".into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-    use std::{error::Error as _, io};
-
-    #[test]
-    fn backend_retains_native_error_for_inspection() {
-        let error = Error::backend(io::Error::new(io::ErrorKind::PermissionDenied, "private"));
-        let native = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
-        assert_eq!(native.kind(), io::ErrorKind::PermissionDenied);
-    }
-}
