@@ -1,11 +1,11 @@
-#![cfg(feature = "http")]
-
 use std::{sync::Arc, time::Duration};
 
 use futures::{TryStreamExt, poll, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
-use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, opendal};
+use open_arrow_sink_storage::{
+    DownloadPool, HttpConcurrencyLimitLayer, RetryConfig, StorageConfig, opendal,
+};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
 
@@ -36,10 +36,23 @@ impl HttpTransport for Transport {
     }
 }
 
-fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+fn pool_with(
+    concurrency: usize,
+    bytes: usize,
+    config: StorageConfig,
+    transport: impl HttpTransport,
+) -> DownloadPool {
+    let http = DownloadPool::http_storage(config)
+        .unwrap()
+        .with_http_transport(HttpTransporter::new(transport));
     DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
         .unwrap()
-        .with_http_transport(HttpTransporter::new(Transport))
+        .with_http_storage(http)
+        .unwrap()
+}
+
+fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+    pool_with(concurrency, bytes, StorageConfig::default(), Transport)
 }
 
 // Consume chunks promptly so a payload larger than the budget can make progress.
@@ -101,7 +114,7 @@ async fn invalid_sources_release_budgets() {
 }
 
 #[tokio::test]
-async fn replacing_transport_preserves_retry_policy() {
+async fn http_storage_applies_retry_policy_around_custom_transport() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Transient(Arc<AtomicUsize>);
     impl HttpTransport for Transient {
@@ -114,15 +127,16 @@ async fn replacing_transport_preserves_retry_policy() {
         }
     }
     let attempts = Arc::new(AtomicUsize::new(0));
-    let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
-        .unwrap()
-        .with_layer(
-            opendal::layers::RetryLayer::default()
-                .with_min_delay(Duration::from_millis(1))
-                .with_max_delay(Duration::from_millis(1))
-                .with_max_times(1),
-        )
-        .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
+    let config = StorageConfig {
+        retry: Some(RetryConfig {
+            max_retries: 1,
+            min_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            ..RetryConfig::default()
+        }),
+        ..StorageConfig::default()
+    };
+    let retrying = pool_with(2, 8, config, Transient(attempts.clone()));
     assert_eq!(read_body(&retrying, URL).await, BODY);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
@@ -156,10 +170,14 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
     timeout(Duration::from_secs(5), async {
         let shared = HttpConcurrencyLimitLayer::new(1).unwrap();
         let make_pool = |concurrency| {
+            let http = DownloadPool::http_storage(StorageConfig::default())
+                .unwrap()
+                .with_http_concurrency_limit(shared.clone())
+                .with_http_transport(HttpTransporter::new(HeldBody));
             DownloadPool::new(concurrency, 8.try_into().unwrap())
                 .unwrap()
-                .with_layer(shared.clone())
-                .with_http_transport(HttpTransporter::new(HeldBody))
+                .with_http_storage(http)
+                .unwrap()
         };
         let first = make_pool(2.try_into().unwrap());
         let second = make_pool(3.try_into().unwrap());
@@ -291,9 +309,9 @@ async fn download_policies_bound_stalls_and_resume_without_duplicating_bytes() {
         "/resume-changed",
     ] {
         let attempts = Arc::new(AtomicUsize::new(0));
-        let pool = DownloadPool::new_with_config(
-            4.try_into().unwrap(),
-            16.try_into().unwrap(),
+        let pool = pool_with(
+            4,
+            16,
             StorageConfig {
                 timeout: Some(TimeoutConfig {
                     operation_timeout: Duration::from_millis(20),
@@ -307,11 +325,10 @@ async fn download_policies_bound_stalls_and_resume_without_duplicating_bytes() {
                     ..RetryConfig::default()
                 }),
             },
-        )
-        .unwrap()
-        .with_http_transport(HttpTransporter::new(PolicyTransport {
-            attempts: attempts.clone(),
-        }));
+            PolicyTransport {
+                attempts: attempts.clone(),
+            },
+        );
         let result = timeout(Duration::from_secs(2), async {
             let mut stream = pool
                 .stream(&format!("https://policy-fixture.invalid{path}"))
@@ -342,16 +359,29 @@ async fn download_policies_bound_stalls_and_resume_without_duplicating_bytes() {
 async fn default_http_policy_retries_a_transient_status() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let attempts = Arc::new(AtomicUsize::new(0));
-    let pool = DownloadPool::new(4.try_into().unwrap(), 16.try_into().unwrap())
-        .unwrap()
-        .with_http_transport(HttpTransporter::new(PolicyTransport {
-            attempts: attempts.clone(),
-        }));
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let source = format!("http://{}/status-503", listener.local_addr().unwrap());
+    let requests = attempts.clone();
+    let server = tokio::spawn(async move {
+        for attempt in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let count = socket.read(&mut request).await.unwrap();
+            assert_ne!(count, 0);
+            requests.fetch_add(1, Ordering::SeqCst);
+            let response = if attempt == 0 {
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+            } else {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world"
+                    .as_slice()
+            };
+            socket.write_all(response).await.unwrap();
+        }
+    });
+    let pool = DownloadPool::new(4.try_into().unwrap(), 16.try_into().unwrap()).unwrap();
     timeout(Duration::from_secs(4), async {
-        let mut stream = pool
-            .stream("https://policy-fixture.invalid/status-503")
-            .await
-            .unwrap();
+        let mut stream = pool.stream(&source).await.unwrap();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.try_next().await.unwrap() {
             bytes.extend_from_slice(chunk.as_ref());
@@ -361,4 +391,5 @@ async fn default_http_policy_retries_a_transient_status() {
     })
     .await
     .unwrap();
+    server.await.unwrap();
 }

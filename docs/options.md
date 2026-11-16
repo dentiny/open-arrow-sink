@@ -256,11 +256,14 @@ The former `DownloadPool::global()` and
 and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
 `DownloadBlobLayer` creates one default pool per opened writer.
 
-To share HTTP capacity across otherwise independent pools or with `Storage`,
-create one `HttpConcurrencyLimitLayer` and install its clones using the pool's
-`with_layer` and storage's `with_http_concurrency_limit`. Stream slots also cover
-non-HTTP sources; HTTP permits cover network requests until response-body release.
-These are separate budgets. There is no additional HTTP limiter unless configured.
+HTTP(S) downloads go through the pool's HTTP `Storage`. By default its request
+budget equals the pool's `concurrency`. To share HTTP capacity across otherwise
+independent pools or with other storage, create one `HttpConcurrencyLimitLayer`,
+install its clones with `with_http_concurrency_limit` on each `Storage` (including
+one built by `DownloadPool::http_storage`), and pass that storage to
+`DownloadPool::with_http_storage`. Stream slots also cover non-HTTP sources; HTTP
+permits cover network requests until response-body release. These are separate
+budgets.
 
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
@@ -286,8 +289,8 @@ OpenDAL resumes interrupted bodies at the consumed byte offset; a resumed HTTP
 response must be 206 with the matching `Content-Range`, and a strong ETag is sent
 as `If-Range` when available. Servers that cannot resume fail rather than append
 duplicate bytes. Sources without a strong ETag must remain unchanged during a
-download. Extra policies can still be stacked with `DownloadPool::with_layer`,
-adding `TimeoutLayer` before `RetryLayer` so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+download. Replace the HTTP storage with `DownloadPool::with_http_storage`;
+`DownloadPool::http_storage(config)` applies timeout/retry policies through Storage. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
 
 ## Download URL columns into native blobs
