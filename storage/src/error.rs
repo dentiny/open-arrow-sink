@@ -125,6 +125,10 @@ pub(crate) fn invalid_download_url() -> Error {
 pub(crate) fn download_scheme() -> Error {
     invalid("blob URL must use HTTP or HTTPS")
 }
+#[cfg(feature = "http")]
+pub(crate) fn http_storage_service() -> Error {
+    invalid_config("HTTP download storage must use the OpenDAL http service")
+}
 
 #[cfg(feature = "http")]
 pub(crate) fn download_response(
