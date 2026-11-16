@@ -120,7 +120,8 @@ credentials and namespace. Iceberg injects it through the catalog's
 
 `BlobDownloader` owns explicit download, chunk, and application-memory budgets.
 Lance owns one by default; configure a shared `Arc<BlobDownloader>` to share
-limits across sinks. Blob URI inputs are materialized automatically. Reservations follow returned bytes and shared
+limits across sinks. `DownloadBlobLayer` explicitly marks URL columns without
+performing I/O; unselected Arrow strings remain strings. Blob URI inputs are materialized automatically. Reservations follow returned bytes and shared
 Arrow buffers through the write queue. The SDK chooses inline, packed, or
 dedicated storage. SDK encoding and transport buffers have separate limits.
 An explicit `HttpConcurrencyLimitLayer` can share HTTP capacity across downloaders

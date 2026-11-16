@@ -255,8 +255,11 @@ Every `LanceDatasetSink` owns a `storage::BlobDownloader` by default. Blob write
 always use it to materialize inputs before handing them to Lance: URI inputs in
 `Ingest` mode are downloaded completely; existing bytes are admitted under the
 same memory budget. `Reference` mode preserves external references without
-copying their source. There is no download layer and no explicit download call
-in the ordinary write flow. Lance selects inline, packed, or dedicated layout
+copying their source. Ordinary Arrow strings stay strings. Install
+`layer::DownloadBlobLayer::new(["image_url".to_owned()].into())` to explicitly
+select top-level URL columns for blob ingestion. The layer marks selected text
+fields; the backend downloads them through the same built-in component. Native
+logical blob fields remain an alternative for callers already using SDK arrays. Lance selects inline, packed, or dedicated layout
 from the complete payload size and `WriteOptions.blob_handle` thresholds.
 
 Configure and share the built-in component when limits should span sinks:
@@ -385,7 +388,7 @@ totals or bytes inferred from Arrow batches. Install the layer outside retry lay
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
 Install one observation layer at the boundary you want to measure. The built-in
 blob downloader records source reads using the writer's `IoMetrics` handle, so
-its traffic is included without a download layer. Nested observers receive
+its traffic is included regardless of URL-selection layers. Nested observers receive
 backend measurements independently; reusing the same handle does not duplicate
 byte observations. Placing MetricsLayer inside or outside UnorderedWriteLayer
 still counts one successful session commit.

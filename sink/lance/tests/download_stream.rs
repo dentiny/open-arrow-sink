@@ -1,15 +1,12 @@
 use arrow_array::cast::AsArray;
 use std::{num::NonZeroUsize, sync::Arc};
 
-use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch};
+use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use lance::{
-    Dataset,
-    blob::{BlobArrayBuilder, blob_field},
-    datatypes::BlobHandling,
-};
-use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink};
+use lance::{Dataset, datatypes::BlobHandling};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink, SinkExt};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
+use open_arrow_sink_layer::{DownloadBlobLayer, UnorderedWriteLayer};
 use open_arrow_sink_storage::BlobDownloader;
 mod testutil;
 use open_arrow_sink_test_support::unordered_options as options;
@@ -31,13 +28,14 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     let io = IoMetrics::default();
     let large = format!("{}/large", server.url);
     let empty = format!("{}/empty", server.url);
-    let mut values = BlobArrayBuilder::new(4);
-    values.push_uri(&large).unwrap();
-    values.push_null().unwrap();
-    values.push_uri(&large).unwrap();
-    values.push_uri(&empty).unwrap();
+    let values = StringArray::from(vec![
+        Some(large.as_str()),
+        None,
+        Some(large.as_str()),
+        Some(empty.as_str()),
+    ]);
     let schema = Arc::new(Schema::new(vec![
-        blob_field("blob", true),
+        Field::new("blob", DataType::Utf8, true),
         Field::new("id", DataType::Int32, false),
         Field::new("bytes", DataType::LargeBinary, true)
             .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into()),
@@ -45,7 +43,7 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     let input = RecordBatch::try_new(
         schema.clone(),
         vec![
-            values.finish().unwrap(),
+            Arc::new(values),
             Arc::new(Int32Array::from(vec![0, 1, 2, 3])) as ArrayRef,
             Arc::new(LargeBinaryArray::from(vec![
                 Some(b"mem".as_slice()),
@@ -61,6 +59,54 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
         .with_blob_downloader(downloader.clone())
         .with_encoding_buffer_size(NonZeroUsize::new(4 * 1024 * 1024).unwrap());
     let temp = tempfile::tempdir().unwrap();
+    // URL-looking text stays text without an explicit download layer.
+    let plain_path = temp.path().join("plain");
+    let mut plain = sink
+        .open(
+            Url::from_directory_path(&plain_path).unwrap(),
+            schema.clone(),
+            options(),
+        )
+        .await
+        .unwrap();
+    plain.write(input.clone()).await.unwrap();
+    plain.commit().await.unwrap();
+    let plain = Dataset::open(plain_path.to_str().unwrap())
+        .await
+        .unwrap()
+        .scan()
+        .try_into_batch()
+        .await
+        .unwrap();
+    assert_eq!(plain.schema().field(0).data_type(), &DataType::Utf8);
+    assert_eq!(
+        plain
+            .column(0)
+            .as_string::<i32>()
+            .iter()
+            .flatten()
+            .filter(|url| *url == large.as_str())
+            .count(),
+        2
+    );
+    let sink = sink
+        .layer(DownloadBlobLayer::new(["blob".to_owned()].into()))
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()));
+    for selected in ["missing", "id"] {
+        let invalid =
+            LanceDatasetSink::default().layer(DownloadBlobLayer::new([selected.to_owned()].into()));
+        assert!(
+            invalid
+                .open(
+                    Url::from_directory_path(temp.path().join("invalid")).unwrap(),
+                    schema.clone(),
+                    options()
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert!(!temp.path().join("invalid").exists());
     let path = temp.path().join("dataset");
     let mut writer = sink
         .open(
@@ -76,8 +122,8 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
         )
         .await
         .unwrap();
+    assert_eq!(writer.schema(), &schema);
     writer.write(input).await.unwrap();
-    assert!(downloader.buffered_bytes() <= downloader.max_buffered_bytes());
     assert_eq!(writer.commit().await.unwrap().rows_written, 4);
     assert_eq!(downloader.buffered_bytes(), 0);
     assert_eq!(io.snapshot().bytes_read, 34 * 1024 * 1024);

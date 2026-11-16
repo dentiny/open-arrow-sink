@@ -203,7 +203,8 @@ Use `sink.dataset_builder(url)?.load().await?` to read with the same storage.
 [The Lance guide](../sink/lance/README.md) explains vector training requirements,
 effective-schema matching, native blobs, and explicit file versions `2.2`/`2.3`.
 The sink's built-in [BlobDownloader](options.md#blob-downloader-and-memory-limits)
-materializes logical blob URI inputs automatically. Configure its shared resource
+materializes logical blob URI inputs automatically. For ordinary Arrow URL columns,
+select them with `layer::DownloadBlobLayer`; unselected text remains text. Configure its shared resource
 limits; Lance chooses the resulting storage layout.
 
 ## Runnable examples

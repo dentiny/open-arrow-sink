@@ -192,9 +192,17 @@ pub(crate) fn validate_session_transaction(
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     fn check(field: &arrow_schema::Field, top_level: bool) -> Result<()> {
         if is_blob_field(field) {
-            if !top_level || field.data_type() != &DataType::LargeBinary {
+            if !top_level
+                || !matches!(
+                    field.data_type(),
+                    DataType::LargeBinary
+                        | DataType::Utf8
+                        | DataType::LargeUtf8
+                        | DataType::Utf8View
+                )
+            {
                 return Err(Error::InvalidInput(format!(
-                    "blob-marked column must be a top-level LargeBinary: {}",
+                    "blob-marked column must be top-level binary or URL text: {}",
                     field.name()
                 )));
             }

@@ -175,7 +175,7 @@ storage upload policy as `Storage::writer()`.
 
 ## Blob downloads
 
-Every Lance sink owns a `BlobDownloader`; blob URI inputs need no optional layer
+Every Lance sink owns a `BlobDownloader`; native logical blob URI inputs need no optional layer
 or explicit download call. It collects full payloads under shared admission and
 memory limits before handing them to the SDK for layout selection.
 

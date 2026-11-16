@@ -124,8 +124,9 @@ cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 
 ## Materialized blob inputs
 
-Use native logical blob fields (`BlobArrayBuilder::push_bytes` / `push_uri`), or
-mark a top-level `LargeBinary` field with `open-arrow-sink:blob = true`. Every
+Ordinary Arrow text columns remain text, even when values look like URLs. Use
+`layer::DownloadBlobLayer` to select URL columns for ingestion, native logical
+blob fields (`BlobArrayBuilder::push_bytes` / `push_uri`), or mark a top-level `LargeBinary` field with `open-arrow-sink:blob = true`. Every
 blob goes through the built-in downloader's admission/memory budget, then the
 SDK selects its physical layout. Single and parallel writers use this same path.
 Nulls and empty blobs remain distinct. Prepared descriptors and the old
@@ -349,7 +350,7 @@ let source = Storage::new(
 let sources = Arc::new(StorageResolver::default().with_storage(source));
 let pool = Arc::new(BlobDownloader::with_defaults()?.with_source_resolver(sources.clone()));
 let sink = LanceDatasetSink::default().with_source_resolver(sources)
-    .with_blob_downloader(Arc::new(pool));
+    .with_blob_downloader(pool);
 // Blob writes always use the configured downloader.
 # let _ = sink;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -368,5 +369,6 @@ sink or constructing a dataset builder; Lance snapshots the available schemes.
 `BlobDownloader::with_source_storage` configures non-HTTP download sources.
 The default `OpenDalDownloader` preserves signed query
 strings. Configure shared downloader limits on the sink; it downloads URI inputs and
-passes complete payloads to the SDK automatically. No download layer is required. See the
+passes complete payloads to the SDK automatically. Plain text URL columns require
+explicit selection with `DownloadBlobLayer`; native logical blob inputs do not. See the
 [download contracts](../../docs/options.md#blob-downloader-and-memory-limits).

@@ -82,10 +82,30 @@ does not delete potentially committed output. Drop performs no async cleanup.
 Ordering and compression decorators forward `ParallelSink`. The concurrent sink
 itself exposes `Sink`, not `ParallelSink`.
 
-Downloads are independent of sink decorators. Lance always owns a
-[`BlobDownloader`](../storage/README.md#http-downloads), materializes blob inputs,
-and hands complete payloads to its SDK for layout selection. Downloader limits
-apply regardless of which layers are installed.
+## Select URL columns for blob download
+
+Ordinary Arrow strings remain strings. Add `DownloadBlobLayer` to explicitly
+select the URL columns whose contents should become blobs:
+
+```rust,ignore
+use open_arrow_sink::{SinkExt, lance::LanceDatasetSink, layer::DownloadBlobLayer};
+
+let sink = LanceDatasetSink::default().layer(
+    DownloadBlobLayer::new(["image_url".to_owned()].into()),
+);
+```
+
+Select exact, unique top-level `Utf8`, `LargeUtf8`, or `Utf8View` columns. The layer
+marks only those columns as blob inputs, preserving nulls, row counts, other
+columns, and metadata. The public writer retains the original input schema.
+Single and parallel sessions share the existing schema-transform lifecycle.
+Backends without blob input support reject the layer before opening a destination.
+
+Lance's always-present [`BlobDownloader`](../storage/README.md#http-downloads)
+performs the downloads under its shared chunk, HTTP, and memory limits. The layer
+adds no I/O, second payload buffer, or separate budget. Complete bytes go to the
+SDK for inline, packed, or dedicated layout selection. Native logical blob inputs
+can still be supplied directly without the layer.
 
 To build your own decorator, follow [extend a layer](../docs/extending-layers.md).
 
