@@ -1,10 +1,9 @@
 //! One-to-one top-level field remapping with a fixed schema per session.
-use crate::error::backend;
 use arrow_array::{ArrayRef, RecordBatchOptions};
 use arrow_schema::{FieldRef, Schema};
 use open_arrow_sink_core::{
-    DataWriter, Error, Layer, ParallelSink, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
+    DataWriter, Error, Layer, ParallelSink, Poison, RecordBatch, Result, SchemaRef, Sink,
+    SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
 };
 use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
 
@@ -119,16 +118,7 @@ impl Plan {
             columns,
             &RecordBatchOptions::new().with_row_count(Some(input.num_rows())),
         )
-        .map_err(backend)
-    }
-}
-fn state(failed: bool) -> Result<()> {
-    if failed {
-        Err(Error::Unsupported(
-            "schema evolution writer failed; abort or drop it".into(),
-        ))
-    } else {
-        Ok(())
+        .map_err(Error::backend)
     }
 }
 #[async_trait]
@@ -155,7 +145,7 @@ impl<S: Sink> Sink for SchemaEvolutionSink<S> {
             inner,
             schema,
             output,
-            failed: false,
+            state: Poison::default(),
         }))
     }
 }
@@ -163,7 +153,7 @@ struct EvolutionWriter {
     inner: Box<dyn Writer>,
     schema: SchemaRef,
     output: Plan,
-    failed: bool,
+    state: Poison,
 }
 #[async_trait]
 impl Writer for EvolutionWriter {
@@ -171,14 +161,13 @@ impl Writer for EvolutionWriter {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        state(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         self.inner.write(self.output.apply(input)?).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = state(self.failed) {
+        if let Err(error) = self.state.check() {
             let _ = self.inner.abort().await;
             return Err(error);
         }
@@ -192,7 +181,7 @@ struct EvolutionDataWriter<T: Send + 'static> {
     inner: Box<dyn DataWriter<Output = T>>,
     schema: SchemaRef,
     output: Plan,
-    failed: bool,
+    state: Poison,
 }
 #[async_trait]
 impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
@@ -201,15 +190,13 @@ impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        state(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         self.inner.write(self.output.apply(input)?).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        state(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         self.inner.finish().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -240,7 +227,7 @@ impl<S: ParallelSink> ParallelSink for SchemaEvolutionSink<S> {
                         inner,
                         schema: schema.clone(),
                         output: output.clone(),
-                        failed: false,
+                        state: Poison::default(),
                     }) as Box<dyn DataWriter<Output = Self::Output>>
                 })
                 .collect(),

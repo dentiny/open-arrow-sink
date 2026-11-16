@@ -6,14 +6,14 @@ use arrow_schema::ArrowError;
 
 use lance::Dataset;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
     validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     destination::LanceDestination,
-    error::{aborted, backend, worker_stopped},
+    error::{aborted, worker_stopped},
     index::build_indexes,
 };
 
@@ -63,7 +63,7 @@ pub(crate) struct BlobDatasetWriter {
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
-    failed: bool,
+    state: Poison,
     destination: LanceDestination,
     options: SessionOptions,
 }
@@ -79,11 +79,11 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
-        self.failed = true;
+        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.poison();
         let blob =
             crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(blob)
     }
 
@@ -92,8 +92,8 @@ impl Writer for BlobDatasetWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
-        self.failed = true;
+        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.poison();
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch =
@@ -105,12 +105,12 @@ impl Writer for BlobDatasetWriter {
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = crate::validation::validate_blob_commit(self.failed, &self.blob_session)
+        if let Err(error) = crate::validation::validate_blob_commit(&self.state, &self.blob_session)
         {
             let _ = self.abort().await;
             return Err(error);
@@ -123,10 +123,14 @@ impl Writer for BlobDatasetWriter {
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        let mut dataset = self
+            .task
+            .await
+            .map_err(Error::backend)?
+            .map_err(Error::backend)?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         Ok(WriteSummary {
             rows_written: self.rows,
         })
@@ -174,7 +178,7 @@ impl BlobDatasetWriter {
             sender: Some(sender),
             task,
             rows: 0,
-            failed: false,
+            state: Poison::default(),
             destination,
             options,
         }

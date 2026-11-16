@@ -60,7 +60,7 @@ impl ParallelSink for CountingSink {
                     Box::new(CountWriter {
                         schema: schema.clone(),
                         rows: 0,
-                        terminal: false,
+                        state: open_arrow_sink_core::Poison::default(),
                     }) as Box<dyn DataWriter<Output = u64>>
                 })
                 .collect(),
@@ -72,7 +72,7 @@ impl ParallelSink for CountingSink {
 struct CountWriter {
     schema: SchemaRef,
     rows: u64,
-    terminal: bool,
+    state: open_arrow_sink_core::Poison,
 }
 
 #[async_trait]
@@ -83,26 +83,20 @@ impl DataWriter for CountWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.terminal {
-            return Err(Error::Unsupported("writer is terminal".into()));
-        }
         // Set before validation / any awaited work. Errors and cancellation must
         // never leave the writer reusable. This in-memory example has no I/O.
-        self.terminal = true;
+        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         self.rows = self
             .rows
             .checked_add(batch.num_rows() as u64)
             .ok_or_else(|| Error::Unsupported("row count overflow".into()))?;
-        self.terminal = false;
+        self.state.complete();
         Ok(())
     }
 
     async fn finish(&mut self) -> Result<u64> {
-        if self.terminal {
-            return Err(Error::Unsupported("writer is terminal".into()));
-        }
-        self.terminal = true;
+        self.state.begin()?;
         Ok(self.rows)
     }
 

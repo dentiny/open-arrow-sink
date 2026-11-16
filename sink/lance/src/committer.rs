@@ -1,8 +1,8 @@
 use crate::config::SessionOptions;
 use lance::dataset::transaction::Transaction;
-use open_arrow_sink_core::{Result, SessionCommitter, WriteSummary, async_trait};
+use open_arrow_sink_core::{Error, Result, SessionCommitter, WriteSummary, async_trait};
 
-use crate::{destination::LanceDestination, error::backend, index::build_indexes};
+use crate::{destination::LanceDestination, index::build_indexes};
 
 type Output = (u64, Transaction);
 
@@ -36,10 +36,10 @@ impl SessionCommitter<Output> for LanceCommitter {
             // Lance preserves the existing manifest default for append operations.
             builder = builder.with_storage_format(version);
         }
-        let mut dataset = builder.execute(transaction).await.map_err(backend)?;
+        let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {

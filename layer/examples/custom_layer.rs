@@ -49,7 +49,7 @@ impl<S: Sink> Sink for LimitedSink<S> {
         Ok(Box::new(LimitedWriter {
             inner: self.inner.open(request, schema, options).await?,
             max_rows: self.max_rows,
-            failed: false,
+            state: open_arrow_sink_core::Poison::default(),
         }))
     }
 }
@@ -57,16 +57,9 @@ impl<S: Sink> Sink for LimitedSink<S> {
 struct LimitedWriter {
     inner: Box<dyn Writer>,
     max_rows: usize,
-    failed: bool,
+    state: open_arrow_sink_core::Poison,
 }
 impl LimitedWriter {
-    fn start(&mut self) -> Result<()> {
-        if self.failed {
-            return Err(Error::Unsupported("writer failed; abort it".into()));
-        }
-        self.failed = true;
-        Ok(())
-    }
     fn check_batch(&self, batch: &RecordBatch) -> Result<()> {
         open_arrow_sink_core::validation::validate_batch(self.schema(), batch)?;
         if batch.num_rows() > self.max_rows {
@@ -82,17 +75,17 @@ impl Writer for LimitedWriter {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.start()?;
+        self.state.begin()?;
         self.check_batch(&batch)?;
         self.inner.write(batch).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     // Forward blob methods too, since capabilities were forwarded unchanged.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.start()?;
+        self.state.begin()?;
         let blob = self.inner.create_blob().await?;
-        self.failed = false;
+        self.state.complete();
         Ok(blob)
     }
     async fn write_with_blobs(
@@ -100,16 +93,16 @@ impl Writer for LimitedWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        self.start()?;
+        self.state.begin()?;
         self.check_batch(&batch)?;
         self.inner.write_with_blobs(batch, blobs).await?;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if self.failed {
+        if let Err(error) = self.state.check() {
             let _ = self.inner.abort().await;
-            return Err(Error::Unsupported("writer failed; session aborted".into()));
+            return Err(error);
         }
         self.inner.commit().await
     }
@@ -122,7 +115,7 @@ impl Writer for LimitedWriter {
 async fn main() -> Result<()> {
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
-            .map_err(|error| Error::Backend(Box::new(error)))?;
+            .map_err(Error::backend)?;
     let sink = CountingSink.layer(MaxBatchRows(3));
     let options = WriteOptions {
         ordering: Ordering::Unordered,

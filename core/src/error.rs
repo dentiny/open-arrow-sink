@@ -2,16 +2,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("writer failed, was cancelled, or is already finished; abort or drop it")]
+    Poisoned,
     #[error("unsupported operation: {0}")]
     Unsupported(String),
     #[error("batch schema does not match the write session schema")]
     SchemaMismatch,
+    #[error("destination exists")]
+    DestinationExists,
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
     #[error("backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl Error {
+    /// Preserve a native error and its source chain at a backend boundary.
+    pub fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Backend(Box::new(error))
+    }
+}
+
 pub(crate) fn invalid_target_file_size() -> Error {
-    Error::Unsupported("target_file_size must be greater than zero".into())
+    Error::InvalidConfig("target_file_size must be greater than zero".into())
 }
 
 pub(crate) fn preserve_input_unsupported() -> Error {
@@ -38,4 +51,17 @@ pub(crate) fn invalid_index_column(column: &str) -> Error {
 
 pub(crate) fn unsupported_blob_streams() -> Error {
     Error::Unsupported("sink does not support streaming blobs".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use std::{error::Error as _, io};
+
+    #[test]
+    fn backend_retains_native_error_for_inspection() {
+        let error = Error::backend(io::Error::new(io::ErrorKind::PermissionDenied, "private"));
+        let native = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(native.kind(), io::ErrorKind::PermissionDenied);
+    }
 }

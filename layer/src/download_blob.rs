@@ -6,15 +6,11 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, RecordBatch, Result, SchemaRef, Sink,
-    SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, Poison, RecordBatch, Result,
+    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::{
-    DownloadPool,
-    error::{self, backend},
-    validation::validate_download_config,
-};
+use crate::{DownloadPool, error, validation::validate_download_config};
 
 /// Stream selected URL columns into native blobs and attach their descriptors.
 /// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
@@ -102,7 +98,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             output_schema,
             indices,
             pool,
-            failed: false,
+            state: Poison::default(),
             io_metrics,
         }))
     }
@@ -114,7 +110,7 @@ struct DownloadBlobWriter {
     output_schema: SchemaRef,
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
-    failed: bool,
+    state: Poison,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
@@ -171,8 +167,7 @@ impl Writer for DownloadBlobWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_download_writer(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
@@ -217,17 +212,17 @@ impl Writer for DownloadBlobWriter {
                     None => break,
                 }
             }
-            let output =
-                RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
+            let output = RecordBatch::try_new(self.output_schema.clone(), columns)
+                .map_err(Error::backend)?;
             self.inner.write_with_blobs(output, blobs).await?;
         }
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if crate::validation::validate_download_writer(self.failed).is_err() {
+        if let Err(error) = self.state.check() {
             let _ = self.inner.abort().await;
-            return Err(error::download_aborted());
+            return Err(error);
         }
         self.inner.commit().await
     }

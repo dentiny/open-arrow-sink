@@ -70,16 +70,18 @@ Implement `DataWriter<Output = YourOutput>` with these responsibilities:
 | `finish(&mut self)` | Called once after writes complete; close encoding, return owned metadata, do not publish table/dataset state |
 | `abort(self: Box<Self>)` | Stop I/O and best-effort cleanup of owned output, including after successful finish |
 
-Set failure state **before** any fallible or awaited write work; clear it only on
-success. Otherwise dropping a pending future could leave a partially modified
-writer apparently reusable. The counting example demonstrates this pattern.
+Use `Poison::begin` **before** any fallible or awaited write work and call
+`complete` only after a successful write. Errors and cancelled futures then leave
+the writer terminal and subsequent operations return `Error::Poisoned`. Call
+`begin` at finish too, without `complete`, so a finished writer stays terminal.
+The counting example demonstrates this pattern.
 Real backends also need to retain upload/worker ownership after cancellation.
 
 Use `StorageWriter` or your native SDK for streaming. Honor `target_file_size` as
 a positive soft target and retain session compression policy across rolling.
 Keep row buffering bounded and document non-row growth such as file metadata,
 index training, or one writer per partition. Wrap native errors in
-`Error::Backend(Box::new(error))` to retain the source.
+`Error::backend(error)` to retain the source.
 
 ## 4. Implement publication separately
 

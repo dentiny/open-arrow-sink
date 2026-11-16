@@ -9,7 +9,7 @@ use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
-use open_arrow_sink_core::{ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType};
+use open_arrow_sink_core::{Error, ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType};
 use open_arrow_sink_core::{Result, WriteMode, validation};
 use tokio::task::JoinSet;
 
@@ -62,10 +62,7 @@ pub(crate) async fn validate_existing_indexes(
     dataset: &Dataset,
     indexes: &[IndexSpec],
 ) -> open_arrow_sink_core::Result<()> {
-    let existing = dataset
-        .load_indices()
-        .await
-        .map_err(crate::error::backend)?;
+    let existing = dataset.load_indices().await.map_err(Error::backend)?;
     for spec in indexes {
         if spec.existing == ExistingIndexPolicy::Error
             && existing.iter().any(|i| i.name == index_name(spec))

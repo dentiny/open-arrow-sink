@@ -6,12 +6,12 @@ use std::{
     },
 };
 
-use crate::{error::backend, validation};
+use crate::validation;
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::{Field, Schema};
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, async_trait,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait,
     is_blob_marked,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
@@ -78,7 +78,7 @@ struct NativeBlobWriter {
     url: Url,
     relative: String,
     finished: bool,
-    failed: bool,
+    state: Poison,
 }
 impl Drop for NativeBlobWriter {
     fn drop(&mut self) {
@@ -91,17 +91,17 @@ impl Drop for NativeBlobWriter {
 #[async_trait]
 impl BlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        validation::validate_blob_state(self.failed, &self.session)?;
-        self.failed = true;
+        validation::validate_blob_state(&self.state, &self.session)?;
+        self.state.poison();
         if let Err(error) = self.inner.write(chunk.bytes().clone()).await {
             self.session.failed.store(true, Ordering::Release);
             return Err(error);
         }
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
-        validation::validate_blob_state(self.failed, &self.session)?;
+        validation::validate_blob_state(&self.state, &self.session)?;
         let size = self.inner.close().await?;
         self.session.io_tracker.record_write(
             "streamed_blob",
@@ -143,7 +143,7 @@ pub(crate) async fn create_blob(
         url,
         relative,
         finished: false,
-        failed: false,
+        state: Poison::default(),
     }))
 }
 
@@ -209,16 +209,16 @@ pub(crate) fn storage_batch(
                                 .descriptor
                                 .clone(),
                         )
-                        .map_err(backend)?;
+                        .map_err(Error::backend)?;
                 } else if values.is_null(row) {
-                    builder.push_null().map_err(backend)?;
+                    builder.push_null().map_err(Error::backend)?;
                 } else {
                     builder
                         .push_inline(values.value(row).to_vec())
-                        .map_err(backend)?;
+                        .map_err(Error::backend)?;
                 }
             }
-            Ok(builder.finish().map_err(backend)?.array().clone() as ArrayRef)
+            Ok(builder.finish().map_err(Error::backend)?.array().clone() as ArrayRef)
         })
         .collect::<Result<Vec<_>>>()?;
     // Encoding changes field metadata, including nested fields, while reusing
@@ -227,7 +227,7 @@ pub(crate) fn storage_batch(
         .with_match_field_names(false)
         .with_row_count(Some(batch.num_rows()));
     let output =
-        RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(backend)?;
+        RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(Error::backend)?;
     for handle in placements.values() {
         let native = handle.downcast_ref::<NativeBlob>().unwrap();
         session.unattached.lock().unwrap().remove(&native.url);

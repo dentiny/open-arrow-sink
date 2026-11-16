@@ -72,13 +72,6 @@ pub(crate) fn validate_range(range: &Range<u64>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_writer_active(active: bool) -> Result<()> {
-    if !active {
-        return Err(error::writer_inactive());
-    }
-    Ok(())
-}
-
 impl crate::StorageConfig {
     /// Validate policies without constructing a backend or performing I/O.
     pub fn validate(&self) -> Result<()> {

@@ -11,13 +11,12 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Compression, CompressionCapability, CompressionCodec, DataWriter, Ordering, ParallelSink,
+    Compression, CompressionCapability, CompressionCodec, DataWriter, Error, Ordering, ParallelSink,
     Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{
     committer::IcebergCommitter,
-    error::backend,
     partition::PartitionWriterAdapter,
     validation::{validate_options, validate_table},
     writer::IcebergTableWriter,
@@ -95,7 +94,7 @@ impl ParallelSink for IcebergTableSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
-        let table = self.catalog.load_table(&request).await.map_err(backend)?;
+        let table = self.catalog.load_table(&request).await.map_err(Error::backend)?;
         validate_table(&table, &schema, self.partition)?;
         let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
         for _ in 0..count.get() {
@@ -135,7 +134,7 @@ impl IcebergTableSink {
         let prefix = format!(
             "{}/",
             DefaultLocationGenerator::new(metadata)
-                .map_err(backend)?
+                .map_err(Error::backend)?
                 .generate_location(None, &format!("open-arrow-sink-{id}"))
         );
         let mut properties = metadata.properties().clone();
@@ -165,10 +164,12 @@ impl IcebergTableSink {
             &properties,
             metadata.current_schema().clone(),
         )
-        .map_err(backend)?;
+        .map_err(Error::backend)?;
         let target_file_size = match options.target_file_size {
             Some(size) => size,
-            None => properties.write_target_file_size_bytes().map_err(backend)?,
+            None => properties
+                .write_target_file_size_bytes()
+                .map_err(Error::backend)?,
         };
         let rolling = RollingFileWriterBuilder::new(
             parquet,
@@ -186,7 +187,7 @@ impl IcebergTableSink {
                         metadata.current_schema().clone(),
                         metadata.default_partition_spec().clone(),
                     )
-                    .map_err(backend)?,
+                    .map_err(Error::backend)?,
                 )
             } else {
                 let partition = PartitionKey::new(
@@ -202,7 +203,7 @@ impl IcebergTableSink {
                             .map(|_| None),
                     ),
                 );
-                Box::new(builder.build(Some(partition)).await.map_err(backend)?)
+                Box::new(builder.build(Some(partition)).await.map_err(Error::backend)?)
             };
         Ok(Box::new(IcebergTableWriter::new(
             table, schema, prefix, inner, options,

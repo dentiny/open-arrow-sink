@@ -1,12 +1,8 @@
 use iceberg::table::Table;
 use iceberg::writer::IcebergWriter;
 use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
-};
-
-use crate::{
-    error::backend,
-    validation::{validate_commit_state, validate_write_state},
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
+    validation,
 };
 
 pub(crate) struct IcebergTableWriter {
@@ -15,7 +11,7 @@ pub(crate) struct IcebergTableWriter {
     prefix: String,
     inner: Box<dyn IcebergWriter>,
     rows: u64,
-    failed: bool,
+    state: Poison,
     options: WriteOptions,
 }
 
@@ -27,21 +23,18 @@ impl DataWriter for IcebergTableWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        validate_write_state(self.failed)?;
-        // Mark before awaiting so cancellation also makes this session unusable.
-        self.failed = true;
+        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
-        self.inner.write(batch).await.map_err(backend)?;
+        self.inner.write(batch).await.map_err(Error::backend)?;
         self.rows += rows;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
 
     async fn finish(&mut self) -> Result<Self::Output> {
-        validate_commit_state(self.failed)?;
-        self.failed = true;
-        let files = self.inner.close().await.map_err(backend)?;
+        self.state.begin()?;
+        let files = self.inner.close().await.map_err(Error::backend)?;
         Ok((self.rows, files))
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -54,7 +47,11 @@ impl DataWriter for IcebergTableWriter {
         } = *self;
         drop(inner);
         if options.cleanup_on_error {
-            table.file_io().delete_prefix(prefix).await.map_err(backend)
+            table
+                .file_io()
+                .delete_prefix(prefix)
+                .await
+                .map_err(Error::backend)
         } else {
             Ok(())
         }
@@ -75,7 +72,7 @@ impl IcebergTableWriter {
             prefix,
             inner,
             rows: 0,
-            failed: false,
+            state: Poison::default(),
             options,
         }
     }

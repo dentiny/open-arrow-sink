@@ -5,12 +5,12 @@ use lance::{
         SendableRecordBatchStream, stream::RecordBatchStreamAdapter,
     },
 };
-use open_arrow_sink_core::{DataWriter, RecordBatch, Result, SchemaRef, async_trait, validation};
+use open_arrow_sink_core::{DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, failed, worker_stopped},
+    error::worker_stopped,
 };
 
 type Output = (u64, Transaction);
@@ -22,7 +22,7 @@ pub(crate) struct FragmentWriter {
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
-    failed: bool,
+    state: Poison,
 }
 
 impl FragmentWriter {
@@ -52,7 +52,7 @@ impl FragmentWriter {
             sender: Some(sender),
             task: Some(task),
             rows: 0,
-            failed: false,
+            state: Poison::default(),
         }
     }
 }
@@ -64,8 +64,10 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_write_state(self.failed || self.sender.is_none())?;
-        self.failed = true;
+        self.state.begin()?;
+        if self.sender.is_none() {
+            return Err(open_arrow_sink_core::Error::Poisoned);
+        }
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
@@ -76,18 +78,17 @@ impl DataWriter for FragmentWriter {
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn finish(&mut self) -> Result<Output> {
-        crate::validation::validate_write_state(self.failed)?;
-        self.failed = true;
+        self.state.begin()?;
         // Closing this stream only finishes uncommitted fragments, never publication.
-        drop(self.sender.take().ok_or_else(failed)?);
+        drop(self.sender.take().ok_or(Error::Poisoned)?);
         // Keep ownership across cancellation so a later abort can stop the worker.
-        let result = self.task.as_mut().ok_or_else(failed)?.await;
+        let result = self.task.as_mut().ok_or(Error::Poisoned)?.await;
         self.task.take();
-        let transaction = result.map_err(backend)?.map_err(backend)?;
+        let transaction = result.map_err(Error::backend)?.map_err(Error::backend)?;
         Ok((self.rows, transaction))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -146,7 +147,7 @@ mod tests {
             sender: Some(sender),
             task: Some(task),
             rows: 0,
-            failed: false,
+            state: Poison::default(),
         };
         tokio::select! {
             result = writer.finish() => panic!("finalization unexpectedly ended: {result:?}"),

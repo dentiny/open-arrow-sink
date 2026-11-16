@@ -6,7 +6,6 @@ use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
 
-use crate::error::backend;
 
 use lance_encoding::constants::{
     COMPRESSION_LEVEL_META_KEY as LEVEL, COMPRESSION_META_KEY as CODEC,
@@ -179,7 +178,7 @@ pub(crate) fn writer_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Rec
         .with_match_field_names(false)
         .with_row_count(Some(batch.num_rows()));
     RecordBatch::try_new_with_options(schema.clone(), batch.columns().to_vec(), &options)
-        .map_err(backend)
+        .map_err(Error::backend)
 }
 
 #[cfg(test)]

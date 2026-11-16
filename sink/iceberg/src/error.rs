@@ -1,10 +1,6 @@
 use iceberg::spec::Transform;
 use open_arrow_sink_core::{Error, PartitionType, ZSTD_COMPRESSION_LEVEL_RANGE};
 
-pub(crate) fn backend(error: iceberg::Error) -> Error {
-    Error::Backend(Box::new(error))
-}
-
 pub(crate) fn invalid_zstd_level(level: i32) -> Error {
     Error::Unsupported(format!(
         "Iceberg Zstd compression level must be between {} and {}: {level}",
@@ -35,18 +31,6 @@ pub(crate) fn partition_mismatch(
     Error::Unsupported(format!(
         "requested {requested:?} partitioning, but field {field} uses {transform:?}"
     ))
-}
-
-pub(crate) fn schema_mismatch() -> Error {
-    Error::SchemaMismatch
-}
-
-pub(crate) fn failed_write() -> Error {
-    Error::Unsupported("abort or drop the failed writer".into())
-}
-
-pub(crate) fn failed_commit() -> Error {
-    Error::Unsupported("cannot commit a failed writer".into())
 }
 
 pub(crate) fn partition_writer_closed() -> iceberg::Error {

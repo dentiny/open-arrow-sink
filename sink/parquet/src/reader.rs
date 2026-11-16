@@ -1,7 +1,7 @@
 //! Range-based Parquet metadata access through shared storage.
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use open_arrow_sink_core::{Result, SchemaRef};
+use open_arrow_sink_core::{Error, Result, SchemaRef};
 use open_arrow_sink_storage::{Storage, Url};
 use parquet::{
     arrow::{
@@ -44,7 +44,7 @@ pub(crate) async fn schema(storage: Storage, url: Url) -> Result<SchemaRef> {
     let reader = Reader { storage, url, size };
     Ok(ParquetRecordBatchStreamBuilder::new(reader)
         .await
-        .map_err(crate::error::backend)?
+        .map_err(Error::backend)?
         .schema()
         .clone())
 }

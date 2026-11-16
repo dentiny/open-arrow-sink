@@ -2,7 +2,7 @@
 use crate::config::SessionOptions;
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Result, SinkCapability, ZSTD_COMPRESSION_LEVEL_RANGE,
+    Compression, CompressionOptions, Error, Result, SinkCapability, ZSTD_COMPRESSION_LEVEL_RANGE,
     is_blob_marked, validation,
 };
 
@@ -78,7 +78,7 @@ pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
 ) -> Result<()> {
-    let dataset = builder.load().await.map_err(error::backend)?;
+    let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
         lance_file::version::ConcreteFileVersion::V2_2
@@ -91,14 +91,7 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(error::schema_mismatch());
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
-    if failed {
-        return Err(error::failed());
+        return Err(Error::SchemaMismatch);
     }
     Ok(())
 }
@@ -118,16 +111,22 @@ pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_blob_state(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if failed || session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(error::blob_failed());
+pub(crate) fn validate_blob_state(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    state.check()?;
+    if session.failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(open_arrow_sink_core::Error::Poisoned);
     }
     Ok(())
 }
-pub(crate) fn validate_blob_commit(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0
-        || validate_blob_state(failed, session).is_err()
-    {
+pub(crate) fn validate_blob_commit(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    validate_blob_state(state, session)?;
+    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
         return Err(error::unfinished_blobs());
     }
     Ok(())
