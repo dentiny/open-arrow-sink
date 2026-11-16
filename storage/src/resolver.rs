@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 /// Resolution selects an operator; callers remain responsible for transferring
 /// bytes and choosing where to write them. No destination configuration is used.
 ///
+/// Share an `Arc<StorageResolver>` between a download pool and a sink to configure
+/// source credentials once and reuse the same registrations and URL-derived cache.
 /// Clones share the URL-derived cache but retain their own explicit registrations.
 #[derive(Clone, Debug, Default)]
 pub struct StorageResolver {

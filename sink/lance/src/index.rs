@@ -139,15 +139,6 @@ async fn create_index(
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").unwrap();
-    }
-    encoded
-}
-
 /// Native names reflect Lance's implementation of each logical index category.
 fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
@@ -156,5 +147,5 @@ fn index_name(spec: &IndexSpec) -> String {
         IndexType::Text => "text",
         IndexType::BloomFilter => "bloom",
     };
-    format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
+    format!("oas_{kind}_{}", hex::encode(spec.column.as_bytes()))
 }

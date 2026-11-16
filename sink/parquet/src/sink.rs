@@ -138,7 +138,7 @@ impl ParquetDirectorySink {
                         let _ = DataWriter::abort(Box::new(writer)).await;
                     }
                     if options.cleanup_on_error {
-                        let _ = destination.remove_reservation().await;
+                        let _ = destination.remove_empty_directory().await;
                     }
                     return Err(error);
                 }

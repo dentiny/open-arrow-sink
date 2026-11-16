@@ -1,74 +1,26 @@
-use std::{
-    pin::Pin,
-    sync::{Arc, atomic::Ordering},
-    task::{Context, Poll},
-};
+use std::sync::{Arc, atomic::Ordering};
 
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
-use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use futures::Stream;
-use lance::{Dataset, dataset::InsertBuilder};
+use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
+use futures::stream;
+use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
-    WriteSummary, Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    compression::writer_batch,
-    error::{aborted, worker_stopped},
-    index::build_indexes,
+    committer::LanceCommitter, compression::writer_batch, error::worker_stopped,
     storage::NativeStorage,
 };
-
-enum Message {
-    Batch(RecordBatch),
-    Commit,
-}
-
-/// Blob writes publish inside the native worker, so only explicit commit permits EOF.
-/// Dropping the sender must fail the stream instead of publishing a partial dataset.
-struct ChannelStream {
-    schema: SchemaRef,
-    receiver: mpsc::Receiver<Message>,
-    finished: bool,
-}
-
-impl Stream for ChannelStream {
-    type Item = DataFusionResult<RecordBatch>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.finished {
-            return Poll::Ready(None);
-        }
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(Message::Batch(batch))) => Poll::Ready(Some(Ok(batch))),
-            Poll::Ready(Some(Message::Commit)) => {
-                self.finished = true;
-                Poll::Ready(None)
-            }
-            Poll::Ready(None) => {
-                self.finished = true;
-                Poll::Ready(Some(Err(DataFusionError::from(aborted()))))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl RecordBatchStream for ChannelStream {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
 
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
     storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
-    sender: Option<mpsc::Sender<Message>>,
-    task: JoinHandle<lance::Result<Dataset>>,
+    sender: Option<mpsc::Sender<RecordBatch>>,
+    task: JoinHandle<lance::Result<Transaction>>,
     rows: u64,
     state: Poison,
     destination: NativeStorage,
@@ -109,7 +61,7 @@ impl Writer for BlobDatasetWriter {
         self.sender
             .as_ref()
             .unwrap()
-            .send(Message::Batch(batch))
+            .send(batch)
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
@@ -127,28 +79,27 @@ impl Writer for BlobDatasetWriter {
             let _ = self.abort().await;
             return Err(error);
         }
-        let sender = self.sender.take().unwrap();
-        // Channel closure is an error; only this marker permits native publication.
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
-        let mut dataset = self
+        // Closing the input only finishes fragments; the committer publishes below.
+        drop(self.sender.take());
+        let transaction = self
             .task
             .await
             .map_err(Error::backend)?
             .map_err(Error::backend)?;
-        let summary = WriteSummary {
-            rows_written: self.rows,
-        };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
-        Ok(summary)
+        // Share manifest publication, index creation, and failure semantics with
+        // ordinary writers. Once publication starts, retain files on failure.
+        Box::new(LanceCommitter {
+            destination: self.destination,
+            options: self.options,
+        })
+        .commit(vec![(self.rows, transaction)])
+        .await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.blob_session.failed.store(true, Ordering::Release);
         drop(self.sender.take());
-        // Let native writing stop before removing only our reserved directory.
+        // Let native writing stop before cleaning up our new destination.
         let _ = self.task.await;
         if self.options.cleanup_on_error {
             let blobs = self.blob_session.abort().await;
@@ -168,17 +119,19 @@ impl BlobDatasetWriter {
         options: WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
-        let stream = Box::pin(ChannelStream {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        }) as SendableRecordBatchStream;
+        let batches = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|batch| (Ok(batch), receiver))
+        });
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
+            encoding_schema.clone(),
+            batches,
+        )) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
-                .execute_stream(stream)
+                .execute_uncommitted_stream(stream)
                 .await
         });
         Ok(Self {

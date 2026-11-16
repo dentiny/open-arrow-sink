@@ -6,8 +6,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, GuardedWriter, Layer, RecordBatch, Result,
-    SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BLOB_METADATA_VALUE, BlobPlacement, BlobWriter, Error, GuardedWriter, Layer,
+    RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer,
+    async_trait, validation,
 };
 
 use crate::{DownloadPool, error, validation::validate_download_config};
@@ -71,7 +72,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             let mut metadata = field.metadata().clone();
             metadata.remove("ARROW:extension:name");
             metadata.remove("ARROW:extension:metadata");
-            metadata.insert(BLOB_METADATA_KEY.into(), "true".into());
+            metadata.insert(BLOB_METADATA_KEY.into(), BLOB_METADATA_VALUE.into());
             fields[column_index] = Arc::new(
                 field
                     .clone()

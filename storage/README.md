@@ -2,7 +2,7 @@
 
 `open-arrow-sink-storage` owns byte I/O through OpenDAL. It has no dependency on
 Parquet, Lance, Iceberg, or open-arrow-access. Sink crates own encoding, file
-naming, destination reservation, and transaction publication.
+naming, destination preparation, and transaction publication.
 
 A `Storage` binds a configured OpenDAL `Operator` to a base URL. The operator's
 root must match that URL. Clones share the operator, including caller-configured
@@ -39,7 +39,7 @@ Filesystem operators must leave OpenDAL's `atomic_write_dir` unset. In OpenDAL
 0.59 its check-then-rename staging does not enforce conditional creation atomically.
 The default filesystem resolver therefore uses non-staged writes. Abort drops
 those file handles; the owning sink removes its already-visible files. This
-keeps local reservation and concurrent manifest publication safe.
+keeps conditional file creation and concurrent manifest publication safe.
 
 ## Alignment with open-arrow-access
 
@@ -142,6 +142,17 @@ let pool = DownloadPool::with_defaults()?.with_http_storage(http)?;
 authentication, instrumentation, or in-memory test fixtures without installing a
 process-global default. The current request budget and operator layers still apply.
 Returned chunks retain the same buffer accounting.
+
+## Shared source configuration
+
+Build an `Arc<StorageResolver>` with `StorageResolver::with_storage`, then pass
+clones to `DownloadPool::with_source_resolver` and
+`LanceDatasetSink::with_source_resolver`. This shares explicit source operators,
+credentials, and the URL-derived cache across downloads and native Lance blob
+reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
+`with_source_resolver` replaces prior registrations; `with_source_storage`
+subsequently adds a store only for that consumer. HTTP(S) downloads still use
+`with_http_storage` independently.
 
 ## Related documentation
 
