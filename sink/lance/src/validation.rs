@@ -2,7 +2,7 @@
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability,
-    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, is_blob_field, validation,
 };
 
 use crate::error;
@@ -65,11 +65,7 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
             .copied()
             .or(options.structural_encoding);
         if encoding.is_some()
-            && (field
-                .metadata()
-                .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-                .map(String::as_str)
-                == Some("true")
+            && (is_blob_field(field)
                 || field
                     .metadata()
                     .get("ARROW:extension:name")
@@ -228,13 +224,7 @@ pub(crate) fn validate_session_transaction(
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     for field in schema.fields() {
-        if field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-            && field.data_type() != &DataType::LargeBinary
-        {
+        if is_blob_field(field) && field.data_type() != &DataType::LargeBinary {
             return Err(error::invalid_blob_column(field.name()));
         }
     }
@@ -242,13 +232,7 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
 }
 pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     validate_blob_schema(schema)?;
-    if schema.fields().iter().any(|field| {
-        field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-    }) {
+    if schema.fields().iter().any(|field| is_blob_field(field)) {
         return Err(Error::Unsupported(
             "parallel sessions do not support blob-marked columns".into(),
         ));
@@ -282,7 +266,6 @@ pub(crate) fn validate_blob_placements(
 ) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
     use crate::blob::NativeBlob;
     use arrow_array::{Array, LargeBinaryArray};
-    use open_arrow_sink_core::BLOB_METADATA_KEY;
     let mut placements = std::collections::HashMap::new();
     for blob in blobs {
         let field = batch
@@ -290,9 +273,7 @@ pub(crate) fn validate_blob_placements(
             .fields()
             .get(blob.column)
             .ok_or_else(|| Error::InvalidInput("blob column out of bounds".into()))?;
-        if blob.row >= batch.num_rows()
-            || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
-        {
+        if blob.row >= batch.num_rows() || !is_blob_field(field) {
             return Err(Error::InvalidInput(
                 "blob placement must target a blob-marked cell".into(),
             ));
