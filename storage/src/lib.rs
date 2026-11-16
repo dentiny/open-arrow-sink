@@ -15,9 +15,6 @@ pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
 pub use url::Url;
 
-mod download_pool;
-pub use download_pool::DownloadPool;
-
 mod object_store;
 
 impl Storage {
