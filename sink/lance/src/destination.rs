@@ -8,7 +8,7 @@ use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
-/// Dataset location, native session, and owned publication reservation.
+/// Dataset location, native session, and storage configuration.
 #[derive(Clone)]
 pub(crate) struct LanceDestination {
     pub storage: Storage,

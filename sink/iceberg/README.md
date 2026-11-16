@@ -123,15 +123,15 @@ access. `level: None` uses the codec default instead of the table's previous lev
 
 Wrap `IcebergTableSink` in `UnorderedWriteLayer::new(concurrency)` and explicitly
 allow `Ordering::Unordered`. The sink loads and validates the table once and
-creates independent Parquet writers with disjoint private prefixes. Each writer
-honors the target file size and destination partition spec. A writer can produce
+creates independent Parquet writers with unique file names. Each writer honors
+the target file size and destination partition spec. A writer can produce
 multiple files and, when partitioned, multiple partition writers.
 
 The layer overlaps I/O but polls all writers in the caller's task, so Parquet
 encoding and compression do not run across CPU cores merely by increasing this
 concurrency. A multithreaded runtime alone does not change that. See the
 [layer guide](../../layer/README.md#concurrent-writes) for application-managed
-`ParallelSink` worker tasks and their cleanup responsibilities.
+`ParallelSink` worker tasks and their shutdown responsibilities.
 
 Finishing a data writer returns its `DataFile` metadata without modifying the
 catalog. The session committer combines all files in one fast-append transaction,
