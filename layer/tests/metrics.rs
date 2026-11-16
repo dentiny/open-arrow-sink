@@ -1,7 +1,7 @@
 use arrow_array::{ArrayRef, Int64Array};
 use futures::FutureExt;
 use open_arrow_sink_core::{
-    DataWriter, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter, Sink,
+    DataWriter, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter, Sink,
     SinkCapability, SinkExt, WriteMode, WriteOptions, WriteSession, WriteSummary, Writer,
     async_trait,
 };

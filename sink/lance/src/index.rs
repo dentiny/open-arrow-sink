@@ -211,7 +211,7 @@ pub(crate) async fn validate_index_requests(
             .dataset_builder()
             .load()
             .await
-            .map_err(crate::error::backend)?;
+            .map_err(Error::backend)?;
         validate_existing_indexes(&dataset, &options.indexes).await?;
     }
     Ok(())
