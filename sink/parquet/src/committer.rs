@@ -11,7 +11,7 @@ pub(crate) struct ParquetCommitter {
 #[async_trait]
 impl SessionCommitter<u64> for ParquetCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
-        let rows_written = outputs.into_iter().sum();
+        let rows_written: u64 = outputs.into_iter().sum();
         // Idle workers never open a file. A newly created empty dataset
         // still needs one footer to make its schema readable; empty Append does not.
         if rows_written == 0 && self.destination.needs_empty_file() {
