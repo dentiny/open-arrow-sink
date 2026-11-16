@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Result};
+use open_arrow_sink_core::{BlobChunk, Error, Result};
 use opendal::{
     Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, raw::Layer, services::Http,
 };
@@ -42,8 +42,8 @@ impl DownloadPool {
         validation::validate_http_concurrency(concurrency.get())?;
         validation::validate_download_limit(max_buffered_bytes)?;
         opendal::install_default();
-        let operator =
-            Operator::new(Http::default().endpoint("https://download.invalid")).map_err(Error::backend)?;
+        let operator = Operator::new(Http::default().endpoint("https://download.invalid"))
+            .map_err(Error::backend)?;
         Ok(Self {
             operator,
             sources: crate::StorageResolver::default(),

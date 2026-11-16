@@ -5,13 +5,12 @@ use lance::{
         SendableRecordBatchStream, stream::RecordBatchStreamAdapter,
     },
 };
-use open_arrow_sink_core::{DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation};
+use open_arrow_sink_core::{
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
+};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{
-    compression::writer_batch,
-    error::worker_stopped,
-};
+use crate::{compression::writer_batch, error::worker_stopped};
 
 type Output = (u64, Transaction);
 

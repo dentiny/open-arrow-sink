@@ -11,8 +11,9 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Compression, CompressionCapability, CompressionCodec, DataWriter, Error, Ordering, ParallelSink,
-    Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
+    Compression, CompressionCapability, CompressionCodec, DataWriter, Error, Ordering,
+    ParallelSink, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
+    async_trait,
 };
 
 use crate::{
@@ -94,7 +95,11 @@ impl ParallelSink for IcebergTableSink {
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
-        let table = self.catalog.load_table(&request).await.map_err(Error::backend)?;
+        let table = self
+            .catalog
+            .load_table(&request)
+            .await
+            .map_err(Error::backend)?;
         validate_table(&table, &schema, self.partition)?;
         let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
         for _ in 0..count.get() {
@@ -203,7 +208,12 @@ impl IcebergTableSink {
                             .map(|_| None),
                     ),
                 );
-                Box::new(builder.build(Some(partition)).await.map_err(Error::backend)?)
+                Box::new(
+                    builder
+                        .build(Some(partition))
+                        .await
+                        .map_err(Error::backend)?,
+                )
             };
         Ok(Box::new(IcebergTableWriter::new(
             table, schema, prefix, inner, options,

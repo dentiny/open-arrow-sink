@@ -6,7 +6,6 @@ use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
 
-
 use lance_encoding::constants::{
     COMPRESSION_LEVEL_META_KEY as LEVEL, COMPRESSION_META_KEY as CODEC,
     DICT_VALUES_COMPRESSION_LEVEL_META_KEY as DICT_LEVEL,

@@ -11,8 +11,8 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::{Field, Schema};
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait,
-    is_blob_marked,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
+    SchemaRef, async_trait, is_blob_marked,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
@@ -226,8 +226,8 @@ pub(crate) fn storage_batch(
     let options = arrow_array::RecordBatchOptions::new()
         .with_match_field_names(false)
         .with_row_count(Some(batch.num_rows()));
-    let output =
-        RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(Error::backend)?;
+    let output = RecordBatch::try_new_with_options(schema.clone(), columns, &options)
+        .map_err(Error::backend)?;
     for handle in placements.values() {
         let native = handle.downcast_ref::<NativeBlob>().unwrap();
         session.unattached.lock().unwrap().remove(&native.url);

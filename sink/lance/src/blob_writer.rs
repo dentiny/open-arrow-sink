@@ -6,8 +6,8 @@ use arrow_schema::ArrowError;
 
 use lance::Dataset;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
-    validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteSummary, Writer,
+    async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 

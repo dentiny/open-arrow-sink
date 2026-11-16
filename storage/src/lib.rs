@@ -30,4 +30,3 @@ impl Storage {
         std::sync::Arc::new(object_store::UploadStore::new(self.clone()))
     }
 }
-
