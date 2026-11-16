@@ -4,8 +4,8 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
+use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and storage configuration.
@@ -27,7 +27,9 @@ impl LanceDestination {
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<Self> {
         let path = storage.path(&url)?.as_dir();
-        crate::validation::validate_destination_path(&path)?;
+        if path.is_root() {
+            return Err(crate::error::invalid_destination_root());
+        }
         // Lance's native API requires a URL at its boundary.
         let url = storage.url(&path)?;
         let session = Arc::new(Session::default());
@@ -44,15 +46,31 @@ impl LanceDestination {
             encoding_buffer_size: None,
         })
     }
+    /// Validate the destination and return an existing dataset for subsequent checks.
     pub async fn prepare(
-        &mut self,
+        &self,
         schema: &SchemaRef,
         mode: WriteMode,
         storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<Option<lance::Dataset>> {
-        let existing =
-            crate::validation::validate_destination(self, schema, mode, storage_version).await?;
-        Ok(existing)
+        if mode == WriteMode::Append {
+            return crate::validation::validate_existing_dataset(
+                self.dataset_builder(),
+                Some(schema),
+                storage_version,
+            )
+            .await
+            .map(Some);
+        }
+        if self.storage.inspect_directory(&self.path).await? == DirectoryState::Missing {
+            return Ok(None);
+        }
+        if mode == WriteMode::Create {
+            return Err(Error::AlreadyExists(self.url.to_string()));
+        }
+        crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
+            .await
+            .map(Some)
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {

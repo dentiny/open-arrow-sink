@@ -179,7 +179,7 @@ impl ParallelSink for LanceDatasetSink {
         let storage_version = validate_options(&schema, &options, self.capability())?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);
-        let mut destination = self.destination_for(url, &options)?;
+        let destination = self.destination_for(url, &options)?;
         let existing = destination
             .prepare(&schemas.logical, options.mode, storage_version)
             .await?;

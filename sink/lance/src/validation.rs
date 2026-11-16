@@ -344,48 +344,6 @@ pub(crate) async fn validate_existing_indexes(
     Ok(())
 }
 
-pub(crate) fn validate_destination_path(path: &open_arrow_sink_storage::ObjectPath) -> Result<()> {
-    if path.is_root() {
-        return Err(error::invalid_destination_root());
-    }
-    Ok(())
-}
-
-/// Validate and return an existing dataset for reuse by subsequent checks.
-/// None means this session will create a new destination.
-pub(crate) async fn validate_destination(
-    destination: &crate::destination::LanceDestination,
-    schema: &open_arrow_sink_core::SchemaRef,
-    mode: open_arrow_sink_core::WriteMode,
-    storage_version: Option<LanceFileVersion>,
-) -> Result<Option<lance::Dataset>> {
-    use open_arrow_sink_core::WriteMode;
-    use open_arrow_sink_storage::DirectoryState;
-    if mode == WriteMode::Append {
-        return validate_existing_dataset(
-            destination.dataset_builder(),
-            Some(schema),
-            storage_version,
-        )
-        .await
-        .map(Some);
-    }
-    if destination
-        .storage
-        .inspect_directory(&destination.path)
-        .await?
-        == DirectoryState::Missing
-    {
-        return Ok(None);
-    }
-    if mode == WriteMode::Create {
-        return Err(Error::AlreadyExists(destination.url.to_string()));
-    }
-    validate_existing_dataset(destination.dataset_builder(), None, None)
-        .await
-        .map(Some)
-}
-
 pub(crate) async fn validate_index_requests(
     existing: Option<&lance::Dataset>,
     options: &WriteOptions,
