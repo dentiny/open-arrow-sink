@@ -351,3 +351,91 @@ async fn io_metrics_are_isolated_per_session() {
     // Identical output shapes should have comparable counters, not accumulate.
     assert!(totals[1] < totals[0] * 3 / 2);
 }
+
+#[rstest::rstest]
+#[case::fragments(false)]
+#[case::streaming_blobs(true)]
+#[tokio::test]
+async fn typed_append_version_mismatch_preserves_dataset(#[case] streaming: bool) {
+    use open_arrow_sink_core::WriteMode;
+    use open_arrow_sink_lance::{LanceFileVersion, LanceOptions};
+    for (existing, requested) in [
+        (LanceFileVersion::V2_2, LanceFileVersion::V2_3),
+        (LanceFileVersion::V2_3, LanceFileVersion::V2_2),
+    ] {
+        let storage = storage();
+        let url = storage.url("append-version/").unwrap();
+        let batch = if streaming {
+            let field = arrow_schema::Field::new("blob", arrow_schema::DataType::LargeBinary, true)
+                .with_metadata(
+                    [(
+                        open_arrow_sink_core::BLOB_METADATA_KEY.into(),
+                        "true".into(),
+                    )]
+                    .into(),
+                );
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![field])),
+                vec![Arc::new(arrow_array::LargeBinaryArray::from(vec![Some(
+                    b"payload".as_slice(),
+                )]))],
+            )
+            .unwrap()
+        } else {
+            batch()
+        };
+        let sink = LanceDatasetSink::new(storage.clone()).with_options(LanceOptions {
+            storage_version: Some(existing),
+            ..Default::default()
+        });
+        let mut writer = sink
+            .open(url.clone(), batch.schema(), write_options())
+            .await
+            .unwrap();
+        writer.write(batch.clone()).await.unwrap();
+        writer.commit().await.unwrap();
+        let before = storage.list(&url).await.unwrap();
+        let append = WriteOptions {
+            mode: WriteMode::Append,
+            ..write_options()
+        };
+        let mismatch = sink.clone().with_options(LanceOptions {
+            storage_version: Some(requested),
+            ..Default::default()
+        });
+        assert!(
+            mismatch
+                .open(url.clone(), batch.schema(), append.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(storage.list(&url).await.unwrap().len(), before.len());
+        let mut writer = sink
+            .open(url.clone(), batch.schema(), append.clone())
+            .await
+            .unwrap();
+        writer.write(batch.clone()).await.unwrap();
+        writer.commit().await.unwrap();
+        let dataset = sink
+            .dataset_builder(url.clone())
+            .unwrap()
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(
+            dataset.count_rows(None).await.unwrap(),
+            batch.num_rows() * 2
+        );
+        assert_eq!(
+            dataset.manifest().data_storage_format.version,
+            existing.resolve()
+        );
+        sink.with_options(LanceOptions::default())
+            .open(url, batch.schema(), append)
+            .await
+            .unwrap()
+            .abort()
+            .await
+            .unwrap();
+    }
+}

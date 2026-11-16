@@ -39,11 +39,17 @@ impl LanceDestination {
             reserved: false,
         })
     }
-    pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
+    pub async fn prepare(
+        &mut self,
+        schema: &SchemaRef,
+        mode: WriteMode,
+        storage_version: Option<crate::LanceFileVersion>,
+    ) -> Result<()> {
         if mode == WriteMode::Append {
             return crate::validation::validate_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
+                storage_version,
             )
             .await;
         }
@@ -51,7 +57,8 @@ impl LanceDestination {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None).await
+                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
+                        .await
                 }
             };
         }

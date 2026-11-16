@@ -85,7 +85,11 @@ impl Sink for LanceDatasetSink {
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
             destination
-                .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
+                .prepare(
+                    &crate::blob::logical_schema(&encoding_schema),
+                    options.mode,
+                    options.storage_version,
+                )
                 .await?;
             crate::index::validate_index_requests(&destination, &options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
@@ -118,7 +122,9 @@ impl ParallelSink for LanceDatasetSink {
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
         let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
-        destination.prepare(&encoding_schema, options.mode).await?;
+        destination
+            .prepare(&encoding_schema, options.mode, options.storage_version)
+            .await?;
         crate::index::validate_index_requests(&destination, &options).await?;
         let params = destination.bind_write_params(write_options::write_params(&options));
         let writers = (0..count.get())

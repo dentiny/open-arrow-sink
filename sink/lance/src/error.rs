@@ -121,3 +121,12 @@ pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Er
         "Lance storage version must be 2.2 or 2.3: {version}"
     ))
 }
+
+pub(crate) fn storage_version_mismatch(
+    requested: impl std::fmt::Display,
+    existing: impl std::fmt::Display,
+) -> Error {
+    Error::Unsupported(format!(
+        "Lance append storage version {requested} does not match existing dataset version {existing}"
+    ))
+}
