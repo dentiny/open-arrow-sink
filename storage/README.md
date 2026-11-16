@@ -143,6 +143,17 @@ authentication, instrumentation, or in-memory test fixtures without installing a
 process-global default. The current request budget and operator layers still apply.
 Returned chunks retain the same buffer accounting.
 
+## Shared source configuration
+
+Build an `Arc<StorageResolver>` with `StorageResolver::with_storage`, then pass
+clones to `DownloadPool::with_source_resolver` and
+`LanceDatasetSink::with_source_resolver`. This shares explicit source operators,
+credentials, and the URL-derived cache across downloads and native Lance blob
+reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
+`with_source_resolver` replaces prior registrations; `with_source_storage`
+subsequently adds a store only for that consumer. HTTP(S) downloads still use
+`with_http_storage` independently.
+
 ## Related documentation
 
 [Usage](../docs/usage.md) · [Architecture](../docs/architecture.md) ·

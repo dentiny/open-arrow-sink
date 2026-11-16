@@ -26,7 +26,7 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug)]
 pub struct DownloadPool {
     http: Storage,
-    sources: crate::StorageResolver,
+    sources: Arc<crate::StorageResolver>,
     // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
     stream_slots: Arc<Semaphore>,
     concurrency: NonZeroUsize,
@@ -45,7 +45,7 @@ impl DownloadPool {
         Ok(Self {
             http: Self::http_storage(StorageConfig::default())?
                 .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(concurrency.get())?),
-            sources: crate::StorageResolver::default(),
+            sources: Arc::default(),
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
@@ -76,9 +76,17 @@ impl DownloadPool {
         Ok(self)
     }
 
+    /// Share source namespaces, credentials, and the URL-derived cache with other consumers.
+    /// This replaces any previously configured non-HTTP source stores.
+    pub fn with_source_resolver(mut self, sources: Arc<crate::StorageResolver>) -> Self {
+        self.sources = sources;
+        self
+    }
+
     /// Register a source store for non-HTTP downloads, including custom S3 credentials.
+    /// If the resolver is shared, detach its registrations before adding this store.
     pub fn with_source_storage(mut self, storage: crate::Storage) -> Self {
-        self.sources = self.sources.with_storage(storage);
+        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
         self
     }
 
