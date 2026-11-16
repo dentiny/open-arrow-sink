@@ -7,10 +7,8 @@ use open_arrow_sink_core::{
 
 #[test]
 fn structural_encoding_checks_capabilities_and_unique_column_names() {
-    let supported = CompressionCapability {
-        structural_encodings: &[StructuralEncoding::Miniblock, StructuralEncoding::Fullzip],
-        ..Default::default()
-    };
+    let supported = CompressionCapability::default()
+        .with_structural_encodings(&[StructuralEncoding::Miniblock, StructuralEncoding::Fullzip]);
     let schema = Schema::new(vec![Field::new("literal.dot", DataType::Utf8, false)]);
     let options = CompressionOptions {
         structural_encoding: Some(StructuralEncoding::Fullzip),
@@ -45,11 +43,9 @@ fn nested_paths_are_literal_and_cross_lists() {
         ))),
         false,
     )]);
-    let capability = CompressionCapability {
-        per_column: &[CompressionCodec::Zstd],
-        nested_columns: true,
-        ..Default::default()
-    };
+    let capability = CompressionCapability::default()
+        .with_per_column(&[CompressionCodec::Zstd])
+        .with_nested_columns(true);
     for (path, valid) in [
         (vec!["items", "literal.dot"], true),
         (vec!["items", "literal", "dot"], false),
@@ -72,10 +68,7 @@ fn nested_paths_are_literal_and_cross_lists() {
             validation::validate_compression_options(
                 &schema,
                 &options,
-                CompressionCapability {
-                    nested_columns: false,
-                    ..capability
-                }
+                (capability).with_nested_columns(false)
             )
             .is_err()
         );

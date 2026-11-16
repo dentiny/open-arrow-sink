@@ -14,14 +14,14 @@ pub(crate) fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
-    if let Some(version) = options.storage_version {
-        if !matches!(
+    if let Some(version) = options.storage_version
+        && !matches!(
             version,
             lance_file::version::LanceFileVersion::V2_2
                 | lance_file::version::LanceFileVersion::V2_3
-        ) {
-            return Err(error::unsupported_storage_version(version));
-        }
+        )
+    {
+        return Err(error::unsupported_storage_version(version));
     }
     validate_encoding(schema, &options.compression)?;
     validate_compression(&options.compression)?;

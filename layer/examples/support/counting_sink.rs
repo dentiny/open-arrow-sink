@@ -19,10 +19,7 @@ impl Sink for CountingSink {
     type Request = Arc<AtomicU64>;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[WriteMode::Create],
-            ..Default::default()
-        }
+        SinkCapability::default().with_supported_modes(&[WriteMode::Create])
     }
 
     async fn open(

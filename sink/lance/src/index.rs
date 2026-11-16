@@ -9,7 +9,9 @@ use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
-use open_arrow_sink_core::{Error, ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType};
+use open_arrow_sink_core::{
+    Error, ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
+};
 use open_arrow_sink_core::{Result, WriteMode, validation};
 use tokio::task::JoinSet;
 
@@ -23,6 +25,7 @@ const MAX_VECTOR_PARTITIONS: usize = 4096;
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
     indexes: &[IndexSpec],
+    summary: &WriteSummary,
 ) -> std::result::Result<(), IndexCommitError> {
     if indexes.is_empty() {
         return Ok(());
@@ -31,10 +34,11 @@ pub(crate) async fn build_indexes(
     for spec in indexes {
         let mut dataset = dataset.clone();
         let spec = spec.clone();
+        let summary = summary.clone();
         tasks.spawn(async move {
             create_index(&mut dataset, &spec)
                 .await
-                .map_err(|error| index_creation(&spec, error))
+                .map_err(|error| index_creation(&spec, error, summary))
         });
     }
 
@@ -42,7 +46,7 @@ pub(crate) async fn build_indexes(
     // index commits that could keep modifying the dataset in the background.
     let mut first_error = None;
     while let Some(result) = tasks.join_next().await {
-        let result = result.unwrap_or_else(|error| Err(index_task(error)));
+        let result = result.unwrap_or_else(|error| Err(index_task(error, summary.clone())));
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -50,7 +54,7 @@ pub(crate) async fn build_indexes(
     // Each task commits through its own handle. Refresh the caller's snapshot
     // after all tasks finish, including when only some indexes succeeded.
     if let Err(error) = dataset.checkout_latest().await {
-        first_error.get_or_insert_with(|| index_refresh(error));
+        first_error.get_or_insert_with(|| index_refresh(error, summary.clone()));
     }
     match first_error {
         Some(error) => Err(error),

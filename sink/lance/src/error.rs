@@ -39,27 +39,35 @@ pub(crate) fn unsupported_index(
 pub(crate) fn index_creation(
     spec: &open_arrow_sink_core::IndexSpec,
     error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
 ) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!(
+    open_arrow_sink_core::IndexCommitError::new(
+        format!(
             "creating {:?} index on '{}': {error}",
             spec.index_type, spec.column
         ),
-    }
+        summary,
+    )
 }
 
-pub(crate) fn index_task(error: impl std::fmt::Display) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!("index construction task failed: {error}"),
-    }
+pub(crate) fn index_task(
+    error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
+) -> open_arrow_sink_core::IndexCommitError {
+    open_arrow_sink_core::IndexCommitError::new(
+        format!("index construction task failed: {error}"),
+        summary,
+    )
 }
 
 pub(crate) fn index_refresh(
     error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
 ) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!("refreshing dataset after index construction: {error}"),
-    }
+    open_arrow_sink_core::IndexCommitError::new(
+        format!("refreshing dataset after index construction: {error}"),
+        summary,
+    )
 }
 
 pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {

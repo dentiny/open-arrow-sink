@@ -93,7 +93,9 @@ when one fails, and the original dataset handle is refreshed after they finish.
 The first observed error is returned after all tasks complete. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
 `Error::Backend` contains an `IndexCommitError` identifying the failed index type
-and column, or a task failure if a worker panics. Dropping the commit future aborts
+and column, or a task failure if a worker panics. Its `summary` retains the
+committed row count even when indexing fails; retry index construction rather
+than the data write. Dropping the commit future aborts
 the task set; native publication may still have an uncertain outcome.
 
 A runnable index construction example (destination must not exist):
@@ -156,6 +158,26 @@ The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None
 or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
 `DownloadBlobLayer` already creates destination-owned managed streams directly.
+
+For a runnable parallel ingestion workflow, use:
+
+```sh
+cargo run --locked -p open-arrow-sink-lance --example parallel_native_blobs
+```
+
+The self-contained example sends a batch to each of eight physical writers,
+mixes materialized bytes with native source URIs, and commits one data manifest.
+It verifies inline, packed, and dedicated blob readback after removing the source
+objects. `with_source_storage` routes the independent source operator; use the
+same mechanism for caller-configured S3 credentials and endpoints. In an ordinary
+pipeline, native logical blob batches can also be dispatched through
+`UnorderedWriteLayer`; actual writer utilization depends on available batches.
+
+This route does not make `DownloadBlobLayer` or session-owned streamed handles
+parallel. `DataWriter` has no `create_blob`/`write_with_blobs` interface, and a
+streamed handle must remain bound to its owning session. Extending that path
+requires a shared handle-ownership, incomplete-upload, and cancellation protocol;
+removing `validate_parallel_blob_schema` alone would not supply those guarantees.
 
 ## Compression
 

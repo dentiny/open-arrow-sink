@@ -50,18 +50,17 @@ struct CaptureWriter {
 impl Sink for Capture {
     type Request = ();
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            compression: open_arrow_sink_core::CompressionCapability {
-                global: &[],
-                per_column: &[],
-                structural_encodings: &[],
-                nested_columns: false,
-            },
-            ordering: Ordering::PreserveInput,
-
-            supports_blob_streaming: true,
-        }
+        SinkCapability::default()
+            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
+            .with_compression(
+                open_arrow_sink_core::CompressionCapability::default()
+                    .with_global(&[])
+                    .with_per_column(&[])
+                    .with_structural_encodings(&[])
+                    .with_nested_columns(false),
+            )
+            .with_ordering(Ordering::PreserveInput)
+            .with_supports_blob_streaming(true)
     }
     async fn open(
         &self,
@@ -741,10 +740,7 @@ async fn rejects_missing_streaming_capability_before_open() {
     impl Sink for UnsupportedSink {
         type Request = ();
         fn capability(&self) -> SinkCapability {
-            SinkCapability {
-                supports_blob_streaming: false,
-                ..Capture::default().capability()
-            }
+            (Capture::default().capability()).with_supports_blob_streaming(false)
         }
         async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
             panic!("unsupported sink must not be opened");

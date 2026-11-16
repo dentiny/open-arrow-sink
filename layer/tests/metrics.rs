@@ -71,10 +71,7 @@ impl SessionCommitter<u64> for Committer {
 impl Sink for TestSink {
     type Request = Behavior;
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[WriteMode::Create],
-            ..Default::default()
-        }
+        SinkCapability::default().with_supported_modes(&[WriteMode::Create])
     }
     async fn open(
         &self,

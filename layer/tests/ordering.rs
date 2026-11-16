@@ -64,10 +64,7 @@ async fn ordering_override_replaces_the_callers_preserve_input_requirement() {
         ..Default::default()
     }));
     // An unordered backend would reject the caller's requirement without the layer.
-    let caller_options = open_arrow_sink_core::WriteOptions {
-        ordering: Ordering::PreserveInput,
-        ..options()
-    };
+    let caller_options = options().with_ordering(Ordering::PreserveInput);
     let session = TestSink(state.clone())
         .layer(open_arrow_sink_layer::OrderingLayer::new(
             Ordering::Unordered,

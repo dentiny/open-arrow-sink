@@ -51,17 +51,17 @@ impl Sink for ParquetDirectorySink {
                 open_arrow_sink_core::WriteMode::Overwrite,
             ]
         };
-        SinkCapability {
-            supported_modes,
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability {
-                global: crate::compression::SUPPORTED_CODECS,
-                per_column: crate::compression::SUPPORTED_CODECS,
-                structural_encodings: &[],
-                nested_columns: false,
-            },
-            supports_blob_streaming: false,
-        }
+        SinkCapability::default()
+            .with_supported_modes(supported_modes)
+            .with_ordering(Ordering::Unordered)
+            .with_compression(
+                CompressionCapability::default()
+                    .with_global(crate::compression::SUPPORTED_CODECS)
+                    .with_per_column(crate::compression::SUPPORTED_CODECS)
+                    .with_structural_encodings(&[])
+                    .with_nested_columns(false),
+            )
+            .with_supports_blob_streaming(false)
     }
 
     async fn open(

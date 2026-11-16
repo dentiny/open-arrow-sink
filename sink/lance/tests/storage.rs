@@ -29,10 +29,7 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 fn write_options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 
 #[tokio::test]
@@ -94,10 +91,7 @@ async fn shared_operator_commit_indexes_and_read_back() {
         });
     let url = storage.url("雪 output%20/").unwrap();
     let io = open_arrow_sink_core::IoMetrics::default();
-    let options = WriteOptions {
-        io_metrics: Some(io.clone()),
-        ..write_options()
-    };
+    let options = write_options().with_io_metrics(Some(io.clone()));
     let mut writer = sink
         .clone()
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
@@ -148,10 +142,7 @@ async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
         .open(
             url.clone(),
             batch().schema(),
-            WriteOptions {
-                cleanup_on_error,
-                ..write_options()
-            },
+            write_options().with_cleanup_on_error(cleanup_on_error),
         )
         .await
         .unwrap();
@@ -336,10 +327,7 @@ async fn io_metrics_are_isolated_per_session() {
             .open(
                 store.url(name).unwrap(),
                 batch().schema(),
-                WriteOptions {
-                    io_metrics: Some(io.clone()),
-                    ..write_options()
-                },
+                write_options().with_io_metrics(Some(io.clone())),
             )
             .await
             .unwrap();
@@ -395,10 +383,7 @@ async fn typed_append_version_mismatch_preserves_dataset(#[case] streaming: bool
         writer.write(batch.clone()).await.unwrap();
         writer.commit().await.unwrap();
         let before = storage.list(&url).await.unwrap();
-        let append = WriteOptions {
-            mode: WriteMode::Append,
-            ..write_options()
-        };
+        let append = write_options().with_mode(WriteMode::Append);
         let mismatch = sink.clone().with_options(LanceOptions {
             storage_version: Some(requested),
             ..Default::default()

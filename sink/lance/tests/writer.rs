@@ -105,10 +105,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             expected.schema(),
-            WriteOptions {
-                target_file_size: Some(1),
-                ..options()
-            },
+            options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -180,10 +177,7 @@ async fn compression_survives_rolling_and_round_trips() {
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             schema.clone(),
-            WriteOptions {
-                target_file_size: Some(1),
-                ..options()
-            },
+            options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -280,7 +274,7 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
         .open(
             Url::from_directory_path(&path).unwrap(),
             batch.schema(),
-            WriteOptions { mode, ..options() },
+            options().with_mode(mode),
         )
         .await
         .unwrap();

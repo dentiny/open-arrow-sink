@@ -120,6 +120,12 @@ creates independent Parquet writers with disjoint private prefixes. Each writer
 honors the target file size and destination partition spec. A writer can produce
 multiple files and, when partitioned, multiple partition writers.
 
+The layer overlaps I/O but polls all writers in the caller's task, so Parquet
+encoding and compression do not run across CPU cores merely by increasing this
+concurrency. A multithreaded runtime alone does not change that. See the
+[layer guide](../../layer/README.md#concurrent-writes) for application-managed
+`ParallelSink` worker tasks and their cleanup responsibilities.
+
 Finishing a data writer returns its `DataFile` metadata without modifying the
 catalog. The session committer combines all files in one fast-append transaction,
 so there is no per-worker table commit. An empty session publishes no snapshot.
@@ -165,7 +171,7 @@ backend lifecycle cleanup even when session-owned published files are removed.
 ### Supported write modes
 
 `IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
-`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+`(options).with_mode(WriteMode::Append)` appends to an existing
 table. A missing table is an error. The shared default is `WriteMode::Create`,
 which this sink rejects; callers must explicitly select Append.
 

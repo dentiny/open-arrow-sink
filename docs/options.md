@@ -118,11 +118,7 @@ use open_arrow_sink::{Ordering, Sink, SinkExt, WriteOptions, layer::UnorderedWri
 let sink = backend.layer(
     UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()),
 );
-let mut writer = sink.open(directory, schema, WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-}).await?;
+let mut writer = sink.open(directory, schema, WriteOptions::default().with_ordering(Ordering::Unordered).with_target_file_size(Some(256 * 1024 * 1024))).await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
@@ -188,11 +184,7 @@ The shared `WriteOptions.target_file_size` option specifies a positive byte coun
 ```rust
 use open_arrow_sink::{Ordering, WriteOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-};
+let options = WriteOptions::default().with_ordering(Ordering::Unordered).with_target_file_size(Some(256 * 1024 * 1024));
 ```
 
 This is a soft data-file target, not a strict maximum or a total-output limit.

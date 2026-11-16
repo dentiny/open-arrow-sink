@@ -115,11 +115,9 @@ fn batch(schema: SchemaRef) -> RecordBatch {
 }
 
 fn options() -> WriteOptions {
-    WriteOptions {
-        mode: open_arrow_sink_core::WriteMode::Append,
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    }
+    WriteOptions::default()
+        .with_mode(open_arrow_sink_core::WriteMode::Append)
+        .with_ordering(Ordering::Unordered)
 }
 
 async fn rows(catalog: &dyn Catalog, identifier: &TableIdent) -> Vec<Row> {
@@ -310,10 +308,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                target_file_size,
-                ..options()
-            },
+            options().with_target_file_size(target_file_size),
         )
         .await
         .unwrap();
@@ -475,10 +470,7 @@ async fn partitioned_empty_sessions_and_file_rolling(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                target_file_size: Some(1),
-                ..options()
-            },
+            options().with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -887,7 +879,7 @@ async fn write_mode(#[case] mode: WriteMode) {
         .open(
             identifier.clone(),
             schema.clone(),
-            WriteOptions { mode, ..options() },
+            options().with_mode(mode),
         )
         .await;
     assert!(matches!(

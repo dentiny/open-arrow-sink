@@ -38,10 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(
             destination.clone(),
             batch.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                ..Default::default()
-            },
+            WriteOptions::default().with_ordering(Ordering::Unordered),
         )
         .await?;
     writer.write(batch).await?;

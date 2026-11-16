@@ -56,10 +56,12 @@ roll at the next nonempty batch. An empty session still creates one readable fil
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
 
-`WriteOptions.cleanup_on_error` defaults to `true`: abort removes this session's files and
-attempts to remove its directory; failed open/commit also attempts cleanup. Set it
-to `false` to retain session-created output on abort or failure. Cleanup never
-recursively deletes other files. Drop leaves incomplete output and never commits.
+`WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
+removal of this session's files and directory; failed open/commit also attempts
+cleanup according to the publication stage described below. Set it to `false`
+to retain session-created output on abort or failure. For Create/Append, cleanup
+does not recursively delete unrelated files; staged Overwrite owns its staging
+directory. Drop leaves incomplete output and never commits.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 
@@ -68,6 +70,10 @@ For concurrent files, wrap the sink in
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
 files. Each writer rolls independently using disjoint indices (writer 0 owns
 0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+This overlaps file I/O; Parquet encoding and compression still run in the layer
+caller's task. Extra writers do not provide CPU parallelism and each retains its
+own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
+for using `ParallelSink` directly with application-managed worker tasks.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
@@ -114,16 +120,25 @@ creating the destination. `level: None` uses the Parquet default.
 
 Create rejects existing destinations. Append validates the schemas of existing
 root-level Parquet files and writes UUID-prefixed parts, preserving old files and
-unrelated objects on abort. Schema validation uses range reads of Parquet metadata.
+unrelated objects on abort. Schema validation uses range reads of Parquet metadata,
+with at most 32 files checked concurrently, independently of the transport budget.
 These modes work through the shared filesystem or remote operator.
 
 Overwrite is staged on filesystem backends: old output stays visible until commit,
-then the directory is replaced via backup/rename with restoration on failure.
+then the entire directory (including unrelated files inside it) is replaced via
+backup/rename with best-effort restoration on failure.
 The implementation uses OpenDAL for directory renames and cleanup; a local-only
 `symlink_metadata` validation rejects symlink targets because
 OpenDAL stat follows links. Other backends reject Overwrite before creating output;
 object-store prefix swaps do not provide the directory-rename semantics used here.
 External writers must not modify a destination during a session.
+A failed restoration can leave the target missing and the old data in a sibling
+`.open-arrow-sink-old-<uuid>/` backup. Staging cleanup on publication failure
+honors `cleanup_on_error`; backup deletion after a successful swap is best effort
+regardless of that option and does not fail commit. A new Overwrite uses fresh
+staging and does not recover or collect older sibling staging/backup directories.
+See [failed-commit recovery and the next overwrite](../../docs/usage.md#recover-from-a-failed-commit)
+before retrying or manually deleting leftovers.
 
 ## Related documentation
 

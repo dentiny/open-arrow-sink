@@ -144,12 +144,11 @@ impl Sink for TestSink {
     type Request = ();
     fn capability(&self) -> SinkCapability {
         let state = self.0.lock().unwrap();
-        SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            ordering: state.config.ordering,
-            compression: Default::default(),
-            supports_blob_streaming: state.config.supports_blobs,
-        }
+        SinkCapability::default()
+            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
+            .with_ordering(state.config.ordering)
+            .with_compression(Default::default())
+            .with_supports_blob_streaming(state.config.supports_blobs)
     }
     async fn open(
         &self,
