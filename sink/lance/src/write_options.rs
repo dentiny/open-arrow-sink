@@ -14,23 +14,24 @@ use open_arrow_sink_core::{
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &WriteOptions) -> Result<SchemaRef> {
-    let compressed = crate::compression::writer_schema(schema, &options.compression);
+    let compressed = crate::compression::writer_schema(schema, &options.compression)?;
     let prepared = crate::blob::storage_schema(&compressed)?;
     Ok(blob_schema(&prepared, options.blob_handle.as_ref()))
 }
 
-pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
+pub(crate) fn write_params(
+    options: &WriteOptions,
+    storage_version: Option<lance_file::version::LanceFileVersion>,
+) -> WriteParams {
     let defaults = WriteParams::default();
     let default_blob = BlobHandleConfig::default();
     let blob = options.blob_handle.as_ref().unwrap_or(&default_blob);
-    Ok(WriteParams {
+    WriteParams {
         external_blob_mode: match blob.external_blob_mode {
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
         },
-        data_storage_version: crate::validation::parse_storage_version(
-            options.storage_version.as_deref(),
-        )?,
+        data_storage_version: storage_version,
         mode: match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
             WriteMode::Append => LanceWriteMode::Append,
@@ -40,7 +41,7 @@ pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
             .target_file_size
             .unwrap_or(defaults.max_bytes_per_file),
         ..defaults
-    })
+    }
 }
 
 /// Apply per-write layout options to top-level native logical or prepared blob fields.

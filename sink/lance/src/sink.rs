@@ -88,14 +88,15 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         let storage_schema = crate::blob::storage_schema(&schema)?;
         if storage_schema != schema {
-            validate_options(&schema, &options, self.capability())?;
+            let storage_version = validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
+            let params = write_options::write_params(&options, storage_version);
             let mut destination = self.resolve(url, &options)?;
             destination
                 .prepare(
                     &crate::blob::logical_schema(&encoding_schema),
                     options.mode,
-                    options.storage_version.as_deref(),
+                    storage_version,
                 )
                 .await?;
             destination.validate_index_requests(&options).await?;
@@ -105,7 +106,8 @@ impl Sink for LanceDatasetSink {
                 encoding_schema,
                 destination,
                 options,
-            )?));
+                params,
+            )));
         }
         // Use the same fragment writing and publication path for every session.
         self.open_writers(url, schema, options, NonZeroUsize::MIN)
@@ -125,34 +127,31 @@ impl ParallelSink for LanceDatasetSink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
-        validate_options(&schema, &options, self.capability())?;
+        let storage_version = validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
+        let params = write_options::write_params(&options, storage_version);
         let mut destination = self.resolve(url, &options)?;
         destination
-            .prepare(
-                &encoding_schema,
-                options.mode,
-                options.storage_version.as_deref(),
-            )
+            .prepare(&encoding_schema, options.mode, storage_version)
             .await?;
         destination.validate_index_requests(&options).await?;
         let writers = (0..count.get())
             .map(|_| {
-                Ok(Box::new(crate::parallel::FragmentWriter::new(
+                Box::new(crate::parallel::FragmentWriter::new(
                     schema.clone(),
                     encoding_schema.clone(),
                     destination.clone(),
-                    &options,
-                )?)
-                    as Box<dyn DataWriter<Output = Self::Output>>)
+                    params.clone(),
+                )) as Box<dyn DataWriter<Output = Self::Output>>
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         Ok(WriteSession {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {
                 destination,
                 options,
+                storage_version,
             }),
         })
     }

@@ -6,10 +6,9 @@ use std::{
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::Stream;
-use lance::dataset::{InsertBuilder, transaction::Transaction};
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{
-    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
-    validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -77,15 +76,15 @@ impl FragmentWriter {
         schema: SchemaRef,
         encoding_schema: SchemaRef,
         destination: NativeStorage,
-        options: &WriteOptions,
-    ) -> Result<Self> {
+        params: WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let stream = Box::pin(ChannelStream {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
         }) as SendableRecordBatchStream;
-        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
+        let params = destination.bind_write_params(params);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -93,14 +92,14 @@ impl FragmentWriter {
                 .execute_uncommitted_stream(stream)
                 .await
         });
-        Ok(Self {
+        Self {
             schema,
             encoding_schema,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
             state: Poison::default(),
-        })
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatchOptions;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
@@ -12,16 +12,50 @@ const LEVEL: &str = "lance-encoding:compression-level";
 const DICT_CODEC: &str = "lance-encoding:dict-values-compression";
 const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
 
-pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> SchemaRef {
+/// Native codecs carry validated parameters, so metadata conversion is infallible.
+#[derive(Clone, Copy)]
+enum NativeCompression {
+    Uncompressed,
+    Zstd(Option<i32>),
+}
+
+impl TryFrom<Compression> for NativeCompression {
+    type Error = Error;
+
+    fn try_from(compression: Compression) -> Result<Self> {
+        match compression {
+            Compression::Uncompressed => Ok(Self::Uncompressed),
+            Compression::Zstd { level } => {
+                // Lance also accepts 0 as the native Zstd default.
+                if let Some(level) = level
+                    && level != 0
+                    && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
+                {
+                    return Err(crate::error::invalid_compression_level(level));
+                }
+                Ok(Self::Zstd(level))
+            }
+            _ => Err(Error::Unsupported(format!(
+                "Lance compression: {compression:?}"
+            ))),
+        }
+    }
+}
+
+pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> Result<SchemaRef> {
     if options.global.is_none()
         && options.columns.is_empty()
         && options.nested_columns.is_empty()
         && options.structural_encoding.is_none()
         && options.column_encodings.is_empty()
     {
-        return schema.clone();
+        return Ok(schema.clone());
     }
-    let mut fields: Vec<_> = schema
+    let global = options
+        .global
+        .map(NativeCompression::try_from)
+        .transpose()?;
+    let mut fields = schema
         .fields()
         .iter()
         .map(|field| {
@@ -29,75 +63,89 @@ pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) ->
                 .columns
                 .get(field.name())
                 .copied()
-                .or(options.global);
+                .map(NativeCompression::try_from)
+                .transpose()?
+                .or(global);
             let encoding = options
                 .column_encodings
                 .get(field.name())
                 .copied()
                 .or(options.structural_encoding);
-            if codec.is_none() && encoding.is_none() {
+            Ok(if codec.is_none() && encoding.is_none() {
                 field.clone()
             } else {
                 Arc::new(compression_field(field, codec, encoding))
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Fields>>()?;
     for (path, codec) in &options.nested_columns {
-        let index = fields
-            .iter()
-            .position(|f| f.name() == &path[0])
-            .expect("validated path");
-        fields[index] = nested_override(&fields[index], &path[1..], *codec);
+        if path.len() < 2 {
+            return Err(invalid_path(path));
+        }
+        fields = nested_fields(&fields, path, (*codec).try_into()?)?;
     }
-    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+    Ok(Arc::new(Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    )))
 }
 
-fn nested_override(field: &Arc<Field>, path: &[String], codec: Compression) -> Arc<Field> {
+fn invalid_path(path: &[String]) -> Error {
+    Error::Unsupported(format!(
+        "nested compression path must identify one field: {path:?}"
+    ))
+}
+
+fn nested_fields(fields: &Fields, path: &[String], codec: NativeCompression) -> Result<Fields> {
+    let (name, rest) = path.split_first().ok_or_else(|| invalid_path(path))?;
+    let mut matches = fields.iter().enumerate().filter(|(_, f)| f.name() == name);
+    let (index, field) = matches.next().ok_or_else(|| invalid_path(path))?;
+    if matches.next().is_some() {
+        return Err(invalid_path(path));
+    }
+    let replacement = nested_override(field, rest, codec)?;
+    let mut fields = fields.to_vec();
+    fields[index] = replacement;
+    Ok(fields.into())
+}
+
+fn nested_override(
+    field: &Arc<Field>,
+    path: &[String],
+    codec: NativeCompression,
+) -> Result<Arc<Field>> {
     if path.is_empty() {
-        return Arc::new(compression_field(field, Some(codec), None));
+        return Ok(Arc::new(compression_field(field, Some(codec), None)));
     }
     let ty = match field.data_type() {
-        DataType::Struct(children) => DataType::Struct(
-            children
-                .iter()
-                .map(|child| {
-                    if child.name() == &path[0] {
-                        nested_override(child, &path[1..], codec)
-                    } else {
-                        child.clone()
-                    }
-                })
-                .collect(),
-        ),
-        DataType::List(item) => DataType::List(nested_override(item, path, codec)),
-        DataType::LargeList(item) => DataType::LargeList(nested_override(item, path, codec)),
+        DataType::Struct(children) => DataType::Struct(nested_fields(children, path, codec)?),
+        DataType::List(item) => DataType::List(nested_override(item, path, codec)?),
+        DataType::LargeList(item) => DataType::LargeList(nested_override(item, path, codec)?),
         DataType::FixedSizeList(item, size) => {
-            DataType::FixedSizeList(nested_override(item, path, codec), *size)
+            DataType::FixedSizeList(nested_override(item, path, codec)?, *size)
         }
-        _ => unreachable!("nested path validated before schema conversion"),
+        _ => return Err(invalid_path(path)),
     };
-    Arc::new(field.as_ref().clone().with_data_type(ty))
+    Ok(Arc::new(field.as_ref().clone().with_data_type(ty)))
 }
 
 fn compression_field(
     field: &Field,
-    compression: Option<Compression>,
+    compression: Option<NativeCompression>,
     encoding: Option<StructuralEncoding>,
 ) -> Field {
     let mut metadata = field.metadata().clone();
     if let Some(compression) = compression {
-        // Capability validation rejects all other codecs before building this schema.
         let codec = match compression {
-            Compression::Uncompressed => "none",
-            Compression::Zstd { .. } => "zstd",
-            _ => unreachable!("compression must be validated before schema conversion"),
+            NativeCompression::Uncompressed => "none",
+            NativeCompression::Zstd(_) => "zstd",
         };
         metadata.insert(CODEC.into(), codec.into());
         // Dictionary values have an independent native compression default.
         metadata.insert(DICT_CODEC.into(), codec.into());
         metadata.remove(LEVEL);
         metadata.remove(DICT_LEVEL);
-        if let Compression::Zstd { level: Some(level) } = compression {
+        if let NativeCompression::Zstd(Some(level)) = compression {
             metadata.insert(LEVEL.into(), level.to_string());
             metadata.insert(DICT_LEVEL.into(), level.to_string());
         }
@@ -120,7 +168,7 @@ fn compression_field(
 
 fn compression_type(
     data_type: &DataType,
-    compression: Option<Compression>,
+    compression: Option<NativeCompression>,
     encoding: Option<StructuralEncoding>,
 ) -> DataType {
     let child = |field: &Arc<Field>| Arc::new(compression_field(field, compression, encoding));
@@ -166,6 +214,70 @@ mod tests {
     use arrow_schema::Field;
 
     #[test]
+    fn invalid_native_compression_returns_an_error_without_prior_validation() {
+        for compression in [
+            Compression::Snappy,
+            Compression::Zstd { level: Some(-1) },
+            Compression::Zstd { level: Some(23) },
+        ] {
+            // Validate explicit global policies even when there are no fields.
+            let schema = Arc::new(Schema::empty());
+            assert!(matches!(
+                writer_schema(
+                    &schema,
+                    &CompressionOptions {
+                        global: Some(compression),
+                        ..Default::default()
+                    }
+                ),
+                Err(Error::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_nested_paths_return_errors_without_prior_validation() {
+        let child = Arc::new(Field::new("value", DataType::Int64, false));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("scalar", DataType::Int64, false),
+            Field::new(
+                "nested",
+                DataType::Struct(vec![child.clone()].into()),
+                false,
+            ),
+            Field::new(
+                "ambiguous",
+                DataType::Struct(vec![child.clone(), child].into()),
+                false,
+            ),
+            Field::new("duplicate", DataType::Int64, false),
+            Field::new("duplicate", DataType::Int64, false),
+        ]));
+        for path in [
+            vec![],
+            vec!["nested"],
+            vec!["missing", "value"],
+            vec!["scalar", "value"],
+            vec!["nested", "missing"],
+            vec!["ambiguous", "value"],
+            vec!["duplicate", "value"],
+        ] {
+            let options = CompressionOptions {
+                nested_columns: [(
+                    path.into_iter().map(String::from).collect(),
+                    Compression::Uncompressed,
+                )]
+                .into(),
+                ..Default::default()
+            };
+            assert!(matches!(
+                writer_schema(&schema, &options),
+                Err(Error::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
     fn omitted_policies_preserve_defaults_and_unrelated_metadata() {
         let child = Field::new("child", DataType::Int64, false).with_metadata(
             [
@@ -183,7 +295,7 @@ mod tests {
         )]));
         assert!(Arc::ptr_eq(
             &schema,
-            &writer_schema(&schema, &Default::default())
+            &writer_schema(&schema, &Default::default()).unwrap()
         ));
         let encoded = writer_schema(
             &schema,
@@ -191,7 +303,8 @@ mod tests {
                 structural_encoding: Some(StructuralEncoding::Fullzip),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         let DataType::Struct(fields) = encoded.field(0).data_type() else {
             panic!("expected struct")
         };
@@ -206,7 +319,8 @@ mod tests {
                 global: Some(Compression::Uncompressed),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         let DataType::Struct(fields) = codec_only.field(0).data_type() else {
             panic!("expected struct")
         };

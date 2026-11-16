@@ -1,9 +1,11 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability,
-    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    validation,
 };
+
+use lance_file::version::LanceFileVersion;
 
 use crate::error;
 
@@ -11,30 +13,12 @@ pub(crate) fn validate_options(
     schema: &Schema,
     options: &WriteOptions,
     capability: SinkCapability,
-) -> Result<()> {
+) -> Result<Option<LanceFileVersion>> {
     validation::validate_options(schema, options, capability)?;
-    parse_storage_version(options.storage_version.as_deref())?;
+    let storage_version = parse_storage_version(options.storage_version.as_deref())?;
     validate_encoding(schema, &options.compression)?;
-    validate_compression(&options.compression)?;
-    validate_indexes(schema, &options.indexes)
-}
-
-fn validate_compression(options: &CompressionOptions) -> Result<()> {
-    for compression in options
-        .global
-        .iter()
-        .chain(options.columns.values())
-        .chain(options.nested_columns.values())
-    {
-        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
-        if let Compression::Zstd { level: Some(level) } = compression
-            && *level != 0
-            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
-        {
-            return Err(error::invalid_compression_level(*level));
-        }
-    }
-    Ok(())
+    validate_indexes(schema, &options.indexes)?;
+    Ok(storage_version)
 }
 
 fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
@@ -152,7 +136,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
-    storage_version: Option<&str>,
+    storage_version: Option<LanceFileVersion>,
 ) -> Result<()> {
     let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
@@ -164,7 +148,7 @@ pub(crate) async fn validate_existing_dataset(
             dataset.manifest().data_storage_format.version,
         ));
     }
-    if let Some(requested) = parse_storage_version(storage_version)?
+    if let Some(requested) = storage_version
         && requested.resolve() != dataset.manifest().data_storage_format.version
     {
         return Err(error::storage_version_mismatch(

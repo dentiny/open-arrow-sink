@@ -46,7 +46,7 @@ impl NativeStorage {
         &mut self,
         schema: &SchemaRef,
         mode: WriteMode,
-        storage_version: Option<&str>,
+        storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<()> {
         if mode == WriteMode::Append {
             return crate::validation::validate_existing_dataset(
