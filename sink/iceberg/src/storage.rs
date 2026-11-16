@@ -16,50 +16,23 @@ use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 // Bound deletion tasks independently of stream length and the HTTP request budget.
 const DELETE_CONCURRENCY: usize = 32;
 
-#[derive(Clone, Debug)]
-struct ResolvedLocation {
-    location: Arc<str>,
-    path: ObjectPath,
-}
-
 /// Inject into `CatalogBuilder::with_storage_factory` so data, metadata, scans,
 /// and cleanup all share the same operator. This factory holds a live operator;
 /// FileIO serialization is deliberately unsupported instead of losing its state.
 #[derive(Clone, Debug)]
 pub struct OpenDalStorageFactory {
     storage: Storage,
-    // FileIO retains a string location; file handles retain its resolved path
-    // here so subsequent reads/writes do not revalidate the same URL.
-    resolved: Option<ResolvedLocation>,
 }
 impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
-        Self {
-            storage,
-            resolved: None,
-        }
+        Self { storage }
     }
     pub fn file_io(&self) -> iceberg::io::FileIO {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
     }
 
     fn resolve(&self, path: &str) -> Result<ObjectPath> {
-        if let Some(resolved) = &self.resolved
-            && resolved.location.as_ref() == path
-        {
-            return Ok(resolved.path.clone());
-        }
         self.storage.resolve(&location(path)?).map_err(backend)
-    }
-
-    fn for_location(&self, path: &str) -> Result<Self> {
-        let resolved = self.resolve(path)?;
-        let mut storage = self.clone();
-        storage.resolved = Some(ResolvedLocation {
-            location: Arc::from(path),
-            path: resolved,
-        });
-        Ok(storage)
     }
 }
 
@@ -158,16 +131,12 @@ impl IcebergStorage for OpenDalStorageFactory {
             .await
     }
     fn new_input(&self, path: &str) -> Result<InputFile> {
-        Ok(InputFile::new(
-            Arc::new(self.for_location(path)?),
-            path.to_owned(),
-        ))
+        self.resolve(path)?;
+        Ok(InputFile::new(Arc::new(self.clone()), path.to_owned()))
     }
     fn new_output(&self, path: &str) -> Result<OutputFile> {
-        Ok(OutputFile::new(
-            Arc::new(self.for_location(path)?),
-            path.to_owned(),
-        ))
+        self.resolve(path)?;
+        Ok(OutputFile::new(Arc::new(self.clone()), path.to_owned()))
     }
 }
 struct OpenDalReader {
