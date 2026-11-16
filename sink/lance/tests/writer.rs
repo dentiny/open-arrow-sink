@@ -75,6 +75,80 @@ async fn empty_commit_produces_readable_dataset() {
     );
 }
 
+#[rstest::rstest]
+#[case::v2_0(lance_file::version::LanceFileVersion::V2_0)]
+#[case::v2_1(lance_file::version::LanceFileVersion::V2_1)]
+#[tokio::test]
+async fn overwrite_replaces_older_storage_formats(
+    #[case] old_version: lance_file::version::LanceFileVersion,
+    #[values(None, Some("2.2"), Some("2.3"))] storage_version: Option<&str>,
+    #[values(false, true)] parallel: bool,
+) {
+    use lance::dataset::{InsertBuilder, WriteParams};
+    use open_arrow_sink_core::{Error, SinkExt};
+    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use std::num::NonZeroUsize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let original = batch();
+    InsertBuilder::new(path.to_str().unwrap())
+        .with_params(&WriteParams {
+            data_storage_version: Some(old_version),
+            ..Default::default()
+        })
+        .execute(vec![original.clone()])
+        .await
+        .unwrap();
+    let url = Url::from_directory_path(&path).unwrap();
+    let sink = LanceDatasetSink::default();
+    // Relaxing Overwrite must not also expand the supported append formats.
+    assert!(matches!(
+        sink.open(
+            url.clone(),
+            original.schema(),
+            WriteOptions {
+                mode: WriteMode::Append,
+                ..options()
+            },
+        )
+        .await,
+        Err(Error::Unsupported(_))
+    ));
+    // Full replacement is allowed to change the schema as well as the format.
+    let replacement = RecordBatch::try_from_iter([(
+        "replacement",
+        Arc::new(Int64Array::from(vec![7, 8])) as ArrayRef,
+    )])
+    .unwrap();
+    let options = WriteOptions {
+        mode: WriteMode::Overwrite,
+        storage_version: storage_version.map(str::to_owned),
+        ..options()
+    };
+    let mut writer = if parallel {
+        sink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .open(url, replacement.schema(), options)
+            .await
+    } else {
+        sink.open(url, replacement.schema(), options).await
+    }
+    .unwrap();
+    writer.write(replacement.clone()).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 2);
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap(), replacement);
+    assert_eq!(
+        dataset.manifest().data_storage_format.version.to_string(),
+        storage_version
+            .map(str::to_owned)
+            .unwrap_or_else(|| old_version.to_string())
+    );
+    // Overwrite publishes a new version without destroying the old snapshot.
+    let history = dataset.checkout_version(1).await.unwrap();
+    assert_eq!(history.scan().try_into_batch().await.unwrap(), original);
+}
+
 #[tokio::test]
 async fn abort_removes_dataset_and_preserves_sibling_files() {
     let temp = tempfile::tempdir().unwrap();

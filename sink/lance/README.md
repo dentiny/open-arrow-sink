@@ -261,8 +261,9 @@ native session, and a rejected commit aborts the reserved dataset directory.
 Set `WriteOptions.storage_version` to `Some("2.2".into())` to select Lance's native
 data-file format version. `SinkCapability.supports_storage_version` is `true`.
 Only `2.2` and `2.3` are supported. Older versions and aliases such as `stable`
-and `next` are rejected before destination I/O. Existing datasets must also use
-format `2.2` or `2.3`.
+and `next` are rejected before destination I/O. Append requires existing datasets
+to use format `2.2` or `2.3`. Overwrite can replace older datasets, including `2.0`
+and `2.1`; set an explicit `2.2` or `2.3` version to upgrade their data files.
 `None` keeps Lance's default: the latest stable format for a new dataset, or the
 existing manifest's format for an existing dataset. An explicit version is passed
 to Lance for create, append, and overwrite, including parallel and blob writers.

@@ -137,11 +137,15 @@ pub(crate) async fn validate_existing_dataset(
     schema: Option<&Schema>,
 ) -> Result<()> {
     let dataset = builder.load().await.map_err(error::backend)?;
-    if !matches!(
-        dataset.manifest().data_storage_format.version,
-        lance_file::version::ConcreteFileVersion::V2_2
-            | lance_file::version::ConcreteFileVersion::V2_3
-    ) {
+    // Only Append reuses existing data files. Overwrite replaces every fragment,
+    // so the target's older format need not satisfy our append support boundary.
+    if schema.is_some()
+        && !matches!(
+            dataset.manifest().data_storage_format.version,
+            lance_file::version::ConcreteFileVersion::V2_2
+                | lance_file::version::ConcreteFileVersion::V2_3
+        )
+    {
         return Err(error::unsupported_storage_version(
             dataset.manifest().data_storage_format.version,
         ));
