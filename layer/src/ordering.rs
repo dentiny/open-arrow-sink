@@ -1,9 +1,6 @@
-use arrow_schema::SchemaRef;
-use open_arrow_sink_core::{
-    Layer, Ordering, ParallelSink, Result, Sink, SinkCapability, WriteOptions, Writer, async_trait,
-    validation,
-};
-use std::num::NonZeroUsize;
+use open_arrow_sink_core::{Layer, Ordering, Sink, validation};
+
+use crate::{OptionsLayer, OptionsSink};
 
 /// Override the shared ordering policy for each session opened through this layer.
 /// This declares permission/requirements; backends implement the execution strategy.
@@ -18,57 +15,18 @@ impl OrderingLayer {
     }
 }
 
-pub struct OrderingSink<S> {
-    inner: S,
-    ordering: Ordering,
-}
+pub type OrderingSink<S> = OptionsSink<S>;
 
 impl<S: Sink> Layer<S> for OrderingLayer {
     type Layered = OrderingSink<S>;
 
     fn layer(&self, inner: S) -> Self::Layered {
-        OrderingSink {
-            inner,
-            ordering: self.ordering,
-        }
-    }
-}
-
-#[async_trait]
-impl<S: Sink> Sink for OrderingSink<S> {
-    type Request = S::Request;
-
-    fn capability(&self) -> SinkCapability {
-        // Permission to reorder does not create an ordering guarantee.
-        self.inner.capability()
-    }
-
-    async fn open(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-    ) -> Result<Box<dyn Writer>> {
-        options.ordering = self.ordering;
-        validation::validate_ordering_options(options.ordering, self.inner.capability().ordering)?;
-        self.inner.open(request, schema, options).await
-    }
-}
-
-#[async_trait]
-impl<S: ParallelSink> ParallelSink for OrderingSink<S> {
-    type Output = S::Output;
-    async fn open_writers(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-        writers: NonZeroUsize,
-    ) -> Result<open_arrow_sink_core::WriteSession<Self::Output>> {
-        options.ordering = self.ordering;
-        validation::validate_ordering_options(options.ordering, self.inner.capability().ordering)?;
-        self.inner
-            .open_writers(request, schema, options, writers)
-            .await
+        let ordering = self.ordering;
+        OptionsLayer::checked(move |options, capability| {
+            options.ordering = ordering;
+            // Permission to reorder does not create an ordering guarantee.
+            validation::validate_ordering_options(options.ordering, capability.ordering)
+        })
+        .layer(inner)
     }
 }

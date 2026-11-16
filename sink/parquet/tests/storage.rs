@@ -17,11 +17,9 @@ fn batch() -> RecordBatch {
     open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        target_file_size: Some(1),
-        ..Default::default()
-    }
+    WriteOptions::default()
+        .with_ordering(Ordering::Unordered)
+        .with_target_file_size(Some(1))
 }
 
 #[rstest::rstest]
@@ -35,10 +33,7 @@ async fn shared_storage_abort_and_keep_policy(#[case] cleanup_on_error: bool) {
         .open(
             directory.clone(),
             batch().schema(),
-            WriteOptions {
-                cleanup_on_error,
-                ..options()
-            },
+            options().with_cleanup_on_error(cleanup_on_error),
         )
         .await
         .unwrap();
@@ -106,10 +101,7 @@ async fn filesystem_staged_overwrite_abort_preserves_visible_target() {
         .open(
             directory.clone(),
             batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Overwrite,
-                ..options()
-            },
+            options().with_mode(WriteMode::Overwrite),
         )
         .await
         .unwrap();
@@ -136,10 +128,7 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
         .open(
             open_arrow_sink_parquet::Url::from_directory_path(&link).unwrap(),
             batch().schema(),
-            WriteOptions {
-                mode: WriteMode::Overwrite,
-                ..options()
-            },
+            options().with_mode(WriteMode::Overwrite),
         )
         .await;
     assert!(result.is_err());
