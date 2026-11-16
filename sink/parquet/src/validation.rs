@@ -7,13 +7,6 @@ use crate::error;
 // Bound footer readers independently of storage transport or directory size.
 const APPEND_SCHEMA_CONCURRENCY: usize = 32;
 
-pub(crate) fn validate_writer_active(active: bool) -> Result<()> {
-    if !active {
-        return Err(error::closed());
-    }
-    Ok(())
-}
-
 pub(crate) async fn validate_append_directory(
     storage: &Storage,
     directory: &Url,

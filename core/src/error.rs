@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    #[error("writer failed, was cancelled, or is already finished; abort or drop it")]
+    Poisoned,
     #[error("unsupported operation: {0}")]
     Unsupported(String),
     #[error("batch schema does not match the write session schema")]
