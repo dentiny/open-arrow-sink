@@ -39,13 +39,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]));
     let sink = LanceDatasetSink::new(destination.clone()).with_source_storage(source.clone());
     let url = destination.url("dataset/")?;
-    let mut options = WriteOptions::default();
-    options.ordering = Ordering::Unordered;
-    options.blob_handle = Some(BlobHandleConfig {
-        inline_size_threshold: Some(1),
-        dedicated_size_threshold: NonZeroUsize::new(4),
-        ..Default::default()
-    });
+    // Field updates also support the non-exhaustive options API.
+    #[allow(clippy::field_reassign_with_default)]
+    let options = {
+        let mut options = WriteOptions::default();
+        options.ordering = Ordering::Unordered;
+        options.blob_handle = Some(BlobHandleConfig {
+            inline_size_threshold: Some(1),
+            dedicated_size_threshold: NonZeroUsize::new(4),
+            ..Default::default()
+        });
+        options
+    };
     // Each physical writer receives a batch. This exercises all eight writers,
     // independently of an unordered dispatcher's scheduling or batch availability.
     let mut batches = Vec::new();
