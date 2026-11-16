@@ -52,3 +52,34 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit() {
         assert_eq!(state.schemas[0].field(0).name(), "new");
     }
 }
+
+#[tokio::test]
+async fn rejects_backend_schema_before_remapping() {
+    use open_arrow_sink_core::ParallelSink;
+    use parallel_sink::{Event, SessionDefect};
+    use std::num::NonZeroUsize;
+
+    let state = Arc::new(Mutex::new(State {
+        config: Config {
+            defect: SessionDefect::WrongSchema,
+            gated: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    }));
+    let sink = TestSink(state.clone()).layer(layer());
+    assert!(
+        sink.open_writer((), input().schema(), options())
+            .await
+            .is_err()
+    );
+    assert!(
+        sink.open_writers((), input().schema(), options(), NonZeroUsize::MIN)
+            .await
+            .is_err()
+    );
+    assert!(!state.lock().unwrap().events.iter().any(|event| matches!(
+        event,
+        Event::Abort(_) | Event::SessionAbort | Event::CommitAttempt
+    )));
+}

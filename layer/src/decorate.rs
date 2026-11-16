@@ -51,8 +51,9 @@ where
     let context = decorator.prepare(&mut schema, &mut options)?;
     let session = decorator
         .inner()
-        .open_writers(request, schema, options, count)
-        .await?;
+        .open_writers(request, schema.clone(), options, count)
+        .await?
+        .expect(count.get(), &schema)?;
     Ok(decorator.wrap_session(context, session))
 }
 
