@@ -22,9 +22,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-// Legacy test serialization; pool budgets are now independent.
 // A 4 MiB buffer budget admits two of the common downloader's 2 MiB chunks.
-static REQUEST_BUDGET: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn download_layer(columns: std::collections::HashSet<String>) -> DownloadBlobLayer {
     DownloadBlobLayer::new(columns).with_download_pool(Arc::new(
         open_arrow_sink_layer::DownloadPool::new(
@@ -180,7 +178,6 @@ fn batch(urls: Vec<Option<&str>>) -> RecordBatch {
 
 #[tokio::test]
 async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let server = serve(|_, _| Reply::bytes(b"\x00\xffx".as_slice())).await;
     let urls = vec![Some(server.url.as_str()), None, Some(server.url.as_str())];
     let batch = RecordBatch::try_from_iter([
@@ -272,7 +269,6 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
 
 #[tokio::test]
 async fn empty_payload_is_distinct_from_null() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let server = serve(|_, _| Reply::bytes(b"".as_slice())).await;
     let batch = batch(vec![Some(&server.url), None]);
     let capture = Capture::default();
@@ -307,7 +303,6 @@ async fn empty_payload_is_distinct_from_null() {
 async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
     #[case] response: &[u8],
 ) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let server = fault_server(response, Duration::ZERO).await;
     let batch = batch(vec![None, Some(&server.url)]);
     let capture = Capture::default();
@@ -331,7 +326,6 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
 
 #[tokio::test]
 async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let schema = Arc::new(Schema::new(vec![
         Field::new("url", DataType::Utf8, true),
         Field::new("id", DataType::Int32, false),
@@ -408,7 +402,6 @@ async fn next_request(
 
 #[tokio::test]
 async fn shared_pool_bounds_active_bodies_and_preserves_order() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -472,7 +465,6 @@ async fn shared_pool_bounds_active_bodies_and_preserves_order() {
 
 #[tokio::test]
 async fn cancelling_download_releases_shared_pool_capacity() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -522,7 +514,6 @@ async fn cancelling_download_releases_shared_pool_capacity() {
 
 #[tokio::test]
 async fn downloads_columns_concurrently_with_single_row_batches() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -582,7 +573,6 @@ async fn downloads_columns_concurrently_with_single_row_batches() {
 
 #[tokio::test]
 async fn opendal_preserves_signed_queries_and_escaped_paths() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let (server, mut events) = gated_server().await;
     let paths = [
         "/images//a%2Fb%20c?X-Amz-Signature=a%2Fb%2B&x=1+2&x=3",
@@ -622,7 +612,6 @@ async fn opendal_preserves_signed_queries_and_escaped_paths() {
 
 #[tokio::test]
 async fn opendal_timeout_on_body_releases_pool_capacity() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
     use opendal::layers::TimeoutLayer;
 
@@ -681,7 +670,6 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
 #[case::enabled(true)]
 #[tokio::test]
 async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bool) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
     use opendal::layers::{RetryLayer, TimeoutLayer};
 
@@ -794,7 +782,6 @@ async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it()
 
 #[tokio::test]
 async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let server = serve(|_, _| Reply::bytes(b"abc".as_slice())).await;
     let input = batch(vec![Some(&server.url)]);
     let layer = open_arrow_sink_layer::MetricsLayer::default();
@@ -818,7 +805,6 @@ async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
 #[case::cancelled_download(true)]
 #[tokio::test]
 async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: bool) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (release, released) = tokio::sync::oneshot::channel();
