@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
@@ -36,10 +36,13 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.check()?;
+        self.blob_session.check()?;
         self.state.poison();
-        let blob =
-            crate::blob::create_blob(&self.destination.path, self.blob_session.clone()).await?;
+        let blob = self
+            .blob_session
+            .create_blob(&self.destination.path)
+            .await?;
         self.state.complete();
         Ok(blob)
     }
@@ -49,7 +52,8 @@ impl Writer for BlobDatasetWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.check()?;
+        self.blob_session.check()?;
         self.state.poison();
         validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
@@ -67,7 +71,10 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = crate::validation::validate_blob_commit(&self.state, &self.blob_session)
+        if let Err(error) = self
+            .state
+            .check()
+            .and_then(|()| self.blob_session.ensure_idle())
         {
             let _ = self.abort().await;
             return Err(error);
@@ -98,7 +105,7 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.blob_session.failed.store(true, Ordering::Release);
+        self.blob_session.fail();
         drop(self.sender.take());
         // Let native writing stop before cleaning up our new destination.
         let _ = self.task.await;
