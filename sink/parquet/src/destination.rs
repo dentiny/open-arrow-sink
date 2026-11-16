@@ -67,6 +67,23 @@ impl Destination {
         }
     }
 
+    pub(crate) fn needs_empty_file(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+
+    pub(crate) async fn write_empty_file(
+        &self,
+        schema: SchemaRef,
+        properties: WriterProperties,
+    ) -> Result<()> {
+        self.open_writer(0, 0, schema, properties)
+            .await?
+            .finish()
+            .await
+            .map_err(Error::backend)?;
+        Ok(())
+    }
+
     pub(crate) async fn open_writer(
         &self,
         writer: usize,

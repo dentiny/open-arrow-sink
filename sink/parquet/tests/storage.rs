@@ -148,3 +148,64 @@ async fn session_observer_counts_parquet_output() {
     writer.commit().await.unwrap();
     assert!(metrics.snapshot().bytes_written > 0);
 }
+
+#[rstest::rstest]
+#[case::memory(false)]
+#[case::filesystem(true)]
+#[tokio::test]
+async fn empty_parallel_create_writes_one_file_and_append_adds_none(#[case] filesystem: bool) {
+    use open_arrow_sink_core::ParallelSink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (storage, directory) = if filesystem {
+        let directory =
+            open_arrow_sink_parquet::Url::from_directory_path(temp.path().join("output")).unwrap();
+        (Storage::from_url(&directory).unwrap(), directory)
+    } else {
+        let storage = storage();
+        let directory = storage.url("output/").unwrap();
+        (storage, directory)
+    };
+    let sink = ParquetDirectorySink::new(storage.clone());
+    let path = storage.resolve(&directory).unwrap();
+    for mode in [WriteMode::Create, WriteMode::Append] {
+        let before = storage.list(&path).await.unwrap();
+        let mut session = sink
+            .open_writers(
+                directory.clone(),
+                batch().schema(),
+                options().with_mode(mode),
+                NonZeroUsize::new(8).unwrap(),
+            )
+            .await
+            .unwrap();
+        for writer in &mut session.writers {
+            writer.write(batch().slice(0, 0)).await.unwrap();
+        }
+        let mut outputs = Vec::new();
+        for writer in &mut session.writers {
+            outputs.push(writer.finish().await.unwrap());
+        }
+        assert_eq!(storage.list(&path).await.unwrap(), before);
+        assert_eq!(
+            session
+                .committer
+                .commit(outputs)
+                .await
+                .unwrap()
+                .rows_written,
+            0
+        );
+        let files = storage.list(&path).await.unwrap();
+        assert_eq!(files.len(), 1);
+        if mode == WriteMode::Append {
+            assert_eq!(files, before);
+        }
+        let batches = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
+        assert!(!batches.is_empty());
+        for actual in batches {
+            assert_eq!(actual.schema(), batch().schema());
+            assert_eq!(actual.num_rows(), 0);
+        }
+    }
+}
