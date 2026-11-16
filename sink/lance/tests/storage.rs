@@ -190,14 +190,11 @@ async fn append_storage_version_must_match_manifest(
         batch()
     };
     let mut writer = sink
-        .open(
-            url.clone(),
-            input.schema(),
-            WriteOptions {
-                storage_version: Some(existing_version.into()),
-                ..write_options()
-            },
-        )
+        .open(url.clone(), input.schema(), {
+            let mut review_options = write_options();
+            review_options.storage_version = Some(existing_version.into());
+            review_options
+        })
         .await
         .unwrap();
     writer.write(input.clone()).await.unwrap();
@@ -208,10 +205,11 @@ async fn append_storage_version_must_match_manifest(
     } else {
         "2.2"
     };
-    let options = WriteOptions {
-        mode: WriteMode::Append,
-        storage_version: Some(mismatched_version.into()),
-        ..write_options()
+    let options = {
+        let mut review_options = write_options();
+        review_options.mode = WriteMode::Append;
+        review_options.storage_version = Some(mismatched_version.into());
+        review_options
     };
     let before = storage.list(&url).await.unwrap();
     let result = if parallel {
@@ -228,10 +226,11 @@ async fn append_storage_version_must_match_manifest(
     assert_eq!(storage.list(&url).await.unwrap(), before);
 
     for requested_version in [Some(existing_version.to_owned()), None] {
-        let options = WriteOptions {
-            mode: WriteMode::Append,
-            storage_version: requested_version,
-            ..write_options()
+        let options = {
+            let mut review_options = write_options();
+            review_options.mode = WriteMode::Append;
+            review_options.storage_version = requested_version;
+            review_options
         };
         let mut writer = if parallel {
             sink.clone()
