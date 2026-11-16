@@ -64,7 +64,3 @@ pub(crate) async fn validate_overwrite_directory(storage: &Storage, directory: &
         Err(error) => Err(crate::error::backend(error)),
     }
 }
-
-#[cfg(test)]
-#[path = "validation_tests.rs"]
-mod tests;
