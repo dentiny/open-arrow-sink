@@ -54,21 +54,20 @@ impl CommitHandler for IndexedCommitHandler {
             .clone()
             .join("_index_staging")
             .join(format!("{}.manifest", uuid::Uuid::new_v4()));
-        let mut candidate = manifest.clone();
-        let written = manifest_writer(
+        manifest_writer(
             object_store,
-            &mut candidate,
+            manifest,
             indices.clone(),
             &path,
             transaction.clone(),
         )
         .await?;
         let location = ManifestLocation {
-            version: candidate.version,
+            version: manifest.version,
             path: path.clone(),
-            size: Some(written.size as u64),
+            size: None,
             naming_scheme,
-            e_tag: written.e_tag,
+            e_tag: None,
             identity: None,
         };
         let result = async {
@@ -77,15 +76,11 @@ impl CommitHandler for IndexedCommitHandler {
                 .dataset_builder()
                 .with_session(self.destination.isolated_session())
                 .with_commit_handler(Arc::new(StagedManifest(location)))
-                .with_version(candidate.version)
+                .with_version(manifest.version)
                 .load()
                 .await?;
-            let built = build_indexes(&mut dataset, &self.indexes).await?;
-            let mut indices = indices.unwrap_or_default();
-            for index in built {
-                indices.retain(|existing| existing.name != index.name);
-                indices.push(index);
-            }
+            let indices =
+                build_indexes(&mut dataset, &self.indexes, indices.unwrap_or_default()).await?;
             // Only this call makes data and all requested indexes visible.
             // If it conflicts, Lance rebuilds the next candidate and calls us
             // again: index row addresses must never survive a fragment-ID rebase.
@@ -147,18 +142,25 @@ impl CommitHandler for StagedManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::committer::LanceCommitter;
-    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use crate::{LanceFragments, committer::LanceCommitter};
+    use arrow_array::{
+        ArrayRef, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray,
+        types::Float32Type,
+    };
     use lance::{
-        dataset::{InsertBuilder, WriteMode as NativeMode, WriteParams},
+        Dataset,
+        dataset::{InsertBuilder, WriteMode, WriteParams},
         index::DatasetIndexExt,
     };
-    use open_arrow_sink_core::{ExistingIndexPolicy, IndexType, SessionCommitter, WriteOptions};
-    use open_arrow_sink_storage::{Storage, StorageResolver, opendal};
+    use open_arrow_sink_core::{ExistingIndexPolicy as Policy, IndexType, SessionCommitter};
+    use open_arrow_sink_storage::{BlobDownloader, StorageResolver};
+    use open_arrow_sink_test_support::{memory_storage, path};
 
     fn batch() -> RecordBatch {
+        let ids = Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef;
         RecordBatch::try_from_iter([
-            ("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef),
+            ("id", ids.clone()),
+            ("bloom", ids),
             (
                 "text",
                 Arc::new(StringArray::from(vec![
@@ -167,338 +169,200 @@ mod tests {
                     "world",
                 ])) as ArrayRef,
             ),
-        ])
-        .unwrap()
-    }
-
-    fn destination() -> LanceDestination {
-        let storage = Storage::new(
-            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-            "memory:///warehouse/".parse().unwrap(),
-        )
-        .unwrap();
-        let url = storage
-            .url(&open_arrow_sink_storage::ObjectPath::parse("atomic/").unwrap())
-            .unwrap();
-        LanceDestination::new(
-            storage,
-            url,
-            Arc::new(StorageResolver::default()),
-            Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults().unwrap()),
-            None,
-        )
-        .unwrap()
-    }
-
-    async fn commit(
-        destination: &LanceDestination,
-        mode: NativeMode,
-        indexes: Vec<IndexSpec>,
-    ) -> open_arrow_sink_core::Result<()> {
-        let params = destination.bind_write_params(WriteParams {
-            mode,
-            ..Default::default()
-        });
-        let transaction = InsertBuilder::new(destination.url.as_str())
-            .with_params(&params)
-            .execute_uncommitted(vec![batch()])
-            .await
-            .unwrap();
-        Box::new(LanceCommitter {
-            destination: destination.clone(),
-            indexes,
-            storage_version: None,
-        })
-        .commit(vec![crate::LanceFragments { transaction }])
-        .await
-    }
-
-    fn indexes(policy: ExistingIndexPolicy) -> Vec<IndexSpec> {
-        vec![
-            IndexSpec::new("id", IndexType::Scalar).with_existing_policy(policy),
-            IndexSpec::new("text", IndexType::Text).with_existing_policy(policy),
-        ]
-    }
-
-    #[tokio::test]
-    async fn data_and_all_indexes_publish_one_version() {
-        let destination = destination();
-        commit(
-            &destination,
-            NativeMode::Create,
-            indexes(ExistingIndexPolicy::Error),
-        )
-        .await
-        .unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(dataset.version_id(), 1);
-        assert_eq!(dataset.versions().await.unwrap().len(), 1);
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
-        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
-        // Queries must be able to use the newly published scalar index.
-        assert_eq!(
-            dataset
-                .scan()
-                .filter("id = 2")
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .num_rows(),
-            1
-        );
-
-        commit(
-            &destination,
-            NativeMode::Append,
-            indexes(ExistingIndexPolicy::Rebuild),
-        )
-        .await
-        .unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(dataset.version_id(), 2);
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 6);
-        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
-        assert_eq!(
-            dataset
-                .scan()
-                .filter("id = 2")
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .num_rows(),
-            2
-        );
-
-        let existing = dataset.load_indices().await.unwrap();
-        commit(
-            &destination,
-            NativeMode::Append,
-            indexes(ExistingIndexPolicy::Keep),
-        )
-        .await
-        .unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(dataset.version_id(), 3);
-        assert_eq!(*dataset.load_indices().await.unwrap(), *existing);
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 9);
-        assert_eq!(
-            dataset
-                .scan()
-                .filter("id = 2")
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .num_rows(),
-            3
-        );
-    }
-
-    #[tokio::test]
-    async fn vector_and_bloom_indexes_are_published_with_the_data() {
-        use crate::LanceDatasetSink;
-        use arrow_array::{FixedSizeListArray, types::Float32Type};
-        use open_arrow_sink_core::Sink;
-        let destination = destination();
-        let batch = RecordBatch::try_from_iter([
-            (
-                "id",
-                Arc::new(Int64Array::from_iter_values(0..32)) as ArrayRef,
-            ),
             (
                 "vector",
                 Arc::new(
                     FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..32).map(|i| Some(vec![Some(i as f32), Some((i * 2) as f32)])),
+                        (1..=3).map(|i| Some(vec![Some(i as f32), Some((i * 2) as f32)])),
                         2,
                     ),
                 ) as ArrayRef,
             ),
         ])
-        .unwrap();
-        let sink = LanceDatasetSink::new(destination.storage.clone());
-        let mut writer = sink
-            .open(
-                destination.url.clone(),
-                batch.schema(),
-                WriteOptions::default().with_indexes(vec![
-                    IndexSpec::new("id", IndexType::BloomFilter),
-                    IndexSpec::new("vector", IndexType::Vector),
-                ]),
-            )
+        .unwrap()
+    }
+
+    fn indexes(policy: Policy) -> Vec<IndexSpec> {
+        vec![
+            IndexSpec::new("id", IndexType::Scalar),
+            IndexSpec::new("text", IndexType::Text),
+            IndexSpec::new("bloom", IndexType::BloomFilter),
+            IndexSpec::new("vector", IndexType::Vector),
+        ]
+        .into_iter()
+        .map(|spec| spec.with_existing_policy(policy))
+        .collect()
+    }
+
+    fn destination() -> LanceDestination {
+        let storage = memory_storage("memory:///warehouse/");
+        let url = storage.url(&path(&storage, "atomic/")).unwrap();
+        LanceDestination::new(
+            storage,
+            url,
+            Arc::new(StorageResolver::default()),
+            Arc::new(BlobDownloader::with_defaults().unwrap()),
+            None,
+        )
+        .unwrap()
+    }
+
+    impl LanceDestination {
+        async fn stage(&self, mode: WriteMode) -> LanceFragments {
+            let params = self.bind_write_params(WriteParams {
+                mode,
+                ..Default::default()
+            });
+            LanceFragments {
+                transaction: InsertBuilder::new(self.url.as_str())
+                    .with_params(&params)
+                    .execute_uncommitted(vec![batch()])
+                    .await
+                    .unwrap(),
+            }
+        }
+
+        fn committer(&self, indexes: Vec<IndexSpec>) -> Box<LanceCommitter> {
+            Box::new(LanceCommitter {
+                destination: self.clone(),
+                indexes,
+                storage_version: None,
+            })
+        }
+
+        async fn write(
+            &self,
+            mode: WriteMode,
+            indexes: Vec<IndexSpec>,
+        ) -> open_arrow_sink_core::Result<()> {
+            self.committer(indexes)
+                .commit(vec![self.stage(mode).await])
+                .await
+        }
+
+        async fn snapshot(&self, version: u64, rows: usize) -> Arc<Vec<IndexMetadata>> {
+            let dataset = self.dataset_builder().load().await.unwrap();
+            assert_eq!(dataset.version_id(), version);
+            assert_eq!(dataset.versions().await.unwrap().len(), version as usize);
+            assert_eq!(dataset.count_rows(None).await.unwrap(), rows);
+            assert_eq!(matching_rows(&dataset, "id = 2").await, rows / 3);
+            let indexes = dataset.load_indices().await.unwrap();
+            assert_eq!(indexes.len(), 4);
+            assert_eq!(matching_rows(&dataset, "bloom = 2").await, rows / 3);
+            let nearest = dataset
+                .scan()
+                .nearest("vector", &Float32Array::from(vec![2.0, 4.0]), 1)
+                .unwrap()
+                .try_into_batch()
+                .await
+                .unwrap();
+            assert_eq!(
+                nearest
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(0),
+                2
+            );
+            indexes
+        }
+    }
+
+    async fn matching_rows(dataset: &Dataset, filter: &str) -> usize {
+        dataset
+            .scan()
+            .filter(filter)
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap()
+            .num_rows()
+    }
+
+    #[tokio::test]
+    async fn data_and_all_indexes_publish_one_version() {
+        let dest = destination();
+        dest.write(WriteMode::Create, indexes(Policy::Error))
             .await
             .unwrap();
-        writer.write(batch).await.unwrap();
-        writer.commit().await.unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(dataset.version_id(), 1);
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 32);
-        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
-        assert_eq!(
-            dataset
-                .scan()
-                .filter("id = 7")
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .num_rows(),
-            1
-        );
-        assert_eq!(
-            dataset
-                .scan()
-                .nearest(
-                    "vector",
-                    &arrow_array::Float32Array::from(vec![7.0, 14.0]),
-                    1
-                )
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap()
-                .value(0),
-            7
-        );
+        dest.snapshot(1, 3).await;
+        dest.write(WriteMode::Append, indexes(Policy::Rebuild))
+            .await
+            .unwrap();
+        let rebuilt = dest.snapshot(2, 6).await;
+        dest.write(WriteMode::Append, indexes(Policy::Keep))
+            .await
+            .unwrap();
+        assert_eq!(dest.snapshot(3, 9).await, rebuilt);
     }
 
     #[tokio::test]
     async fn concurrent_appends_rebuild_indexes_after_fragment_ids_change() {
-        let destination = destination();
-        commit(
-            &destination,
-            NativeMode::Create,
-            indexes(ExistingIndexPolicy::Error),
-        )
-        .await
-        .unwrap();
-        let params = destination.bind_write_params(WriteParams {
-            mode: NativeMode::Append,
-            ..Default::default()
-        });
-        let first = InsertBuilder::new(destination.url.as_str())
-            .with_params(&params)
-            .execute_uncommitted(vec![batch()])
+        let dest = destination();
+        dest.write(WriteMode::Create, indexes(Policy::Error))
             .await
             .unwrap();
-        let second = InsertBuilder::new(destination.url.as_str())
-            .with_params(&params)
-            .execute_uncommitted(vec![batch()])
-            .await
-            .unwrap();
-        assert_eq!(first.read_version, second.read_version);
-        let committer = || {
-            Box::new(LanceCommitter {
-                destination: destination.clone(),
-                indexes: indexes(ExistingIndexPolicy::Rebuild),
-                storage_version: None,
-            })
-        };
+        let first = dest.stage(WriteMode::Append).await;
+        let second = dest.stage(WriteMode::Append).await;
+        assert_eq!(
+            first.transaction.read_version,
+            second.transaction.read_version
+        );
         let (first, second) = tokio::join!(
-            committer().commit(vec![crate::LanceFragments { transaction: first }]),
-            committer().commit(vec![crate::LanceFragments {
-                transaction: second
-            }])
+            dest.committer(indexes(Policy::Rebuild)).commit(vec![first]),
+            dest.committer(indexes(Policy::Rebuild))
+                .commit(vec![second]),
         );
         first.unwrap();
         second.unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(dataset.version_id(), 3);
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 9);
-        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
-        assert_eq!(
-            dataset
-                .scan()
-                .filter("id = 2")
-                .unwrap()
-                .try_into_batch()
-                .await
-                .unwrap()
-                .num_rows(),
-            3
-        );
-        for index in dataset.load_indices().await.unwrap().iter() {
+        for index in dest.snapshot(3, 9).await.iter() {
             assert_eq!(index.fragment_bitmap.as_ref().unwrap().len(), 3);
         }
     }
 
     #[rstest::rstest]
-    #[case::create(NativeMode::Create)]
-    #[case::append(NativeMode::Append)]
-    #[case::overwrite(NativeMode::Overwrite)]
+    #[case::create(WriteMode::Create)]
+    #[case::append(WriteMode::Append)]
+    #[case::overwrite(WriteMode::Overwrite)]
     #[tokio::test]
-    async fn index_failure_publishes_neither_data_nor_indexes(#[case] mode: NativeMode) {
-        let destination = destination();
-        let existing = if !matches!(mode, NativeMode::Create) {
-            commit(
-                &destination,
-                NativeMode::Create,
-                indexes(ExistingIndexPolicy::Error),
-            )
-            .await
-            .unwrap();
-            Some(
-                destination
-                    .dataset_builder()
-                    .load()
-                    .await
-                    .unwrap()
-                    .load_indices()
-                    .await
-                    .unwrap(),
-            )
+    async fn index_failure_publishes_neither_data_nor_indexes(#[case] mode: WriteMode) {
+        let dest = destination();
+        let existing = if !matches!(mode, WriteMode::Create) {
+            dest.write(WriteMode::Create, indexes(Policy::Error))
+                .await
+                .unwrap();
+            Some(dest.snapshot(1, 3).await)
         } else {
             None
         };
-        // Exercise a native construction failure after the first index has been
-        // built. Bypass open-time validation to reach the commit failure path.
-        let specs = vec![
-            IndexSpec::new("id", IndexType::Scalar)
-                .with_existing_policy(ExistingIndexPolicy::Rebuild),
-            IndexSpec::new("missing", IndexType::Scalar),
-        ];
-        let error = commit(&destination, mode, specs).await.unwrap_err();
+        // Bypass open-time validation: fail native construction after one index was built.
+        let error = dest
+            .write(
+                mode,
+                vec![
+                    IndexSpec::new("id", IndexType::Scalar).with_existing_policy(Policy::Rebuild),
+                    IndexSpec::new("missing", IndexType::Scalar),
+                ],
+            )
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("missing"), "{error}");
         assert!(!error.to_string().contains("data committed"));
-        let result = destination.dataset_builder().load().await;
         if let Some(existing) = &existing {
-            let dataset = result.unwrap();
-            assert_eq!(dataset.version_id(), 1);
-            assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
-            assert_eq!(
-                dataset.load_indices().await.unwrap().as_ref(),
-                existing.as_ref()
-            );
+            assert_eq!(&dest.snapshot(1, 3).await, existing);
         } else {
             assert!(matches!(
-                result,
+                dest.dataset_builder().load().await,
                 Err(lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. })
             ));
         }
-        // A failed construction must not consume a visible version.
-        let retry_mode = if existing.is_some() {
-            NativeMode::Append
+        let (mode, version, rows) = if existing.is_some() {
+            (WriteMode::Append, 2, 6)
         } else {
-            NativeMode::Create
+            (WriteMode::Create, 1, 3)
         };
-        commit(
-            &destination,
-            retry_mode,
-            indexes(ExistingIndexPolicy::Rebuild),
-        )
-        .await
-        .unwrap();
-        let dataset = destination.dataset_builder().load().await.unwrap();
-        assert_eq!(
-            dataset.count_rows(None).await.unwrap(),
-            if existing.is_some() { 6 } else { 3 }
-        );
-        assert_eq!(dataset.version_id(), if existing.is_some() { 2 } else { 1 });
+        dest.write(mode, indexes(Policy::Rebuild)).await.unwrap();
+        dest.snapshot(version, rows).await;
     }
 }

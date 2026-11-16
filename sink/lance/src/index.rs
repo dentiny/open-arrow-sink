@@ -1,7 +1,7 @@
 //! Build index files without publishing a dataset version.
 use lance::{
     Dataset,
-    index::{CreateIndexBuilder, DatasetIndexExt, vector::VectorIndexParams},
+    index::{CreateIndexBuilder, vector::VectorIndexParams},
 };
 use lance_index::{
     IndexParams, IndexType as LanceIndexType,
@@ -20,33 +20,27 @@ const MAX_VECTOR_PARTITIONS: usize = 4096;
 pub(crate) async fn build_indexes(
     dataset: &mut Dataset,
     indexes: &[IndexSpec],
+    mut indices: Vec<IndexMetadata>,
 ) -> lance::Result<Vec<IndexMetadata>> {
     let vector_rows = OnceCell::new();
-    let mut built = Vec::new();
-    // Bound memory to one native build and stop before publication on failure.
+    // Build sequentially and keep all metadata private until every build succeeds.
     for spec in indexes {
-        if let Some(index) = create_index(dataset, spec, &vector_rows).await? {
-            built.push(index);
+        let name = index_name(spec);
+        if spec.existing == ExistingIndexPolicy::Keep && indices.iter().any(|i| i.name == name) {
+            continue;
         }
+        let index = create_index(dataset, spec, &vector_rows).await?;
+        indices.retain(|existing| existing.name != name);
+        indices.push(index);
     }
-    Ok(built)
+    Ok(indices)
 }
 
 async fn create_index(
     dataset: &mut Dataset,
     spec: &IndexSpec,
     vector_rows: &OnceCell<lance::Result<usize>>,
-) -> lance::Result<Option<IndexMetadata>> {
-    if spec.existing == ExistingIndexPolicy::Keep
-        && dataset
-            .load_indices()
-            .await
-            .map_err(|error| index_creation(spec, error))?
-            .iter()
-            .any(|i| i.name == index_name(spec))
-    {
-        return Ok(None);
-    }
+) -> lance::Result<IndexMetadata> {
     let (lance_type, params): (_, Box<dyn IndexParams>) = match spec.index_type {
         IndexType::Scalar => (
             LanceIndexType::BTree,
@@ -88,7 +82,6 @@ async fn create_index(
         .replace(spec.existing == ExistingIndexPolicy::Rebuild)
         .execute_uncommitted()
         .await
-        .map(Some)
         .map_err(|error| index_creation(spec, error))
 }
 
