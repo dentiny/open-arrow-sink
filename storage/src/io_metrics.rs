@@ -11,20 +11,28 @@ use std::sync::Arc;
 pub struct IoMetricsLayer(pub IoMetrics);
 impl Layer for IoMetricsLayer {
     fn apply_service(&self, inner: Servicer) -> Servicer {
-        Arc::new(MetricsService {
+        Arc::new(Metered {
             inner,
             metrics: self.0.clone(),
         })
     }
 }
 #[derive(Debug)]
-struct MetricsService {
-    inner: Servicer,
+struct Metered<T> {
+    inner: T,
     metrics: IoMetrics,
 }
-impl Service for MetricsService {
-    type Reader = MetricsReader;
-    type Writer = MetricsWriter;
+impl<T> Metered<T> {
+    fn wrap<U>(&self, inner: U) -> Metered<U> {
+        Metered {
+            inner,
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+impl Service for Metered<Servicer> {
+    type Reader = Metered<oio::Reader>;
+    type Writer = Metered<oio::Writer>;
     type Lister = oio::Lister;
     type Deleter = oio::Deleter;
     type Copier = oio::Copier;
@@ -36,16 +44,10 @@ impl Service for MetricsService {
         self.inner.capability()
     }
     fn read(&self, ctx: &OperationContext, path: &str, args: OpRead) -> Result<Self::Reader> {
-        Ok(MetricsReader {
-            inner: self.inner.read(ctx, path, args)?,
-            metrics: self.metrics.clone(),
-        })
+        Ok(self.wrap(self.inner.read(ctx, path, args)?))
     }
     fn write(&self, ctx: &OperationContext, path: &str, args: OpWrite) -> Result<Self::Writer> {
-        Ok(MetricsWriter {
-            inner: self.inner.write(ctx, path, args)?,
-            metrics: self.metrics.clone(),
-        })
+        Ok(self.wrap(self.inner.write(ctx, path, args)?))
     }
     async fn create_dir(
         &self,
@@ -102,11 +104,7 @@ impl Service for MetricsService {
         self.inner.compose(ctx, to, args)
     }
 }
-struct MetricsReader {
-    inner: oio::Reader,
-    metrics: IoMetrics,
-}
-impl oio::Read for MetricsReader {
+impl oio::Read for Metered<oio::Reader> {
     async fn read(&self, range: BytesRange) -> Result<(RpRead, Buffer)> {
         let (reply, bytes) = self.inner.read(range).await?;
         self.metrics.record_read(bytes.len() as u64);
@@ -114,31 +112,17 @@ impl oio::Read for MetricsReader {
     }
     async fn open(&self, range: BytesRange) -> Result<(RpRead, Box<dyn oio::ReadStreamDyn>)> {
         let (reply, inner) = self.inner.open(range).await?;
-        Ok((
-            reply,
-            Box::new(MetricsStream {
-                inner,
-                metrics: self.metrics.clone(),
-            }),
-        ))
+        Ok((reply, Box::new(self.wrap(inner))))
     }
 }
-struct MetricsStream {
-    inner: Box<dyn oio::ReadStreamDyn>,
-    metrics: IoMetrics,
-}
-impl oio::ReadStream for MetricsStream {
+impl oio::ReadStream for Metered<Box<dyn oio::ReadStreamDyn>> {
     async fn read(&mut self) -> Result<Buffer> {
         let bytes = self.inner.read().await?;
         self.metrics.record_read(bytes.len() as u64);
         Ok(bytes)
     }
 }
-struct MetricsWriter {
-    inner: oio::Writer,
-    metrics: IoMetrics,
-}
-impl oio::Write for MetricsWriter {
+impl oio::Write for Metered<oio::Writer> {
     async fn write(&mut self, bytes: Buffer) -> Result<()> {
         let size = bytes.len() as u64;
         self.inner.write(bytes).await?;

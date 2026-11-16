@@ -1,5 +1,5 @@
 //! Bounded native fragment input and ownership of its background task.
-use crate::{destination::LanceDestination, error::worker_stopped};
+use crate::{LanceFragments, destination::LanceDestination, error::worker_stopped};
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
 use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
@@ -7,6 +7,7 @@ use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 pub(crate) struct FragmentWorker {
+    rows: u64,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
 }
@@ -28,24 +29,31 @@ impl FragmentWorker {
                 .await
         });
         Self {
+            rows: 0,
             sender: Some(sender),
             task: Some(task),
         }
     }
-    pub async fn write(&self, batch: RecordBatch) -> Result<()> {
+    pub async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        let rows = batch.num_rows() as u64;
         self.sender
             .as_ref()
             .ok_or(Error::Poisoned)?
             .send(batch)
             .await
-            .map_err(|_| worker_stopped())
+            .map_err(|_| worker_stopped())?;
+        self.rows += rows;
+        Ok(())
     }
-    pub async fn finish(&mut self) -> Result<Transaction> {
+    pub async fn finish(&mut self) -> Result<LanceFragments> {
         drop(self.sender.take());
         // Keep ownership across cancellation so abort/drop can still stop the task.
         let result = self.task.as_mut().ok_or(Error::Poisoned)?.await;
         self.task.take();
-        result.map_err(Error::backend)?.map_err(Error::backend)
+        Ok(LanceFragments {
+            rows_written: self.rows,
+            transaction: result.map_err(Error::backend)?.map_err(Error::backend)?,
+        })
     }
     pub async fn abort(&mut self) {
         if let Some(task) = self.task.take() {

@@ -6,16 +6,12 @@ use open_arrow_sink_core::{
     WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
-use crate::{
-    LanceFragments, committer::LanceCommitter, destination::LanceDestination,
-    worker::FragmentWorker,
-};
+use crate::{committer::LanceCommitter, destination::LanceDestination, worker::FragmentWorker};
 
 pub(crate) struct BlobDatasetWriter {
     schemas: crate::write_options::LanceSchemas,
     blob_session: Arc<crate::blob::BlobSession>,
     worker: FragmentWorker,
-    rows: u64,
     state: Poison,
     destination: LanceDestination,
     options: WriteOptions,
@@ -53,11 +49,9 @@ impl Writer for BlobDatasetWriter {
         self.blob_session.check()?;
         self.state.poison();
         validation::validate_batch(&self.schemas.input, &batch)?;
-        let rows = batch.num_rows() as u64;
         let batch =
             crate::blob::storage_batch(batch, &self.schemas.encoded, blobs, &self.blob_session)?;
         self.worker.write(batch).await?;
-        self.rows += rows;
         self.state.complete();
         Ok(())
     }
@@ -75,7 +69,7 @@ impl Writer for BlobDatasetWriter {
             let _ = self.abort().await;
             return Err(error);
         }
-        let transaction = self.worker.finish().await?;
+        let fragments = self.worker.finish().await?;
         // Share manifest publication, index creation, and failure semantics with
         // ordinary writers. Once publication starts, retain files on failure.
         Box::new(LanceCommitter {
@@ -83,10 +77,7 @@ impl Writer for BlobDatasetWriter {
             options: self.options,
             storage_version: self.storage_version,
         })
-        .commit(vec![LanceFragments {
-            rows_written: self.rows,
-            transaction,
-        }])
+        .commit(vec![fragments])
         .await
     }
 
@@ -119,7 +110,6 @@ impl BlobDatasetWriter {
                 &destination.path,
             )),
             worker,
-            rows: 0,
             state: Poison::default(),
             destination,
             options,

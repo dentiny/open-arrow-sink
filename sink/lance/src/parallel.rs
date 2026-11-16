@@ -12,7 +12,6 @@ use crate::{
 pub(crate) struct FragmentWriter {
     schemas: crate::write_options::LanceSchemas,
     worker: FragmentWorker,
-    rows: u64,
     state: Poison,
 }
 
@@ -26,7 +25,6 @@ impl FragmentWriter {
         Self {
             schemas,
             worker,
-            rows: 0,
             state: Poison::default(),
         }
     }
@@ -41,20 +39,14 @@ impl DataWriter for FragmentWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
         validation::validate_batch(&self.schemas.input, &batch)?;
-        let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.schemas.encoded)?;
         self.worker.write(batch).await?;
-        self.rows += rows;
         self.state.complete();
         Ok(())
     }
     async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
-        let transaction = self.worker.finish().await?;
-        Ok(LanceFragments {
-            rows_written: self.rows,
-            transaction,
-        })
+        self.worker.finish().await
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.worker.abort().await;

@@ -24,10 +24,6 @@ impl LanceDestination {
         sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
-        let storage = match metrics {
-            Some(metrics) => storage.with_io_metrics(metrics.clone()),
-            None => storage,
-        };
         let path = storage.resolve(&url)?.as_dir();
         crate::validation::validate_destination_path(&path)?;
         // Lance's native API requires a URL at its boundary.

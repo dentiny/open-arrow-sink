@@ -11,13 +11,6 @@ pub struct IoSnapshot {
     pub bytes_read: u64,
     pub bytes_written: u64,
 }
-impl IoSnapshot {
-    fn add(&mut self, other: Self) {
-        self.bytes_read += other.bytes_read;
-        self.bytes_written += other.bytes_written;
-    }
-}
-
 /// Cloneable observation handle passed through `WriteOptions`.
 /// Equality compares handle identity, not mutable counter values.
 #[derive(Clone)]
@@ -51,29 +44,23 @@ impl IoMetrics {
     }
     pub fn snapshot(&self) -> IoSnapshot {
         // A combined handle records the same event to each destination.
-        let state = self.0[0]
+        *self.0[0]
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *state
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub fn record_read(&self, bytes: u64) {
-        self.record(IoSnapshot {
-            bytes_read: bytes,
-            bytes_written: 0,
-        });
+        self.record(bytes, 0);
     }
     pub fn record_write(&self, bytes: u64) {
-        self.record(IoSnapshot {
-            bytes_read: 0,
-            bytes_written: bytes,
-        });
+        self.record(0, bytes);
     }
-    fn record(&self, bytes: IoSnapshot) {
+    fn record(&self, read: u64, written: u64) {
         for state in &self.0 {
-            state
+            let mut total = state
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .add(bytes);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            total.bytes_read += read;
+            total.bytes_written += written;
         }
     }
 }
