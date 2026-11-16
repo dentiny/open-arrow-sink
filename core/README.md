@@ -25,7 +25,23 @@ one exact top-level name; dots are literal and duplicate names are ambiguous.
 `WriteSummary.rows_written` is the successful session's committed row count.
 `Error::Unsupported` covers rejected requests, `SchemaMismatch` covers batch
 schemas, and `Backend` retains an error source. `IndexCommitError`, wrapped in
-`Backend`, identifies index construction failure after data publication.
+`Backend`, identifies index construction failure after data publication and
+retains the successful data write in its `summary` field.
+
+`Error`, `WriteOptions`, `SinkCapability`, and `CompressionCapability` are
+non-exhaustive so new errors and options can be added after release. Construct
+options and capabilities with `Default` plus their `with_*` methods; public
+fields can also be read and changed directly. Struct literals and update syntax
+are unavailable outside the core crate. Error matches must include a fallback
+arm. For example:
+
+```rust
+use open_arrow_sink_core::{Ordering, WriteMode, WriteOptions};
+
+let options = WriteOptions::default()
+    .with_mode(WriteMode::Append)
+    .with_ordering(Ordering::Unordered);
+```
 
 See [architecture](../docs/architecture.md), [options](../docs/options.md),
 [implementing sinks](../docs/extending-sinks.md), and

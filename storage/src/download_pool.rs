@@ -6,20 +6,18 @@ use std::{
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
-use once_cell::sync::OnceCell;
-use open_arrow_sink_core::{BlobChunk, Error, Result};
+use open_arrow_sink_core::{BlobChunk, Result};
 use opendal::{
     Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, raw::Layer, services::Http,
 };
 use tokio::sync::Semaphore;
 
 use crate::{
-    HttpConcurrencyLimitLayer,
     error::{self, backend},
     validation,
 };
 
-// Default maximum number of active download streams across the process.
+// Default maximum number of active download streams in one pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
 // Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
@@ -27,29 +25,26 @@ const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 *
 // Maximum buffer allocated for each read: 2 MiB, capped by the pool budget.
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
-/// Streaming downloads with a process-wide request limit and per-pool byte budget.
-/// Yielded chunks reserve their actual byte length until dropped, even after
-/// stream cancellation.
+/// Streaming downloads with explicit per-pool stream and transfer-buffer budgets.
+/// Share an `Arc<DownloadPool>` to share both budgets across writers.
+/// Yielded chunks reserve their actual byte length until dropped, even after stream cancellation.
 /// OpenDAL/HTTP/TLS and destination buffers are outside this transfer-buffer budget.
 #[derive(Debug)]
 pub struct DownloadPool {
     operator: Operator,
     sources: crate::StorageResolver,
-    // Bound lazy streams separately from the common transport's HTTP requests.
-    requests: Arc<Semaphore>,
+    // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
+    stream_slots: Arc<Semaphore>,
     concurrency: NonZeroUsize,
     buffers: Arc<Semaphore>,
     max_buffered_bytes: NonZeroUsize,
 }
 
 impl DownloadPool {
-    /// Create a pool with its own transfer-buffer budget. All pools share the
-    /// process-wide request limiter. The first pool reads
-    /// `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to `concurrency` if
-    /// unset or invalid; subsequent pools reuse that limit regardless of their
-    /// `concurrency` argument. HTTP control and I/O attempts time out after eight
-    /// seconds, with up to three retries for temporary errors. This is not a
-    /// whole-object deadline; use `new_with_config` to override these policies.
+    /// Create independent per-pool stream and transfer-buffer budgets.
+    /// HTTP control and I/O attempts time out after eight seconds, with up to
+    /// three retries for temporary errors. This is not a whole-object deadline;
+    /// use `new_with_config` to override these policies.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
         Self::new_with_config(
             concurrency,
@@ -72,26 +67,16 @@ impl DownloadPool {
         config: crate::StorageConfig,
     ) -> Result<Self> {
         config.validate()?;
-        static REQUESTS: OnceCell<(NonZeroUsize, Arc<Semaphore>, HttpConcurrencyLimitLayer)> =
-            OnceCell::new();
+        validation::validate_http_concurrency(concurrency.get())?;
         validation::validate_download_limit(max_buffered_bytes)?;
-        let (concurrency, requests, http_limit) = REQUESTS.get_or_try_init(|| {
-            let limit = validation::download_concurrency(concurrency)?;
-            Ok::<_, Error>((
-                limit,
-                Arc::new(Semaphore::new(limit.get())),
-                HttpConcurrencyLimitLayer::new(limit.get())?,
-            ))
-        })?;
         opendal::install_default();
-        let operator = Operator::new(Http::default().endpoint("https://download.invalid"))
-            .map_err(backend)?
-            .layer(http_limit.clone());
+        let operator =
+            Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
         Ok(Self {
             operator: config.apply(operator)?,
             sources: crate::StorageResolver::default(),
-            requests: requests.clone(),
-            concurrency: *concurrency,
+            stream_slots: Arc::new(Semaphore::new(concurrency.get())),
+            concurrency,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
             max_buffered_bytes,
         })
@@ -99,7 +84,7 @@ impl DownloadPool {
 
     /// Use a caller-provided HTTP transport for authentication, instrumentation,
     /// or deterministic tests. Existing concurrency and policy layers are replayed
-    /// around this transport; the process-wide request budget remains shared.
+    /// around this transport, including any explicitly shared HTTP request budget.
     pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
         let context = self.operator.base_context().with_http_transport(transport);
         self.operator = self.operator.with_context(context);
@@ -130,23 +115,18 @@ impl DownloadPool {
         self.max_buffered_bytes.get() - self.buffers.available_permits()
     }
 
-    /// Return the process-wide default pool with an 8 GiB transfer-buffer budget.
-    /// If no pool has initialized the request limiter, use the environment
-    /// override or 64. Otherwise reuse the already initialized process limit.
-    pub fn global() -> Result<Arc<Self>> {
-        static POOL: OnceCell<Arc<DownloadPool>> = OnceCell::new();
-        POOL.get_or_try_init(|| {
-            Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES).map(Arc::new)
-        })
-        .cloned()
+    /// Create an independent pool with 64 stream slots and an 8 GiB
+    /// transfer-buffer budget. Share it explicitly with `Arc` when needed.
+    pub fn with_defaults() -> Result<Self> {
+        Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES)
     }
 
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
-    /// releases its request slot; already yielded chunks retain their reservations.
+    /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
         let url = crate::Url::parse(source).map_err(backend)?;
-        let request = self
-            .requests
+        let stream_slot = self
+            .stream_slots
             .clone()
             .acquire_owned()
             .await
@@ -179,7 +159,7 @@ impl DownloadPool {
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
-            let _request = request;
+            let _stream_slot = stream_slot;
             let mut reader = reader;
             let mut pending = Buffer::new();
             loop {
