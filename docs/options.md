@@ -249,8 +249,7 @@ reusing them across sessions.
 
 ## Streaming download pool
 
-`layer::DownloadPool` re-exports the common storage downloader, using its HTTP
-concurrency limiter. Construct a pool with
+`layer::DownloadPool` owns the downloader used by `DownloadBlobLayer`. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
 writers. Each new pool owns the requested stream-concurrency and transfer-buffer
 budgets. No environment variable or process-wide singleton changes these limits.
@@ -260,15 +259,18 @@ The former `DownloadPool::global()` and
 and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
 `DownloadBlobLayer` creates one default pool per opened writer.
 
-HTTP(S) downloads go through the pool's HTTP `Storage`. By default its request
-budget equals the pool's `concurrency`. To share HTTP capacity across otherwise
-independent pools or with other storage, create one `HttpConcurrencyLimitLayer`,
-install its clones with `with_http_concurrency_limit` on each `Storage` (including
-one built by `DownloadPool::http_storage`), and pass that storage to
-`DownloadPool::with_http_storage`. Stream slots also cover non-HTTP sources; HTTP
-permits cover network requests until response-body release. These are separate
-budgets.
-
+HTTP(S) downloads use a directly owned OpenDAL operator and provider transport.
+The pool's stream semaphore is their only built-in concurrency limiter; it covers
+HTTP(S), file, and cloud streams until cancellation or EOF, including retry waits.
+Share an `Arc<DownloadPool>` across writers to share both stream and byte budgets.
+Configure policies with `with_http_config(StorageConfig)` and replace the provider
+with `with_http_transport(HttpTransporter)` for authentication or instrumentation.
+These replace the former `http_storage` / `with_http_storage` configuration API;
+import `DownloadPool` from `open_arrow_sink_layer` (or the facade's `layer` module).
+Non-HTTP stores retain their own backend request limits. Use `with_config(config)`
+to apply policies to both HTTP downloads and URL-derived non-HTTP stores; explicit
+source stores keep their own policies. Share source registrations and cached
+backends with other consumers through `with_source_resolver(Arc<StorageResolver>)`.
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.
@@ -285,7 +287,7 @@ classifies the status to avoid collecting unbounded diagnostic payloads.
 
 HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
 retry policy is enabled by default. Configure them with the same `StorageConfig`
-used by other storage: `DownloadPool::http_storage(config)` applies the timeout
+used by other storage: `pool.with_http_config(config)` applies the timeout
 inside the retry so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
 

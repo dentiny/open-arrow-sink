@@ -3,9 +3,8 @@ use std::{sync::Arc, time::Duration};
 use futures::{TryStreamExt, poll, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
-use open_arrow_sink_storage::{
-    DownloadPool, HttpConcurrencyLimitLayer, RetryConfig, StorageConfig, opendal,
-};
+use open_arrow_sink_layer::DownloadPool;
+use open_arrow_sink_storage::{RetryConfig, StorageConfig, opendal};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
 
@@ -42,13 +41,11 @@ fn pool_with(
     config: StorageConfig,
     transport: impl HttpTransport,
 ) -> DownloadPool {
-    let http = DownloadPool::http_storage(config)
-        .unwrap()
-        .with_http_transport(HttpTransporter::new(transport));
     DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
         .unwrap()
-        .with_http_storage(http)
+        .with_http_config(config)
         .unwrap()
+        .with_http_transport(HttpTransporter::new(transport))
 }
 
 fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
@@ -114,7 +111,7 @@ async fn invalid_sources_release_budgets() {
 }
 
 #[tokio::test]
-async fn http_storage_applies_retry_policy_around_custom_transport() {
+async fn http_config_applies_retry_policy_around_custom_transport() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Transient(Arc<AtomicUsize>);
     impl HttpTransport for Transient {
@@ -149,54 +146,6 @@ async fn filesystem_source_streams_within_budget() {
     tokio::fs::write(&file, BODY).await.unwrap();
     let uri = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
     assert_eq!(read_body(&pool, uri.as_str()).await, BODY);
-}
-
-#[tokio::test]
-async fn explicit_http_budget_is_shared_across_independent_pools() {
-    struct HeldBody;
-    impl HttpTransport for HeldBody {
-        async fn fetch(&self, _: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
-            use futures::StreamExt;
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("content-length", BODY.len() + 1)
-                .body(HttpBody::new(
-                    stream::iter([Ok(Buffer::from(BODY))]).chain(stream::pending()),
-                    Some(BODY.len() as u64 + 1),
-                ))
-                .unwrap())
-        }
-    }
-    timeout(Duration::from_secs(5), async {
-        let shared = HttpConcurrencyLimitLayer::new(1).unwrap();
-        let make_pool = |concurrency| {
-            let http = DownloadPool::http_storage(StorageConfig::default())
-                .unwrap()
-                .with_http_concurrency_limit(shared.clone())
-                .with_http_transport(HttpTransporter::new(HeldBody));
-            DownloadPool::new(concurrency, 8.try_into().unwrap())
-                .unwrap()
-                .with_http_storage(http)
-                .unwrap()
-        };
-        let first = make_pool(2.try_into().unwrap());
-        let second = make_pool(3.try_into().unwrap());
-        assert_eq!(first.concurrency(), 2);
-        assert_eq!(second.concurrency(), 3);
-        let mut held = first.stream(URL).await.unwrap();
-        let chunk = held.try_next().await.unwrap().unwrap();
-        let mut waiting = second.stream(URL).await.unwrap();
-        assert!(poll!(waiting.try_next()).is_pending());
-        // The retained chunk owns only its pool's byte reservation. Dropping the
-        // first HTTP body releases the shared request slot for the second pool.
-        drop(held);
-        assert!(waiting.try_next().await.unwrap().is_some());
-        assert_eq!(first.buffered_bytes(), 8);
-        drop(chunk);
-        assert_eq!(first.buffered_bytes(), 0);
-    })
-    .await
-    .expect("shared HTTP budget stalled");
 }
 
 #[test]

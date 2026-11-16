@@ -14,7 +14,7 @@ use open_arrow_sink_core::{
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &WriteOptions) -> Result<SchemaRef> {
-    let compressed = crate::compression::writer_schema(schema, &options.compression)?;
+    let compressed = crate::compression::apply_compression(schema, &options.compression)?;
     let prepared = crate::blob::storage_schema(&compressed)?;
     Ok(blob_schema(&prepared, options.blob_handle.as_ref()))
 }

@@ -117,9 +117,11 @@ can exceed the transfer-buffer budget; retaining chunks holds their reservations
 Stream concurrency and byte budgets belong to each pool; every constructor
 honors its limits. Without a configured pool, each opened writer gets independent
 default limits. Share an `Arc<DownloadPool>` when writers should share stream and
-transfer budgets. HTTP(S) downloads go through the pool's HTTP `Storage`; replace
-it with `with_http_storage(DownloadPool::http_storage(config)?)` to configure
-retries, timeouts, or a request budget shared with other storage. Transfer
+transfer budgets. The pool owns its HTTP operator and transport directly; use
+`with_http_config(config)` to configure retries and timeouts, and
+`with_http_transport(transport)` to customize HTTP access. HTTP downloads use the
+stream limit without a second request limiter. Non-HTTP sources use
+`StorageResolver` and can be configured with `with_source_storage`. Transfer
 budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
 default.
 

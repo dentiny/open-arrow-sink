@@ -4235,9 +4235,9 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "bytes",
- "datafusion-common",
  "datafusion-physical-plan",
  "futures",
+ "hex",
  "lance",
  "lance-encoding",
  "lance-file",
@@ -4263,12 +4263,16 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "async-stream",
  "async-trait",
  "futures",
+ "http",
+ "more-asserts",
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
  "open-arrow-sink-test-support",
  "rstest",
+ "tempfile",
  "tokio",
 ]
 
@@ -4294,11 +4298,9 @@ dependencies = [
 name = "open-arrow-sink-storage"
 version = "0.1.0"
 dependencies = [
- "async-stream",
  "bytes",
  "futures",
  "http",
- "more-asserts",
  "object_store 0.14.2",
  "object_store_opendal",
  "open-arrow-sink-core",

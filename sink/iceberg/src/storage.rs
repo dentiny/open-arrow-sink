@@ -88,10 +88,24 @@ impl StorageFactory for OpenDalStorageFactory {
 #[typetag::serde(name = "open-arrow-sink-opendal")]
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
-        self.storage.exists(&location(path)?).await.map_err(backend)
+        self.storage
+            .stat(&location(path)?)
+            .await
+            .map(|metadata| metadata.is_some())
+            .map_err(backend)
     }
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
-        let metadata = self.storage.stat(&location(path)?).await.map_err(backend)?;
+        let metadata = self
+            .storage
+            .stat(&location(path)?)
+            .await
+            .map_err(backend)?
+            .ok_or_else(|| {
+                backend(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Iceberg file does not exist: {path}"),
+                ))
+            })?;
         Ok(FileMetadata {
             size: metadata.content_length(),
         })
@@ -276,8 +290,8 @@ mod tests {
         assert_eq!(factory.uploads.lock().len(), 1);
         assert!(active_writer.write("more".into()).await.is_err());
         assert!(active_writer.close().await.is_err());
-        assert!(!storage.exists(&abandoned).await.unwrap());
-        assert!(!storage.exists(&active).await.unwrap());
+        assert!(storage.stat(&abandoned).await.unwrap().is_none());
+        assert!(storage.stat(&active).await.unwrap().is_none());
         keep_writer.write(" more".into()).await.unwrap();
         keep_writer.close().await.unwrap();
         assert!(factory.uploads.lock().is_empty());
@@ -297,7 +311,7 @@ mod tests {
             .delete_prefix(storage.url("session-a/").unwrap().as_str())
             .await
             .unwrap();
-        assert!(!storage.exists(&abandoned).await.unwrap());
+        assert!(storage.stat(&abandoned).await.unwrap().is_none());
         // Repeated abort cleanup is harmless.
         file_io
             .delete_prefix(storage.url("session-a/").unwrap().as_str())

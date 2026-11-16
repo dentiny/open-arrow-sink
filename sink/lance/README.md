@@ -32,11 +32,16 @@ buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
 Lance to publish a new manifest version. `abort` stops the worker and removes the
-reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
+new destination when `cleanup_on_error` is enabled. Dropping closes the stream
+with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Create checks that the destination prefix does not exist without creating marker
+files. Callers must exclude concurrent writes or directory replacement during a
+session. After a process crash, uncommitted output may require manual cleanup
+before another Create.
 Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
@@ -105,7 +110,7 @@ through Lance, potentially publishing another dataset version. Names are determi
 when one fails, and the original dataset handle is refreshed after they finish.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
-`Error::Backend` contains an `IndexCommitError` identifying the failed index type
+`Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
 than rewriting already committed rows. Dropping the commit future aborts
@@ -132,7 +137,7 @@ Lance managed-blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a freshly reserved dataset
+poisons the session. Abort or a rejected commit removes a new dataset
 when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
 owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
 streamed blobs when appending to or overwriting an existing dataset.
@@ -272,7 +277,7 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
 create a missing dataset. Abort waits for workers to stop and removes only a
-freshly reserved destination when `cleanup_on_error` is enabled. Existing
+new destination when `cleanup_on_error` is enabled. Existing
 datasets and files with an uncertain publication outcome are retained.
 
 `DownloadBlobLayer` uses this streaming interface directly: network chunks are
@@ -280,7 +285,7 @@ appended to native blob files and only completed handles enter record batches.
 A blob larger than the download pool's buffer budget is supported. The shared
 budget applies to application-owned download chunks; Lance's internal I/O and
 encoding buffers are separate. HTTP errors or cancellation poison the layer and
-native session, and a rejected commit aborts the reserved dataset directory.
+native session, and a rejected commit aborts the new dataset directory.
 
 ## Storage version
 
@@ -299,7 +304,8 @@ default version. This selects the file format, independently of the dataset's co
 
 The Lance `write_options` adapter translates shared configuration into native
 `WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression, prepared blob fields, then explicit layout overrides. Storage binds
+compression (`compression::apply_compression`), prepared blob fields, then explicit
+layout overrides (`write_options::writer_schema`). `LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 
@@ -332,8 +338,36 @@ requiring custom credentials, endpoints, or operators. The destination store
 always takes precedence inside its own namespace; sources use the most specific
 configured root. Destination credentials are never reused for unrelated sources.
 Unregistered sources use URL-configured storage cached by `StorageResolver`.
-The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
-adapts the selected storage to Lance.
+Lance’s `Provider` applies destination precedence and adapts the selected storage
+to Lance.
+
+Configure sources once and pass the same `Arc<StorageResolver>` to the download
+pool and native Lance sink. Both paths then use the same source operators,
+credentials, and URL-derived cache:
+
+```rust
+use std::sync::Arc;
+use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_layer::DownloadPool;
+use open_arrow_sink_storage::{Storage, StorageResolver, opendal};
+
+let source = Storage::new(
+    opendal::Operator::new(opendal::services::Memory::default())?,
+    "memory://sources/".parse()?,
+)?;
+let sources = Arc::new(StorageResolver::default().with_storage(source));
+let pool = Arc::new(DownloadPool::with_defaults()?.with_source_resolver(sources.clone()));
+let sink = LanceDatasetSink::default().with_source_resolver(sources);
+// Pass pool to DownloadBlobLayer::with_download_pool when composing the sink.
+# let _ = (pool, sink);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`with_source_resolver` replaces prior source registrations. Calling
+`with_source_storage` afterwards adds a store only to that consumer's resolver;
+configure all shared stores before wrapping the resolver in `Arc`.
+HTTP(S) downloads use the pool's operator and transport; configure their policies
+with `DownloadPool::with_http_config`.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
@@ -341,6 +375,7 @@ sink or constructing a dataset builder; Lance snapshots the available schemes.
 
 `DownloadPool::with_source_storage` configures non-HTTP source stores. File and
 enabled cloud downloads share the same transfer-buffer budget and active-stream
-limit as HTTP(S). Explicit stores retain their policies; `with_http_storage`
-configures HTTP downloads with a `Storage` built by `DownloadPool::http_storage`. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
+limit as HTTP(S). Explicit stores retain their policies; `with_http_config`
+configures HTTP download retry/timeout policies directly, and `with_http_transport`
+replaces the provider transport. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
 their complete URL, including the query.

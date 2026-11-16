@@ -2,16 +2,15 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Fields, Schema};
+use lance_encoding::constants::{
+    COMPRESSION_LEVEL_META_KEY, COMPRESSION_META_KEY, DICT_VALUES_COMPRESSION_LEVEL_META_KEY,
+    DICT_VALUES_COMPRESSION_META_KEY, STRUCTURAL_ENCODING_FULLZIP, STRUCTURAL_ENCODING_META_KEY,
+    STRUCTURAL_ENCODING_MINIBLOCK,
+};
 use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
 use open_arrow_sink_core::{
     Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
-
-const CODEC: &str = "lance-encoding:compression";
-const STRUCTURAL: &str = "lance-encoding:structural-encoding";
-const LEVEL: &str = "lance-encoding:compression-level";
-const DICT_CODEC: &str = "lance-encoding:dict-values-compression";
-const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
 
 /// Convert shared codec requests to native Lance parameters before schema conversion.
 fn native_compression(compression: Compression) -> Result<CompressionConfig> {
@@ -25,7 +24,10 @@ fn native_compression(compression: Compression) -> Result<CompressionConfig> {
                 && level != 0
                 && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
             {
-                return Err(crate::error::invalid_compression_level(level));
+                return Err(Error::InvalidConfig(format!(
+                    "Lance Zstd compression level must be between 0 and {}: {level}",
+                    open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.end(),
+                )));
             }
             (CompressionScheme::Zstd, level)
         }
@@ -38,7 +40,10 @@ fn native_compression(compression: Compression) -> Result<CompressionConfig> {
     Ok(CompressionConfig::new(scheme, level))
 }
 
-pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> Result<SchemaRef> {
+pub(crate) fn apply_compression(
+    schema: &SchemaRef,
+    options: &CompressionOptions,
+) -> Result<SchemaRef> {
     if options.global.is_none()
         && options.columns.is_empty()
         && options.nested_columns.is_empty()
@@ -130,22 +135,25 @@ fn compression_field(
     let mut metadata = field.metadata().clone();
     if let Some(compression) = compression {
         let codec = compression.scheme().to_string();
-        metadata.insert(CODEC.into(), codec.clone());
+        metadata.insert(COMPRESSION_META_KEY.into(), codec.clone());
         // Dictionary values have an independent native compression default.
-        metadata.insert(DICT_CODEC.into(), codec);
-        metadata.remove(LEVEL);
-        metadata.remove(DICT_LEVEL);
+        metadata.insert(DICT_VALUES_COMPRESSION_META_KEY.into(), codec);
+        metadata.remove(COMPRESSION_LEVEL_META_KEY);
+        metadata.remove(DICT_VALUES_COMPRESSION_LEVEL_META_KEY);
         if let Some(level) = compression.level() {
-            metadata.insert(LEVEL.into(), level.to_string());
-            metadata.insert(DICT_LEVEL.into(), level.to_string());
+            metadata.insert(COMPRESSION_LEVEL_META_KEY.into(), level.to_string());
+            metadata.insert(
+                DICT_VALUES_COMPRESSION_LEVEL_META_KEY.into(),
+                level.to_string(),
+            );
         }
     }
     if let Some(encoding) = encoding {
         metadata.insert(
-            STRUCTURAL.into(),
+            STRUCTURAL_ENCODING_META_KEY.into(),
             match encoding {
-                StructuralEncoding::Miniblock => "miniblock",
-                StructuralEncoding::Fullzip => "fullzip",
+                StructuralEncoding::Miniblock => STRUCTURAL_ENCODING_MINIBLOCK,
+                StructuralEncoding::Fullzip => STRUCTURAL_ENCODING_FULLZIP,
             }
             .into(),
         );
@@ -213,14 +221,14 @@ mod tests {
             // Validate explicit global policies even when there are no fields.
             let schema = Arc::new(Schema::empty());
             assert!(matches!(
-                writer_schema(
+                apply_compression(
                     &schema,
                     &CompressionOptions {
                         global: Some(compression),
                         ..Default::default()
                     }
                 ),
-                Err(Error::Unsupported(_))
+                Err(Error::Unsupported(_) | Error::InvalidConfig(_))
             ));
         }
     }
@@ -261,7 +269,7 @@ mod tests {
                 ..Default::default()
             };
             assert!(matches!(
-                writer_schema(&schema, &options),
+                apply_compression(&schema, &options),
                 Err(Error::Unsupported(_))
             ));
         }
@@ -271,9 +279,9 @@ mod tests {
     fn omitted_policies_preserve_defaults_and_unrelated_metadata() {
         let child = Field::new("child", DataType::Int64, false).with_metadata(
             [
-                (CODEC.into(), "zstd".into()),
-                (LEVEL.into(), "7".into()),
-                (STRUCTURAL.into(), "miniblock".into()),
+                (COMPRESSION_META_KEY.into(), "zstd".into()),
+                (COMPRESSION_LEVEL_META_KEY.into(), "7".into()),
+                (STRUCTURAL_ENCODING_META_KEY.into(), "miniblock".into()),
                 ("custom".into(), "preserved".into()),
             ]
             .into(),
@@ -285,9 +293,9 @@ mod tests {
         )]));
         assert!(Arc::ptr_eq(
             &schema,
-            &writer_schema(&schema, &Default::default()).unwrap()
+            &apply_compression(&schema, &Default::default()).unwrap()
         ));
-        let encoded = writer_schema(
+        let encoded = apply_compression(
             &schema,
             &CompressionOptions {
                 structural_encoding: Some(StructuralEncoding::Fullzip),
@@ -299,11 +307,11 @@ mod tests {
             panic!("expected struct")
         };
         let metadata = fields[0].metadata();
-        assert_eq!(metadata[CODEC], "zstd");
-        assert_eq!(metadata[LEVEL], "7");
-        assert_eq!(metadata[STRUCTURAL], "fullzip");
+        assert_eq!(metadata[COMPRESSION_META_KEY], "zstd");
+        assert_eq!(metadata[COMPRESSION_LEVEL_META_KEY], "7");
+        assert_eq!(metadata[STRUCTURAL_ENCODING_META_KEY], "fullzip");
         assert_eq!(metadata["custom"], "preserved");
-        let codec_only = writer_schema(
+        let codec_only = apply_compression(
             &encoded,
             &CompressionOptions {
                 global: Some(Compression::Uncompressed),
@@ -314,8 +322,15 @@ mod tests {
         let DataType::Struct(fields) = codec_only.field(0).data_type() else {
             panic!("expected struct")
         };
-        assert_eq!(fields[0].metadata()[STRUCTURAL], "fullzip");
-        assert_eq!(fields[0].metadata()[CODEC], "none");
-        assert!(!fields[0].metadata().contains_key(LEVEL));
+        assert_eq!(
+            fields[0].metadata()[STRUCTURAL_ENCODING_META_KEY],
+            "fullzip"
+        );
+        assert_eq!(fields[0].metadata()[COMPRESSION_META_KEY], "none");
+        assert!(
+            !fields[0]
+                .metadata()
+                .contains_key(COMPRESSION_LEVEL_META_KEY)
+        );
     }
 }

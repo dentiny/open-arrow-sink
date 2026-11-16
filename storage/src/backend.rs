@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, ops::Range, sync::Arc};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
-use open_arrow_sink_core::Result;
+use open_arrow_sink_core::{Error, Result};
 use opendal::{HttpTransporter, Operator};
 use url::Url;
 
@@ -16,13 +16,22 @@ use crate::{
 const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
+/// The contents of a destination, including virtual object-store directories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DirectoryState {
+    Missing,
+    /// An exact non-directory object takes precedence over any children.
+    File,
+    Empty,
+    /// Contains at least one child file or directory.
+    NonEmpty,
+}
+
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
-    // Budget changes wrap this original transport, never an existing limiter.
-    base_http_transport: HttpTransporter,
     http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
@@ -41,15 +50,9 @@ impl Storage {
             base_url.set_path(&path);
         }
         let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
-        let base_http_transport = operator.base_context().http_transport().clone();
-        let http_limit = HttpConcurrencyLimitLayer::default();
-        let context = operator
-            .base_context()
-            .with_http_transport(http_limit.wrap(base_http_transport.clone()));
         Ok(Self {
-            operator: operator.with_context(context),
-            base_http_transport,
-            http_limit,
+            operator,
+            http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
             upload_part_size: None,
@@ -87,20 +90,53 @@ impl Storage {
         Ok(directory)
     }
 
-    /// Check for an exact object, an empty directory, or any objects under a prefix.
-    /// This is a preflight check; callers must use conditional creation to claim it.
-    pub async fn prefix_exists(&self, url: &Url) -> Result<bool> {
+    /// Inspect a non-root destination with or without a trailing slash.
+    /// Stops listing at the first child and does not collect the directory.
+    /// This is a preflight observation; conditional creation must still claim it.
+    pub async fn inspect_directory(&self, url: &Url) -> Result<DirectoryState> {
         let directory = self.directory_url(url)?;
         let mut exact = directory.clone();
         exact.path_segments_mut().unwrap().pop_if_empty();
-        Ok(self.exists(&exact).await?
-            || self.exists(&directory).await?
-            || self.has_files(&directory).await?)
+        let metadata = self.stat(&exact).await?;
+        if metadata.as_ref().is_some_and(|metadata| !metadata.is_dir()) {
+            return Ok(DirectoryState::File);
+        }
+        let path = self.path(&directory)?;
+        let mut present = metadata.is_some();
+        // A shallow listing also sees empty subdirectories on filesystems.
+        let children = async {
+            let mut entries = self.operator().lister_with(&path).limit(1).await?;
+            while let Some(entry) = entries.try_next().await? {
+                if entry.path() != path {
+                    return Ok(true);
+                }
+                // Some backends include the directory marker itself.
+                present = true;
+            }
+            Ok::<bool, opendal::Error>(false)
+        }
+        .await;
+        match children {
+            Ok(true) => return Ok(DirectoryState::NonEmpty),
+            Ok(false) => {}
+            Err(error) if error.kind() == opendal::ErrorKind::NotFound => {}
+            Err(error) => return Err(map_error("list", &path, error)),
+        }
+        // Object stores may only expose an empty marker at the slash URL.
+        if present || self.stat(&directory).await?.is_some() {
+            Ok(DirectoryState::Empty)
+        } else {
+            Ok(DirectoryState::Missing)
+        }
     }
 
-    /// Apply optional retry/timeout policies to the supplied OpenDAL operator.
-    pub fn try_new(operator: Operator, base_url: Url, config: StorageConfig) -> Result<Self> {
-        Self::new(config.apply(operator)?, base_url)
+    /// Validate and add retry/timeout policies after either constructor.
+    /// Timeout runs inside retry, giving each attempt its own deadline.
+    /// Existing caller-supplied layers, transport, and HTTP budget are preserved.
+    /// Repeated calls add layers; configure once before cloning into adapters.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.operator = config.apply(self.operator)?;
+        Ok(self)
     }
 
     /// Configure the request budget shared by subsequent clones and operators.
@@ -108,11 +144,6 @@ impl Storage {
     /// Upload parts, reads, and metadata requests share this aggregate cap;
     /// size it together with writer and multipart concurrency. The default is 64.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
-        let context = self
-            .operator
-            .base_context()
-            .with_http_transport(limit.wrap(self.base_http_transport.clone()));
-        self.operator = self.operator.with_context(context);
         self.http_limit = limit;
         self
     }
@@ -120,9 +151,9 @@ impl Storage {
     /// Replace the provider transport for authentication, instrumentation, or
     /// deterministic tests. The current request budget and operator layers apply.
     pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
-        self.base_http_transport = transport;
-        let limit = self.http_limit.clone();
-        self.with_http_concurrency_limit(limit)
+        let context = self.operator.base_context().with_http_transport(transport);
+        self.operator = self.operator.with_context(context);
+        self
     }
 
     /// Configure buffering for streaming uploads. OpenDAL applies the backend's
@@ -178,7 +209,12 @@ impl Storage {
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
     pub fn operator(&self) -> Operator {
-        self.operator.clone()
+        // Keep the stored operator free of our limiter. Both HTTP setters update
+        // independent inputs; every exposed operator wraps the provider once.
+        let context = self.operator.base_context();
+        let transport = self.http_limit.wrap(context.http_transport().clone());
+        self.operator
+            .with_context(context.with_http_transport(transport))
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
@@ -192,7 +228,7 @@ impl Storage {
         {
             let mut segments = url
                 .path_segments_mut()
-                .map_err(|_| error::url_without_paths())?;
+                .map_err(|_| Error::InvalidInput("URL cannot contain paths".into()))?;
             segments.pop_if_empty();
             for segment in path
                 .trim_end_matches('/')
@@ -208,28 +244,15 @@ impl Storage {
         Ok(url)
     }
 
-    pub async fn exists(&self, url: &Url) -> Result<bool> {
-        let path = self.path(url)?;
-        self.operator()
-            .exists(&path)
-            .await
-            .map_err(|error| map_error("exists", &path, error))
-    }
-    /// Read metadata once, returning `None` only when the object is not found.
-    pub async fn stat_optional(&self, url: &Url) -> Result<Option<opendal::Metadata>> {
+    /// Read exact-object metadata, returning `None` only for NotFound.
+    /// Use `inspect_directory` to discover virtual directory prefixes.
+    pub async fn stat(&self, url: &Url) -> Result<Option<opendal::Metadata>> {
         let path = self.path(url)?;
         match self.operator().stat(&path).await {
             Ok(metadata) => Ok(Some(metadata)),
             Err(error) if error.kind() == opendal::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(map_error("stat", &path, error)),
         }
-    }
-    pub async fn stat(&self, url: &Url) -> Result<opendal::Metadata> {
-        let path = self.path(url)?;
-        self.operator()
-            .stat(&path)
-            .await
-            .map_err(|error| map_error("stat", &path, error))
     }
     pub async fn read(&self, url: &Url) -> Result<Bytes> {
         let path = self.path(url)?;
@@ -315,7 +338,7 @@ impl Storage {
     }
     /// Delete a directory only when it is empty. Never recursively remove its contents.
     pub async fn remove_empty_directory(&self, url: &Url) -> Result<()> {
-        if self.has_files(url).await? {
+        if self.inspect_directory(url).await? != DirectoryState::Empty {
             return Ok(());
         }
         let path = directory_path(&self.nonroot_path(url)?);
@@ -330,14 +353,6 @@ impl Storage {
             .recursive(true)
             .await
             .map_err(|error| map_error("list", path, error))
-    }
-    async fn has_files(&self, url: &Url) -> Result<bool> {
-        let path = directory_path(&self.path(url)?);
-        self.lister(&path)
-            .await?
-            .try_any(|entry| futures::future::ready(entry.metadata().is_file()))
-            .await
-            .map_err(|error| map_error("list", &path, error))
     }
     fn nonroot_path(&self, url: &Url) -> Result<String> {
         let path = self.path(url)?;
@@ -366,7 +381,7 @@ impl StorageWriter {
         self.state.begin()?;
         self.inner
             .as_mut()
-            .ok_or_else(error::writer_closed)?
+            .ok_or(Error::Poisoned)?
             .write(bytes.clone())
             .await
             .map_err(|error| map_error("write", &self.path, error))?;
@@ -378,7 +393,7 @@ impl StorageWriter {
         self.state.begin()?;
         self.inner
             .as_mut()
-            .ok_or_else(error::writer_closed)?
+            .ok_or(Error::Poisoned)?
             .close()
             .await
             .map_err(|error| map_error("close", &self.path, error))?;

@@ -129,8 +129,8 @@ After a commit error or cancellation:
    that respects retained versions/snapshots and active writers. Do not delete
    a dataset/table prefix merely because `commit` returned an error.
 4. Open a fresh session only after reconciling the destination. Retrying an
-   Append without reconciliation can duplicate rows; Create can fail if a
-   reservation marker or orphan output still occupies the destination.
+   Append without reconciliation can duplicate rows; Create can fail if orphan
+   output still occupies the destination.
 
 ### What the next overwrite does
 
@@ -141,7 +141,7 @@ leftovers from earlier sessions. Exclude concurrent destination mutations.
 | Backend | Next Overwrite after a failed commit |
 | --- | --- |
 | Parquet | Unsupported; rejected before writing. |
-| Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's marker/fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
+| Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
 | Iceberg | Unsupported; rejected before writing. Reload/reconcile the table before opening another Append session. |
 
 ## Choose write options
@@ -211,7 +211,7 @@ Construct `LanceDatasetSink::default()` with a URL, or `new(storage)` for a shar
 operator. Select unordered writes and a supported mode. Add `IndexSpec` entries
 to `WriteOptions.indexes` for supported column types. Index construction runs
 after the data commit and can publish additional versions; `IndexCommitError`
-inside `Error::Backend` means data is already committed. Do not replay those rows
+in `Error::IndexCommit` means data is already committed. Do not replay those rows
 in response to an index error.
 
 Use `sink.dataset_builder(url)?.load().await?` to read with the same storage.
