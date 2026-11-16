@@ -96,10 +96,10 @@ training failures, including insufficient usable vectors, are returned explicitl
 An empty index list preserves the underlying sink behavior.
 
 Index creation clones the dataset handle returned by the native data commit and
-spawns one Tokio task per requested index. Each task builds and commits its index
+builds requested indexes one at a time to bound peak native build memory. Each task builds and commits its index
 through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
 when one fails, and the original dataset handle is refreshed after they finish.
-The first observed error is returned after all tasks complete. Successfully built
+The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
 indexes and committed data remain visible regardless of `cleanup_on_error`.
 `Error::Backend` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the

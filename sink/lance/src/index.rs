@@ -11,7 +11,8 @@ use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
     ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
 };
-use tokio::task::JoinSet;
+use std::sync::Arc;
+use tokio::{sync::OnceCell, task::JoinSet};
 
 use crate::error::{index_creation, index_refresh, index_task};
 
@@ -26,22 +27,20 @@ pub(crate) async fn build_indexes(
     if indexes.is_empty() {
         return Ok(());
     }
+    // Keep task cancellation/panic isolation, but bound index construction to one
+    // job: each native build can independently consume substantial memory.
     let mut tasks = JoinSet::new();
+    let vector_rows = Arc::new(OnceCell::new());
+    let mut first_error = None;
     for spec in indexes {
         let mut dataset = dataset.clone();
         let spec = spec.clone();
-        let summary = summary.clone();
-        tasks.spawn(async move {
-            create_index(&mut dataset, &spec)
-                .await
-                .map_err(|error| index_creation(&spec, error, summary))
-        });
-    }
-
-    // Drain every started task even after an error, so returning never detaches
-    // index commits that could keep modifying the dataset in the background.
-    let mut first_error = None;
-    while let Some(result) = tasks.join_next().await {
+        let task_summary = summary.clone();
+        let rows = vector_rows.clone();
+        tasks.spawn(async move { create_index(&mut dataset, &spec, &rows, &task_summary).await });
+        // Await before starting the next request. Attempt every request after
+        // failures, and report the first failure in input order deterministically.
+        let result = tasks.join_next().await.expect("one index task was started");
         let result = result.unwrap_or_else(|error| Err(index_task(error, summary.clone())));
         if let Err(error) = result {
             first_error.get_or_insert(error);
@@ -79,11 +78,17 @@ pub(crate) async fn validate_existing_indexes(
     Ok(())
 }
 
-async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<()> {
+async fn create_index(
+    dataset: &mut Dataset,
+    spec: &IndexSpec,
+    vector_rows: &OnceCell<lance::Result<usize>>,
+    summary: &WriteSummary,
+) -> std::result::Result<(), IndexCommitError> {
     if spec.existing == ExistingIndexPolicy::Keep
         && dataset
             .load_indices()
-            .await?
+            .await
+            .map_err(|error| index_creation(spec, error, summary.clone()))?
             .iter()
             .any(|i| i.name == index_name(spec))
     {
@@ -95,7 +100,14 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
         ),
         IndexType::Vector => {
-            let rows = dataset.count_rows(None).await?;
+            // All handles start from the same post-data-commit snapshot. Cache
+            // the complete result so multiple vector requests also share failures.
+            // Keep requests that find an existing index never initialize this cell.
+            let rows = vector_rows
+                .get_or_init(|| dataset.count_rows(None))
+                .await
+                .as_ref()
+                .map_err(|error| index_creation(spec, error, summary.clone()))?;
             (
                 LanceIndexType::IvfFlat,
                 Box::new(VectorIndexParams::ivf_flat(
@@ -125,7 +137,8 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             params.as_ref(),
             /*replace=*/ spec.existing == ExistingIndexPolicy::Rebuild,
         )
-        .await?;
+        .await
+        .map_err(|error| index_creation(spec, error, summary.clone()))?;
     Ok(())
 }
 
@@ -147,4 +160,98 @@ fn index_name(spec: &IndexSpec) -> String {
         IndexType::BloomFilter => "bloom",
     };
     format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::{ArrayRef, FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator};
+
+    async fn dataset() -> (tempfile::TempDir, Dataset) {
+        let temp = tempfile::tempdir().unwrap();
+        let vectors = || {
+            Arc::new(FixedSizeListArray::from_iter_primitive::<
+                arrow_array::types::Float32Type,
+                _,
+                _,
+            >(
+                (0..256).map(|row| Some((0..4).map(move |axis| Some((row * 4 + axis) as f32)))),
+                4,
+            )) as ArrayRef
+        };
+        let batch = RecordBatch::try_from_iter([
+            (
+                "id",
+                Arc::new(Int64Array::from_iter_values(0..256)) as ArrayRef,
+            ),
+            ("first_vector", vectors()),
+            ("second_vector", vectors()),
+        ])
+        .unwrap();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        let dataset = Dataset::write(reader, temp.path().join("dataset").to_str().unwrap(), None)
+            .await
+            .unwrap();
+        (temp, dataset)
+    }
+
+    #[tokio::test]
+    async fn ordered_index_builds_refresh_and_preserve_existing_policies() {
+        let (_temp, mut dataset) = dataset().await;
+        let initial = dataset.version().version;
+        let specs = vec![
+            IndexSpec::new("first_vector", IndexType::Vector),
+            IndexSpec::new("second_vector", IndexType::Vector),
+            IndexSpec::new("id", IndexType::Scalar),
+        ];
+        let summary = WriteSummary { rows_written: 256 };
+        build_indexes(&mut dataset, &specs, &summary).await.unwrap();
+        assert_eq!(dataset.version().version, initial + 3);
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 3);
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 256);
+
+        let keep = specs
+            .into_iter()
+            .map(|spec| spec.with_existing_policy(ExistingIndexPolicy::Keep))
+            .collect::<Vec<_>>();
+        let rows = OnceCell::new();
+        create_index(&mut dataset, &keep[0], &rows, &summary)
+            .await
+            .unwrap();
+        assert!(
+            rows.get().is_none(),
+            "keeping an existing vector index must not count rows"
+        );
+        build_indexes(&mut dataset, &keep, &summary).await.unwrap();
+        assert_eq!(dataset.version().version, initial + 3);
+        build_indexes(
+            &mut dataset,
+            &[IndexSpec::new("id", IndexType::Scalar)
+                .with_existing_policy(ExistingIndexPolicy::Rebuild)],
+            &summary,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dataset.version().version, initial + 4);
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn failed_request_does_not_prevent_later_builds_or_snapshot_refresh() {
+        let (_temp, mut dataset) = dataset().await;
+        let initial = dataset.version().version;
+        let summary = WriteSummary { rows_written: 256 };
+        let specs = [
+            IndexSpec::new("missing_first", IndexType::Scalar),
+            IndexSpec::new("id", IndexType::Scalar),
+            IndexSpec::new("missing_last", IndexType::Scalar),
+        ];
+        let error = build_indexes(&mut dataset, &specs, &summary)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("missing_first"), "{}", error.message);
+        assert_eq!(error.summary, summary);
+        assert_eq!(dataset.version().version, initial + 1);
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
+    }
 }
