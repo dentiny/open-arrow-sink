@@ -46,7 +46,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         batch()
     }
     fn options(&self) -> WriteOptions {
-        options()
+        WriteOptions::default()
     }
     async fn read(&self) -> Vec<RecordBatch> {
         let dataset = Dataset::open(self.path.to_str().unwrap()).await.unwrap();

@@ -63,8 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 publishes according to the backend's rules. Drop never commits or performs async
 cleanup. After a failed or cancelled write, abort or drop that writer.
 
-All bundled sinks require explicit `Ordering::Unordered`; none guarantees input
-row order on scans. The shared default is `PreserveInput`, so it is rejected.
+All bundled sinks accept the default `Ordering::Unordered`; none guarantees input
+row order on scans. Explicit `Ordering::PreserveInput` requests are rejected.
 The default write mode is `Create`. Iceberg requires explicit `WriteMode::Append`.
 
 ## Choose a destination

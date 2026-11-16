@@ -19,8 +19,9 @@ lists implemented modes, but destination-dependent restrictions still apply
 
 ## Ordering
 
-`Ordering::PreserveInput` is the default. It requires preservation of input row
-sequence in the backend's documented read order; it does not sort by column values.
+`Ordering::Unordered` is the default and is accepted by all bundled sinks.
+Explicitly request `Ordering::PreserveInput` when input row sequence must be
+preserved in the backend's documented read order; it does not sort by column values.
 Parallel backends can delegate `Sink::open` to the default
 `ParallelSink::open_writer()`, which opens one writer and adapts its `WriteSession`
 with `into_writer()`.

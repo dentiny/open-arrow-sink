@@ -88,7 +88,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         batch()
     }
     fn options(&self) -> WriteOptions {
-        options()
+        WriteOptions::default()
     }
     async fn read(&self) -> Vec<RecordBatch> {
         let directory = Url::from_directory_path(&self.path).unwrap();
