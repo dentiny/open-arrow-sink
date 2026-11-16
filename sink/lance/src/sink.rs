@@ -28,20 +28,24 @@ impl LanceDatasetSink {
         self.sources = self.sources.with_storage(storage);
         self
     }
-    fn resolve(
-        &self,
-        url: Url,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
-    ) -> Result<NativeStorage> {
+    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<NativeStorage> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
-        };
-        NativeStorage::new(storage, url, self.sources.clone(), metrics)
+        }
+        .with_write_options(options);
+        NativeStorage::new(
+            storage,
+            url,
+            self.sources.clone(),
+            options.io_metrics.as_ref(),
+        )
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
-        Ok(self.resolve(url, None)?.dataset_builder())
+        Ok(self
+            .resolve(url, &WriteOptions::default())?
+            .dataset_builder())
     }
 }
 
@@ -66,6 +70,7 @@ impl Sink for LanceDatasetSink {
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(true)
             .with_supports_blob_streaming(true)
+            .with_supports_upload_options(true)
             .with_supports_storage_version(true)
             .with_supported_indexes(&[
                 IndexType::Scalar,
@@ -85,7 +90,7 @@ impl Sink for LanceDatasetSink {
         if storage_schema != schema {
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
-            let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
+            let mut destination = self.resolve(url, &options)?;
             destination
                 .prepare(
                     &crate::blob::logical_schema(&encoding_schema),
@@ -123,7 +128,7 @@ impl ParallelSink for LanceDatasetSink {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
-        let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
+        let mut destination = self.resolve(url, &options)?;
         destination
             .prepare(
                 &encoding_schema,
@@ -150,5 +155,31 @@ impl ParallelSink for LanceDatasetSink {
                 options,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_arrow_sink_storage::opendal;
+
+    #[tokio::test]
+    async fn session_upload_options_reach_native_storage_without_changing_sink_defaults() {
+        let storage = Storage::new(
+            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            "memory:///warehouse/".parse().unwrap(),
+        )
+        .unwrap();
+        let url = storage.url("dataset/").unwrap();
+        let sink = LanceDatasetSink::new(storage);
+        let options = WriteOptions::default()
+            .with_upload_part_size(NonZeroUsize::new(16 * 1024 * 1024))
+            .with_upload_concurrency(NonZeroUsize::new(4));
+        let session = sink.resolve(url.clone(), &options).unwrap();
+        assert_eq!(session.storage.upload_part_size(), options.upload_part_size);
+        assert_eq!(session.storage.upload_concurrency().get(), 4);
+        let next = sink.resolve(url, &WriteOptions::default()).unwrap();
+        assert_eq!(next.storage.upload_part_size(), None);
+        assert_eq!(next.storage.upload_concurrency().get(), 1);
     }
 }

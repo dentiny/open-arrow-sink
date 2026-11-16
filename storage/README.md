@@ -112,6 +112,8 @@ to 5 MiB parts and one concurrent request per writer. Use
 `Storage::with_upload_concurrency(NonZeroUsize)` to raise that limit deliberately;
 buffering grows with part size and concurrency. This replaces the native Lance
 adapter's previous implicit concurrency of eight. Clones carry both settings.
+Parquet and Lance sessions can override them using `WriteOptions.upload_part_size`
+and `WriteOptions.upload_concurrency`; unset fields preserve the Storage settings.
 
 `Storage::object_store()` is always available for native SDKs. The adapter delegates
 ordinary object operations to `OpendalStore`, while multipart uploads use the same

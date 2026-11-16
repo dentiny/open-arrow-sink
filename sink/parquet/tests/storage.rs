@@ -20,6 +20,8 @@ fn options() -> WriteOptions {
     WriteOptions::default()
         .with_ordering(Ordering::Unordered)
         .with_target_file_size(Some(1))
+        .with_upload_part_size(NonZeroUsize::new(16))
+        .with_upload_concurrency(NonZeroUsize::new(2))
 }
 
 #[rstest::rstest]

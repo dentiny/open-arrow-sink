@@ -411,3 +411,28 @@ DownloadBlobLayer includes downloaded source bytes; placing it inside observes o
 the native sink's I/O. Nested observers receive backend measurements independently;
 reusing the same handle does not duplicate byte observations. Placing MetricsLayer
 inside or outside UnorderedWriteLayer still counts one successful session commit.
+
+## Upload buffering and concurrency
+
+`WriteOptions.upload_part_size: Option<NonZeroUsize>` sets upload part size in
+bytes; `upload_concurrency: Option<NonZeroUsize>` bounds concurrent upload requests
+per writer. Parquet and Lance support these session overrides, including parallel
+writers and Lance native multipart uploads. Check `SinkCapability.supports_upload_options`.
+Iceberg rejects explicit overrides because its FileIO is supplied by the catalog;
+configure its `Storage` before constructing `OpenDalStorageFactory` instead.
+
+```rust
+use std::num::NonZeroUsize;
+use open_arrow_sink::{Ordering, WriteOptions};
+
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_upload_part_size(NonZeroUsize::new(16 * 1024 * 1024))
+    .with_upload_concurrency(NonZeroUsize::new(4));
+```
+
+Unset fields retain the configured `Storage` value (otherwise 5 MiB and one
+request per writer). Overrides affect only the current session. OpenDAL enforces
+backend part-size limits. These options differ from `target_file_size`, which
+controls file rolling, and from the shared aggregate HTTP request budget. Memory
+use grows with part size, upload concurrency, and the number of writers.

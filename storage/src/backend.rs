@@ -131,6 +131,19 @@ impl Storage {
         self
     }
 
+    /// Apply session upload overrides, preserving storage defaults for unset fields.
+    /// Other sink write options do not affect storage. Configure a clone to keep
+    /// the original storage and other sessions unchanged.
+    pub fn with_write_options(mut self, options: &open_arrow_sink_core::WriteOptions) -> Self {
+        if let Some(size) = options.upload_part_size {
+            self.upload_part_size = Some(size);
+        }
+        if let Some(concurrency) = options.upload_concurrency {
+            self.upload_concurrency = concurrency;
+        }
+        self
+    }
+
     pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
         self.upload_part_size
     }
@@ -377,5 +390,44 @@ impl StorageWriter {
             error::abort_result(&self.path, writer.abort().await)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_arrow_sink_core::WriteOptions;
+    use opendal::options::WriteOptions as NativeWriteOptions;
+
+    #[test]
+    fn session_upload_overrides_preserve_defaults_and_other_sessions() {
+        let storage = Storage::new(
+            Operator::new(opendal::services::Memory::default()).unwrap(),
+            "memory:///warehouse/".parse().unwrap(),
+        )
+        .unwrap();
+        let native = storage.upload_options(NativeWriteOptions::default());
+        assert_eq!(native.chunk, Some(DEFAULT_UPLOAD_PART_SIZE));
+        assert_eq!(native.concurrent, 1);
+
+        let storage = storage
+            .with_upload_part_size(NonZeroUsize::new(8 * 1024 * 1024).unwrap())
+            .with_upload_concurrency(NonZeroUsize::new(2).unwrap());
+        for (size, concurrency) in [
+            (Some(16), None),
+            (None, Some(4)),
+            (Some(16), Some(4)),
+            (None, None),
+        ] {
+            let options = WriteOptions::default()
+                .with_upload_part_size(size.and_then(NonZeroUsize::new))
+                .with_upload_concurrency(concurrency.and_then(NonZeroUsize::new));
+            let session = storage.clone().with_write_options(&options);
+            let native = session.upload_options(NativeWriteOptions::default());
+            assert_eq!(native.chunk, Some(size.unwrap_or(8 * 1024 * 1024)));
+            assert_eq!(native.concurrent, concurrency.unwrap_or(2));
+            assert_eq!(storage.upload_part_size().unwrap().get(), 8 * 1024 * 1024);
+            assert_eq!(storage.upload_concurrency().get(), 2);
+        }
     }
 }

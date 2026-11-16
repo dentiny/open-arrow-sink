@@ -2,6 +2,7 @@ use std::num::NonZeroUsize;
 
 use futures::future::join;
 use object_store::{ObjectStoreExt, path::Path};
+use open_arrow_sink_core::WriteOptions;
 use open_arrow_sink_storage::{Storage, opendal};
 
 #[tokio::test]
@@ -11,8 +12,11 @@ async fn native_multipart_preserves_order_and_shared_namespace() {
         "memory:///warehouse/".parse().unwrap(),
     )
     .unwrap()
-    .with_upload_part_size(NonZeroUsize::new(3).unwrap())
-    .with_upload_concurrency(NonZeroUsize::new(2).unwrap());
+    .with_write_options(
+        &WriteOptions::default()
+            .with_upload_part_size(NonZeroUsize::new(3))
+            .with_upload_concurrency(NonZeroUsize::new(2)),
+    );
     let adapter = storage.clone().object_store();
     let path = Path::from("ordered%20parts");
     let mut upload = adapter.put_multipart(&path).await.unwrap();

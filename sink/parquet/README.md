@@ -128,6 +128,11 @@ Overwrite is unsupported and rejected before creating output: a directory of
 Parquet files has no backend-independent way to replace its contents atomically.
 External writers must not modify a destination during a session.
 
+Session upload buffering can be tuned with `WriteOptions.upload_part_size` and
+`WriteOptions.upload_concurrency` (positive values represented by `NonZeroUsize`).
+These override Storage settings for the session; unset values preserve defaults.
+See [upload options](../../docs/options.md#upload-buffering-and-concurrency).
+
 ## Related documentation
 
 [Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·

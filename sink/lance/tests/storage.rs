@@ -29,7 +29,10 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 fn write_options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
+    WriteOptions::default()
+        .with_ordering(Ordering::Unordered)
+        .with_upload_part_size(NonZeroUsize::new(16 * 1024))
+        .with_upload_concurrency(NonZeroUsize::new(2))
 }
 
 #[tokio::test]

@@ -78,6 +78,11 @@ Real backends also need to retain upload/worker ownership after cancellation.
 
 Use `StorageWriter` or your native SDK for streaming. Honor `target_file_size` as
 a positive soft target and retain session compression policy across rolling.
+Advertise `supports_upload_options` only when both session upload overrides are
+honored. Shared-storage backends can apply them to a clone with
+`storage.clone().with_write_options(&options)` before opening writers; this keeps
+other sessions' defaults unchanged. Unsupported explicit overrides are rejected
+by shared validation.
 Keep row buffering bounded and document non-row growth such as file metadata,
 index training, or one writer per partition. Wrap native errors in
 `Error::Backend(Box::new(error))` to retain the source.

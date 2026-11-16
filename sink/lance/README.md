@@ -312,6 +312,11 @@ parallelism within your memory budget. This shared default replaces the native
 adapter's previous implicit concurrency of eight. Conditional manifest writes retain
 the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 
+Session upload buffering can be tuned with `WriteOptions.upload_part_size` and
+`WriteOptions.upload_concurrency` (positive values represented by `NonZeroUsize`).
+These override Storage settings for the session; unset values preserve defaults.
+See [upload options](../../docs/options.md#upload-buffering-and-concurrency).
+
 ## Related documentation
 
 [Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·

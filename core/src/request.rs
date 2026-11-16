@@ -1,4 +1,5 @@
 use crate::{CompressionOptions, IndexSpec, PartitionType};
+use std::num::NonZeroUsize;
 
 /// How a session treats its destination. Support is declared by each sink.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -80,6 +81,12 @@ pub struct WriteOptions {
     /// Indexes to construct after writing. Empty by default; unsupported sinks
     /// reject nonempty requests before opening a writer.
     pub indexes: Vec<IndexSpec>,
+    /// Upload part size in bytes for this session. None preserves storage defaults.
+    /// The storage backend may enforce a larger minimum part size.
+    pub upload_part_size: Option<NonZeroUsize>,
+    /// Concurrent upload requests per writer. None preserves storage defaults.
+    /// This is independent of the session's writer count and aggregate HTTP budget.
+    pub upload_concurrency: Option<NonZeroUsize>,
     /// Target data-file size in bytes. None keeps the backend default.
     /// A positive soft target: batches/pages/row groups and footers may exceed it.
     pub target_file_size: Option<usize>,
@@ -101,6 +108,8 @@ impl Default for WriteOptions {
             compression: CompressionOptions::default(),
             partition: None,
             indexes: Vec::new(),
+            upload_part_size: None,
+            upload_concurrency: None,
             target_file_size: None,
             storage_version: None,
             cleanup_on_error: true,
@@ -142,6 +151,16 @@ impl WriteOptions {
     /// Set `indexes` while preserving all other options.
     pub fn with_indexes(mut self, indexes: Vec<IndexSpec>) -> Self {
         self.indexes = indexes;
+        self
+    }
+    /// Override the storage upload part size for this session.
+    pub fn with_upload_part_size(mut self, size: Option<NonZeroUsize>) -> Self {
+        self.upload_part_size = size;
+        self
+    }
+    /// Override the storage upload concurrency for each writer in this session.
+    pub fn with_upload_concurrency(mut self, concurrency: Option<NonZeroUsize>) -> Self {
+        self.upload_concurrency = concurrency;
         self
     }
     /// Set `target_file_size` while preserving all other options.
