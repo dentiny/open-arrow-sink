@@ -122,6 +122,6 @@ async fn main() -> Result<()> {
     assert!(writer.write(batch).await.is_err());
     assert!(writer.commit().await.is_err());
     assert_eq!(rejected.load(AtomicOrdering::SeqCst), 0);
-    println!("Accepted a valid batch; aborted the session with an oversized batch");
+    println!("Accepted a valid batch; rejected commit after an oversized batch");
     Ok(())
 }

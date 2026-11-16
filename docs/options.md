@@ -164,8 +164,8 @@ CPU scheduling and its writer ownership requirements, see
 A successful `write` means accepted; an asynchronous error may surface
 in a later call. An error or cancellation of `write` makes the session terminal;
 abort or drop it. Commit drains accepted writes, finishes every data writer,
-then calls the session committer once with all outputs. A finish failure aborts
-all writers, including those that already finished, without publishing the session.
+then calls the session committer once with all outputs. A finish failure returns
+an error without aborting writers or publishing the session.
 Abort waits for in-flight I/O and attempts to abort every writer, even if another
 abort fails, then aborts the session. Drop never commits or performs async cleanup.
 
@@ -175,8 +175,8 @@ abort fails, then aborts the session. Drop never commits or performs async clean
 Publication guarantees belong to the backend. Parquet files become visible before
 commit and have no atomic directory transaction. Transactional adapters can gather all outputs into one native data commit. Once publication begins, its outcome may be
 uncertain on error or cancellation: the layer does not delete potentially committed
-data. The session committer owns publication-failure handling. Before publication,
-cleanup honors `cleanup_on_error` and removes only session-owned output.
+data. Failures return directly without automatic abort or deletion. Explicit
+abort stops pending I/O and retains persisted output.
 
 ## Partitioning
 
@@ -337,7 +337,7 @@ when opening the layer. Blob ingestion currently uses single-writer sessions;
 the underlying sink controls the final scan ordering.
 
 A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Earlier batches may already have been accepted.
+commit then returns the error without aborting the inner writer. Earlier batches may already have been accepted.
 Dropping chunks releases the shared byte budget, and native blob cleanup follows
 the writer's abort/drop guarantees.
 

@@ -10,7 +10,7 @@ pub(crate) struct ParquetDirectoryWriter {
     destination: Arc<Destination>,
     schema: SchemaRef,
     // None only during rolling or after finish. Poison gates every operation
-    // before accessing it; retain Option for ownership transfer during cleanup.
+    // before accessing it.
     writer: Option<AsyncArrowWriter<FileWriter>>,
     target_file_size: Option<usize>,
     state: Poison,
@@ -90,14 +90,8 @@ impl DataWriter for ParquetDirectoryWriter {
         self.writer = None;
         Ok(self.rows_written)
     }
-    async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.state.poison();
-        // Stop this upload before the committer removes any session-owned files.
-        if let Some(writer) = self.writer.take() {
-            writer.into_inner().abort().await
-        } else {
-            Ok(())
-        }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        Ok(())
     }
 }
 

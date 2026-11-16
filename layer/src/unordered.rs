@@ -66,15 +66,7 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
             .inner
             .open_writers(request, schema.clone(), options, self.writers)
             .await?;
-        if let Err(error) =
-            crate::validation::validate_session(&session, self.writers.get(), &schema)
-        {
-            for writer in session.writers {
-                let _ = writer.abort().await;
-            }
-            let _ = session.committer.abort().await;
-            return Err(error);
-        }
+        crate::validation::validate_session(&session, self.writers.get(), &schema)?;
         Ok(Box::new(GuardedWriter::new(Box::new(UnorderedWriter {
             schema,
             idle: session.writers,
@@ -98,24 +90,23 @@ impl<T: Send + 'static> UnorderedWriter<T> {
         &mut self,
         (writer, result): (Box<dyn DataWriter<Output = T>>, Result<()>),
     ) -> Result<()> {
-        // Retain ownership even on error so abort can clean up the failed writer.
+        // Retain ownership even on error so explicit abort can stop the failed writer.
         self.idle.push(writer);
         result
     }
 
     async fn drain(&mut self) -> Result<()> {
-        let mut first_error = None;
         while let Some(completed) = self.pending.next().await {
-            if let Err(error) = self.complete(completed) {
-                first_error.get_or_insert(error);
-            }
+            self.complete(completed)?;
         }
-        first_error.map_or(Ok(()), Err)
+        Ok(())
     }
 
-    async fn cleanup(&mut self) -> Result<()> {
-        // Finish in-flight I/O before cleanup; never detach workers.
-        let _ = self.drain().await;
+    async fn stop(&mut self) -> Result<()> {
+        // Finish in-flight I/O before explicitly stopping writers; never detach workers.
+        while let Some(completed) = self.pending.next().await {
+            let _ = self.complete(completed);
+        }
         let mut first_error = None;
         for writer in self.idle.drain(..) {
             if let Err(error) = writer.abort().await {
@@ -165,34 +156,10 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.drain().await {
-            let _ = self.cleanup().await;
-            return Err(error);
-        }
-        // Finish in parallel, retaining every writer until all finish results
-        // are known. A preparation error must never publish a partial session.
-        let mut finishing = FuturesUnordered::new();
-        for mut writer in self.idle.drain(..) {
-            finishing.push(async move {
-                let result = writer.finish().await;
-                (writer, result)
-            });
-        }
-        let mut outputs = Vec::new();
-        let mut first_error = None;
-        while let Some((writer, result)) = finishing.next().await {
-            self.idle.push(writer);
-            match result {
-                Ok(output) => outputs.push(output),
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        if let Some(error) = first_error {
-            let _ = self.cleanup().await;
-            return Err(error);
-        }
+        self.drain().await?;
+        let outputs =
+            futures::future::try_join_all(self.idle.iter_mut().map(|writer| writer.finish()))
+                .await?;
         // From here publication and any ambiguous failure belong to the backend.
         self.committer
             .take()
@@ -202,6 +169,6 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.cleanup().await
+        self.stop().await
     }
 }

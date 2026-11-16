@@ -134,10 +134,7 @@ async fn failed_write_cannot_resume_or_publish() {
     assert!(writer.write(empty_batch()).await.is_err());
     assert!(writer.write(empty_batch()).await.is_err());
     assert!(writer.commit().await.is_err());
-    assert_eq!(
-        *events.lock().unwrap(),
-        [Event::Write, Event::AbortWriter, Event::AbortSession]
-    );
+    assert_eq!(*events.lock().unwrap(), [Event::Write]);
 }
 
 #[tokio::test]
@@ -156,14 +153,11 @@ async fn cancelled_write_cannot_resume_or_publish() {
     drop(pending);
     assert!(writer.write(empty_batch()).await.is_err());
     assert!(writer.commit().await.is_err());
-    assert_eq!(
-        *events.lock().unwrap(),
-        [Event::Write, Event::AbortWriter, Event::AbortSession]
-    );
+    assert_eq!(*events.lock().unwrap(), [Event::Write]);
 }
 
 #[tokio::test]
-async fn finish_failure_aborts_writer_and_session() {
+async fn finish_failure_returns_without_aborting() {
     let (session, events) = session(
         Faults {
             finish: true,
@@ -172,10 +166,7 @@ async fn finish_failure_aborts_writer_and_session() {
         1,
     );
     assert!(session.into_writer().await.unwrap().commit().await.is_err());
-    assert_eq!(
-        *events.lock().unwrap(),
-        [Event::Finish, Event::AbortWriter, Event::AbortSession]
-    );
+    assert_eq!(*events.lock().unwrap(), [Event::Finish]);
 }
 
 #[tokio::test]
@@ -192,13 +183,11 @@ async fn publication_failure_never_aborts_potentially_published_output() {
 }
 
 #[tokio::test]
-async fn invalid_writer_counts_abort_every_writer_and_the_session() {
+async fn invalid_writer_counts_return_without_aborting() {
     for count in [0, 2] {
         let (session, events) = session(Faults::default(), count);
         assert!(session.into_writer().await.is_err());
-        let mut expected = vec![Event::AbortWriter; count];
-        expected.push(Event::AbortSession);
-        assert_eq!(*events.lock().unwrap(), expected);
+        assert!(events.lock().unwrap().is_empty());
     }
 }
 

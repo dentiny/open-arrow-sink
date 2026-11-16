@@ -34,10 +34,9 @@ pub trait Writer: Send {
     }
 
     /// Finish buffered writes and commit using the backend's documented semantics.
-    /// Consumes the writer even on failure; no automatic retry is provided.
+    /// Consumes the writer even on failure; no automatic cleanup or retry is provided.
     async fn commit(self: Box<Self>) -> Result<WriteSummary>;
 
-    /// End the session, applying the cleanup policy from `WriteOptions`.
-    /// Cleanup is best effort and cannot guarantee rollback of already visible data.
+    /// Stop writing and end the session without deleting persisted output.
     async fn abort(self: Box<Self>) -> Result<()>;
 }

@@ -50,7 +50,7 @@ impl DataWriter for FragmentWriter {
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.worker.abort().await;
-        // Session cleanup runs only after every worker has stopped.
+        // Persisted output is retained after stopping the worker.
         Ok(())
     }
 }

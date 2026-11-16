@@ -15,7 +15,6 @@ pub(crate) struct LanceDestination {
     pub url: Url,
     pub path: ObjectPath,
     session: Arc<Session>,
-    new_destination: bool,
 }
 impl LanceDestination {
     pub fn new(
@@ -38,7 +37,6 @@ impl LanceDestination {
             url,
             path,
             session,
-            new_destination: false,
         })
     }
     pub async fn prepare(
@@ -49,14 +47,7 @@ impl LanceDestination {
     ) -> Result<Option<lance::Dataset>> {
         let existing =
             crate::validation::validate_destination(self, schema, mode, storage_version).await?;
-        self.new_destination = existing.is_none();
         Ok(existing)
-    }
-    pub async fn cleanup(&self) -> Result<()> {
-        if self.new_destination {
-            self.storage.remove_all(&self.path).await?;
-        }
-        Ok(())
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, params: WriteParams) -> WriteParams {

@@ -157,21 +157,12 @@ impl ParallelSink for IcebergTableSink {
                             .map_err(Error::backend)?,
                     ),
                 };
-                Ok::<_, Error>(Box::new(IcebergTableWriter::new(
-                    table.clone(),
-                    schema.clone(),
-                    prefix,
-                    inner,
-                    options.clone(),
-                )))
+                Ok::<_, Error>(Box::new(IcebergTableWriter::new(schema.clone(), inner)))
             }
             .await;
             match writer {
                 Ok(writer) => writers.push(writer),
                 Err(error) => {
-                    for writer in writers {
-                        let _ = writer.abort().await;
-                    }
                     return Err(error);
                 }
             }
