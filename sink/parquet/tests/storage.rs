@@ -128,3 +128,20 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
     ));
     assert_eq!(rows(&storage, &directory).await, 3);
 }
+
+#[tokio::test]
+async fn session_observer_counts_parquet_output() {
+    let storage = storage();
+    let metrics = open_arrow_sink_core::IoMetrics::default();
+    let mut writer = ParquetDirectorySink::new(storage.clone())
+        .open(
+            storage.url("measured/").unwrap(),
+            batch().schema(),
+            options().with_io_metrics(metrics.clone()),
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    assert!(metrics.snapshot().bytes_written > 0);
+}

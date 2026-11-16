@@ -139,12 +139,9 @@ async fn download(
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 ) -> Result<BlobPlacement> {
     let result = async {
-        let mut stream = pool.stream(&url).await?;
+        let mut stream = pool.stream_with_metrics(&url, io_metrics).await?;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            if let Some(metrics) = &io_metrics {
-                metrics.record_read(chunk.as_ref().len() as u64);
-            }
             native.write(chunk).await?;
         }
         Ok(BlobPlacement {

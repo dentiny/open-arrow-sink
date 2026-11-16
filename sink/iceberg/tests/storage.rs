@@ -2,7 +2,9 @@ use open_arrow_sink_iceberg::OpenDalStorageFactory;
 
 #[tokio::test]
 async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let metrics = open_arrow_sink_core::IoMetrics::default();
+    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
+        .with_io_metrics(metrics.clone());
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
     let url = storage.url("data/part").unwrap();
     let mut writer = file_io
@@ -24,6 +26,8 @@ async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
         input.reader().await.unwrap().read(6..11).await.unwrap(),
         "world"
     );
+    assert_eq!(metrics.snapshot().bytes_written, 11);
+    assert_eq!(metrics.snapshot().bytes_read, 16);
     let keep = storage.url("keep").unwrap();
     storage
         .write(&storage.resolve(&keep).unwrap(), "keep".into())
