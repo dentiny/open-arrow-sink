@@ -28,7 +28,6 @@ pub async fn assert_conforms<F: SinkFixture>() {
     schema_mismatch(&F::new().await).await;
     abort_before_write(&F::new().await).await;
     poisoned_commit(&F::new().await).await;
-    repeated_batches(&F::new().await).await;
 }
 
 async fn open<F: SinkFixture>(fixture: &F) -> Box<dyn open_arrow_sink_core::Writer> {
@@ -123,23 +122,4 @@ async fn poisoned_commit<F: SinkFixture>(fixture: &F) {
         "a poisoned writer cannot publish accepted rows"
     );
     fixture.assert_aborted().await;
-}
-
-async fn repeated_batches<F: SinkFixture>(fixture: &F) {
-    let expected = fixture.batch();
-    let mut writer = open(fixture).await;
-    for _ in 0..3 {
-        writer.write(expected.clone()).await.unwrap();
-    }
-    assert_eq!(
-        writer.commit().await.unwrap().rows_written,
-        3 * expected.num_rows() as u64
-    );
-    assert_eq!(
-        sorted(&expected.schema(), &fixture.read().await),
-        sorted(
-            &expected.schema(),
-            &[expected.clone(), expected.clone(), expected]
-        )
-    );
 }

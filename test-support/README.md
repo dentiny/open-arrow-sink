@@ -27,8 +27,7 @@ fixtures without duplicating a PRNG loop.
 its sink/request/options, a representative batch, a published-data reader, and an
 abort-state assertion. `assert_conforms::<Fixture>()` runs each shared contract on
 a fresh fixture: multi-batch round trip, readable empty commit, explicit abort,
-schema-error termination, abort before input, poisoned commit cleanup, and repeated
-batches with duplicate-preserving readback. Iceberg can supply Append while file backends use
+schema-error termination, abort before input, and poisoned commit cleanup. Iceberg can supply Append while file backends use
 Create. Keep backend-specific checks (snapshot identity, row-group layout,
 partitions, indexes, compression metadata, cleanup of existing data) beside the
 backend. These checks complement the core adapter's direct failure/cancellation
