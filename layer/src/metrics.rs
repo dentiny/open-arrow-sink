@@ -1,8 +1,8 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
 use crate::decorate::{Decorator, impl_sink};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, GuardedDataWriter, GuardedWriter, Layer, RecordBatch,
-    Result, SchemaRef, SessionCommitter, Sink, WriteOptions, WriteSession, WriteSummary, Writer,
+    BlobPlacement, BlobWriter, DataWriter, Error, GuardedDataWriter, Layer, RecordBatch, Result,
+    SchemaRef, SessionCommitter, Sink, WriteOptions, WriteSession, WriteSummary, Writer,
     async_trait,
 };
 use std::{
@@ -12,6 +12,7 @@ use std::{
 
 /// Aggregate observations across sessions opened through a metrics handle.
 /// Durations sum polled operations and can overlap for parallel writers.
+/// Operations rejected with `Error::Poisoned` contribute no failures or duration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetricsSnapshot {
     pub sessions_opened: u64,
@@ -21,6 +22,7 @@ pub struct MetricsSnapshot {
     pub rows_accepted: u64,
     pub rows_committed: u64,
     /// Failed or cancelled open/write/finish/commit/abort/blob-open operations.
+    /// Rejected operations returning `Error::Poisoned` are excluded.
     pub failed_operations: u64,
     /// Measured payload bytes across all observed sessions, including failures.
     /// Uninstrumented backends contribute no bytes.
@@ -113,6 +115,7 @@ pub(crate) struct Observation {
     operation: Operation,
     start: Instant,
     success: bool,
+    ignored: bool,
 }
 impl Observation {
     fn new(metrics: &WriteMetrics, operation: Operation) -> Self {
@@ -121,7 +124,13 @@ impl Observation {
             operation,
             start: Instant::now(),
             success: false,
+            ignored: false,
         }
+    }
+    fn complete<T>(mut self, result: Result<T>) -> Result<T> {
+        self.success = result.is_ok();
+        self.ignored = matches!(&result, Err(Error::Poisoned));
+        result
     }
     fn success(mut self) {
         self.success = true;
@@ -129,6 +138,9 @@ impl Observation {
 }
 impl Drop for Observation {
     fn drop(&mut self) {
+        if self.ignored {
+            return;
+        }
         let elapsed = self.start.elapsed();
         self.metrics.update(|s| {
             if !self.success {
@@ -162,7 +174,7 @@ impl<S: Sink> Decorator for MetricsSink<S> {
         self.metrics.update(|s| s.sessions_opened += 1);
         observation.success();
         Box::new(MetricsWriter {
-            inner: GuardedWriter::new(inner),
+            inner,
             metrics: self.metrics.clone(),
         })
     }
@@ -193,7 +205,7 @@ impl<S: Sink> Decorator for MetricsSink<S> {
     }
 }
 struct MetricsWriter {
-    inner: GuardedWriter,
+    inner: Box<dyn Writer>,
     metrics: WriteMetrics,
 }
 impl MetricsWriter {
@@ -202,15 +214,14 @@ impl MetricsWriter {
         batch: RecordBatch,
         blobs: Option<Vec<BlobPlacement>>,
     ) -> Result<()> {
-        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
-        match blobs {
-            Some(blobs) => self.inner.write_with_blobs(batch, blobs).await?,
-            None => self.inner.write(batch).await?,
-        }
+        let result = match blobs {
+            Some(blobs) => self.inner.write_with_blobs(batch, blobs).await,
+            None => self.inner.write(batch).await,
+        };
+        observation.complete(result)?;
         self.metrics.accepted(rows);
-        observation.success();
         Ok(())
     }
 }
@@ -230,25 +241,19 @@ impl Writer for MetricsWriter {
         self.accept(batch, Some(blobs)).await
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
-        let blob = self.inner.create_blob().await?;
-        observation.success();
-        Ok(blob)
+        observation.complete(self.inner.create_blob().await)
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        self.inner.check()?;
-        let summary = Box::new(self.inner).commit().await?;
+        let summary = observation.complete(self.inner.commit().await)?;
         self.metrics.committed(&summary);
-        observation.success();
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        Box::new(self.inner).abort().await?;
+        observation.complete(self.inner.abort().await)?;
         self.metrics.update(|s| s.sessions_aborted += 1);
-        observation.success();
         Ok(())
     }
 }
@@ -264,26 +269,19 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
-        self.inner.write(batch).await?;
+        observation.complete(self.inner.write(batch).await)?;
         self.metrics.accepted(rows);
-        observation.success();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
-        let output = self.inner.finish().await?;
-        observation.success();
-        Ok(output)
+        observation.complete(self.inner.finish().await)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        Box::new(self.inner).abort().await?;
-        observation.success();
-        Ok(())
+        observation.complete(Box::new(self.inner).abort().await)
     }
 }
 struct MetricsCommitter<T: Send + 'static> {
@@ -294,16 +292,14 @@ struct MetricsCommitter<T: Send + 'static> {
 impl<T: Send + 'static> SessionCommitter<T> for MetricsCommitter<T> {
     async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        let summary = self.inner.commit(outputs).await?;
+        let summary = observation.complete(self.inner.commit(outputs).await)?;
         self.metrics.committed(&summary);
-        observation.success();
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        self.inner.abort().await?;
+        observation.complete(self.inner.abort().await)?;
         self.metrics.update(|s| s.sessions_aborted += 1);
-        observation.success();
         Ok(())
     }
 }

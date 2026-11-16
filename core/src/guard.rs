@@ -21,8 +21,7 @@ impl GuardedWriter {
         }
     }
 
-    /// Check before starting an observation of a new operation.
-    pub fn check(&self) -> Result<()> {
+    fn check(&self) -> Result<()> {
         self.state.check()
     }
 }
@@ -82,11 +81,6 @@ impl<T: Send + 'static> GuardedDataWriter<T> {
             inner,
             state: Poison::default(),
         }
-    }
-
-    /// Check before starting an observation of a new operation.
-    pub fn check(&self) -> Result<()> {
-        self.state.check()
     }
 }
 
