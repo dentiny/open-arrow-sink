@@ -72,7 +72,12 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     }
 }
 
-type PendingWrite<T> = BoxFuture<'static, (Box<dyn DataWriter<Output = T>>, Result<()>)>;
+struct WriteCompletion<T> {
+    writer: Box<dyn DataWriter<Output = T>>,
+    result: Result<()>,
+}
+
+type PendingWrite<T> = BoxFuture<'static, WriteCompletion<T>>;
 
 struct UnorderedWriter<T: Send + 'static> {
     schema: SchemaRef,
@@ -82,10 +87,7 @@ struct UnorderedWriter<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> UnorderedWriter<T> {
-    fn complete(
-        &mut self,
-        (writer, result): (Box<dyn DataWriter<Output = T>>, Result<()>),
-    ) -> Result<()> {
+    fn complete(&mut self, WriteCompletion { writer, result }: WriteCompletion<T>) -> Result<()> {
         // Retain ownership even on error so explicit abort can stop the failed writer.
         self.idle.push(writer);
         result
@@ -139,7 +141,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
             self.pending.push(
                 async move {
                     let result = writer.write(batch).await;
-                    (writer, result)
+                    WriteCompletion { writer, result }
                 }
                 .boxed(),
             );

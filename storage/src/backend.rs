@@ -13,6 +13,11 @@ use crate::{
     validation,
 };
 
+pub(crate) struct UnobservedStorage {
+    pub storage: Storage,
+    pub observers: Option<open_arrow_sink_core::IoObservers>,
+}
+
 const DEFAULT_UPLOAD_PART_SIZE: NonZeroUsize = NonZeroUsize::new(4 * 1024 * 1024).unwrap();
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
@@ -177,9 +182,7 @@ impl Storage {
         self
     }
 
-    pub(crate) fn without_io_metrics(
-        mut self,
-    ) -> (Self, Option<open_arrow_sink_core::IoObservers>) {
+    pub(crate) fn without_io_metrics(mut self) -> UnobservedStorage {
         let metrics = std::mem::take(&mut self.io_metrics);
         let observers = metrics.into_iter().fold(
             None,
@@ -191,7 +194,10 @@ impl Storage {
             },
         );
         self.rebuild_operator();
-        (self, observers)
+        UnobservedStorage {
+            storage: self,
+            observers,
+        }
     }
 
     /// Observe this namespace, including native adapters. Repeated handles are ignored.
