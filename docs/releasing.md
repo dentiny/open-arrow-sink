@@ -20,32 +20,34 @@ order, including dependencies that have not yet been published. It skips the
 private test support crate. Keep Cargo.lock committed so that release checks use
 the reviewed dependency versions.
 
-The Release workflow runs these checks on pull requests, release tags, and manual
-dispatches. Manual dispatch only validates packages; it does not publish them.
-
 ## Publish
 
-1. Configure the repository Actions secret `CARGO_REGISTRY_TOKEN` with a crates.io
-   API token allowed to publish all seven public crates. For a first release, the
-   token must also allow creating those crate names. Never commit the token.
-2. Merge the release PR and ensure its checks pass.
-3. Tag the reviewed commit on `main` and push the tag:
+1. Merge the release PR and check out the reviewed commit on `main`:
 
    ```sh
    git switch main
    git pull --ff-only
+   ```
+
+2. Run the validation commands above, then authenticate with `cargo login` using
+   a crates.io API token allowed to create/publish all seven public crate names.
+   Never commit the token.
+3. Publish the workspace:
+
+   ```sh
+   cargo publish --workspace --all-features --locked
+   ```
+
+   Cargo handles dependency order and waits for registry availability.
+4. After successful publication, tag the same reviewed commit:
+
+   ```sh
    git tag -a v0.1.0 -m "Release v0.1.0"
    git push origin v0.1.0
    ```
 
-The Release workflow checks that the tag matches the workspace version and that
-the commit belongs to `main`, then runs `cargo publish --workspace` with all
-features and the lockfile. Cargo handles dependency order and waits for registry
-availability. No GitHub Release or tag is created by opening the PR.
-
-For a local release instead, run the validation above, authenticate with
-`cargo login`, then run `cargo publish --workspace --all-features --locked` from
-the same reviewed commit. Use one publishing method per release.
+Publication is manual. Opening the PR or pushing a tag does not publish crates
+or create a GitHub Release.
 
 The public crates are `open-arrow-sink-core`, `open-arrow-sink-storage`,
 `open-arrow-sink-layer`, `open-arrow-sink-parquet`, `open-arrow-sink-iceberg`,
