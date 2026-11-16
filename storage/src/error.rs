@@ -50,7 +50,7 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
     match result {
         Ok(()) => Ok(()),
         // A backend without abort has no pending upload to cancel. Dropping the
-        // handle stops this stream; the owning sink deletes its files.
+        // handle stops this stream; persisted output remains in place.
         Err(error) if error.kind() == ErrorKind::Unsupported => Ok(()),
         Err(error) => Err(map_error("abort", path, error)),
     }

@@ -64,13 +64,14 @@ Return `Box::new(GuardedWriter::new(Box::new(your_writer)))` from `open`.
 The core guard owns terminal-state transitions around the entire decorator,
 including validation/transform errors before the inner writer is called. It
 rejects writes after an error or cancellation and returns an error on
-commit without automatically aborting the inner writer. The decorator itself only implements its policy and cleanup delegation;
-it does not need its own `Poison` field. See the batch-limit example above.
+commit without automatically aborting the inner writer. The decorator itself
+only implements its policy and delegates explicit abort; it does not need its
+own `Poison` field. See the batch-limit example above.
 
 A cancelled write cannot invoke async cleanup; retain enough ownership for a
 later explicit abort. Do not turn errors into successful empty batches or retry
 a potentially committed session. Resource `Option`s may still be needed to move
-ownership into finishing or cleanup; they are not a second usability flag.
+ownership into finish or explicit abort; they are not a second usability flag.
 
 If the layer creates tasks, buffers, or streams, document bounds and ensure abort
 stops and awaits owned work. A batch-count bound is not a byte-count bound. Never

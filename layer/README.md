@@ -68,8 +68,8 @@ Applications requiring CPU parallelism can use `ParallelSink::open_writers`
 directly and drive the returned data writers in separate tasks on a multithreaded
 executor. This also transfers orchestration responsibilities to the application:
 retain writer ownership through failures and cancellation, stop and join every
-worker before cleanup, and call the one session committer only after all writers
-finish successfully. Returning on the first task error or dropping a join handle
+worker before ending the session, and call the one session committer only after
+all writers finish successfully. Returning on the first task error or dropping a join handle
 must not leave detached writers running. `WriteSession` itself is an ownership
 interface; it does not implement this task scheduler.
 

@@ -13,7 +13,7 @@ use open_arrow_sink_core::{
 /// Parquet and Iceberg encoding/compression therefore runs in the caller's task:
 /// multiple writers overlap I/O, but do not provide CPU parallelism. Backends
 /// such as Lance may schedule their own workers. See the layer guide for
-/// application-managed task scheduling and its cleanup responsibilities.
+/// application-managed task scheduling and its shutdown responsibilities.
 #[derive(Debug, Clone, Copy)]
 pub struct UnorderedWriteLayer {
     writers: NonZeroUsize,
@@ -65,8 +65,8 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
         let session = self
             .inner
             .open_writers(request, schema.clone(), options, self.writers)
-            .await?;
-        crate::validation::validate_session(&session, self.writers.get(), &schema)?;
+            .await?
+            .expect(self.writers.get(), &schema)?;
         Ok(Box::new(GuardedWriter::new(Box::new(UnorderedWriter {
             schema,
             idle: session.writers,

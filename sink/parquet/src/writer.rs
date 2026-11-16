@@ -27,7 +27,7 @@ impl DataWriter for ParquetDirectoryWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        // Retain upload ownership for abort, including after cancellation.
+        // Retain the upload so explicit abort can stop I/O after cancellation.
         self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         if batch.num_rows() == 0 {

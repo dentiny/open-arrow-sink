@@ -35,9 +35,22 @@ pub struct WriteSession<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> WriteSession<T> {
+    /// Require exactly `count` writers, each with the requested schema.
+    /// Invalid sessions are dropped without invoking abort or deleting output.
+    pub fn expect(self, count: usize, schema: &SchemaRef) -> Result<Self> {
+        if self.writers.len() != count
+            || self.writers.iter().any(|writer| writer.schema() != schema)
+        {
+            return Err(crate::Error::backend(std::io::Error::other(
+                "backend returned an invalid parallel writer session",
+            )));
+        }
+        Ok(self)
+    }
+
     /// Adapt a one-writer session to the public writer interface.
     /// Failures return directly without invoking abort or deleting output.
-    pub async fn into_writer(mut self) -> Result<Box<dyn crate::Writer>> {
+    pub fn into_writer(mut self) -> Result<Box<dyn crate::Writer>> {
         if self.writers.len() != 1 {
             return Err(crate::Error::Unsupported("expected one data writer".into()));
         }

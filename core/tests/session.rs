@@ -112,7 +112,7 @@ fn empty_batch() -> RecordBatch {
 #[tokio::test]
 async fn success_finishes_before_exactly_one_publication() {
     let (session, events) = session(Faults::default(), 1);
-    let mut writer = session.into_writer().await.unwrap();
+    let mut writer = session.into_writer().unwrap();
     writer.write(empty_batch()).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 7);
     assert_eq!(
@@ -130,7 +130,7 @@ async fn failed_write_cannot_resume_or_publish() {
         },
         1,
     );
-    let mut writer = session.into_writer().await.unwrap();
+    let mut writer = session.into_writer().unwrap();
     assert!(writer.write(empty_batch()).await.is_err());
     assert!(writer.write(empty_batch()).await.is_err());
     assert!(writer.commit().await.is_err());
@@ -146,7 +146,7 @@ async fn cancelled_write_cannot_resume_or_publish() {
         },
         1,
     );
-    let mut writer = session.into_writer().await.unwrap();
+    let mut writer = session.into_writer().unwrap();
     let mut pending = writer.write(empty_batch());
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
@@ -165,7 +165,7 @@ async fn finish_failure_returns_without_aborting() {
         },
         1,
     );
-    assert!(session.into_writer().await.unwrap().commit().await.is_err());
+    assert!(session.into_writer().unwrap().commit().await.is_err());
     assert_eq!(*events.lock().unwrap(), [Event::Finish]);
 }
 
@@ -178,7 +178,7 @@ async fn publication_failure_never_aborts_potentially_published_output() {
         },
         1,
     );
-    assert!(session.into_writer().await.unwrap().commit().await.is_err());
+    assert!(session.into_writer().unwrap().commit().await.is_err());
     assert_eq!(*events.lock().unwrap(), [Event::Finish, Event::Publish]);
 }
 
@@ -186,7 +186,7 @@ async fn publication_failure_never_aborts_potentially_published_output() {
 async fn invalid_writer_counts_return_without_aborting() {
     for count in [0, 2] {
         let (session, events) = session(Faults::default(), count);
-        assert!(session.into_writer().await.is_err());
+        assert!(session.into_writer().is_err());
         assert!(events.lock().unwrap().is_empty());
     }
 }
@@ -200,7 +200,7 @@ async fn session_abort_runs_even_if_writer_abort_fails() {
         },
         1,
     );
-    assert!(session.into_writer().await.unwrap().abort().await.is_err());
+    assert!(session.into_writer().unwrap().abort().await.is_err());
     assert_eq!(
         *events.lock().unwrap(),
         [Event::AbortWriter, Event::AbortSession]
@@ -210,7 +210,7 @@ async fn session_abort_runs_even_if_writer_abort_fails() {
 #[tokio::test]
 async fn dropping_a_writer_never_publishes_or_runs_async_cleanup() {
     let (session, events) = session(Faults::default(), 1);
-    let mut writer = session.into_writer().await.unwrap();
+    let mut writer = session.into_writer().unwrap();
     writer.write(empty_batch()).await.unwrap();
     drop(writer);
     assert_eq!(*events.lock().unwrap(), [Event::Write]);
