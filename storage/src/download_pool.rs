@@ -3,15 +3,17 @@ use std::{num::NonZeroUsize, sync::Arc};
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
 use open_arrow_sink_core::{BlobChunk, Result};
-use opendal::{
-    Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, raw::Layer, services::Http,
-};
+use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, services::Http};
 use tokio::sync::Semaphore;
 
 use crate::{
+    HttpConcurrencyLimitLayer, Storage, StorageConfig,
     error::{self, backend},
     validation,
 };
+
+// Placeholder namespace for HTTP storage; requests use each complete source URL.
+const HTTP_PLACEHOLDER: &str = "https://download.invalid/";
 
 // Default maximum number of active download streams in one pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -27,7 +29,7 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 /// OpenDAL/HTTP/TLS and destination buffers are outside this transfer-buffer budget.
 #[derive(Debug)]
 pub struct DownloadPool {
-    operator: Operator,
+    http: Storage,
     sources: crate::StorageResolver,
     // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
     stream_slots: Arc<Semaphore>,
@@ -39,15 +41,14 @@ pub struct DownloadPool {
 impl DownloadPool {
     /// Create independent stream and transfer-buffer budgets. Every call honors
     /// `concurrency`; no process-wide state or environment configuration is used.
-    /// To share only an HTTP request budget across pools (or with `Storage`),
-    /// install clones of one `HttpConcurrencyLimitLayer` with `with_layer`.
+    /// HTTP(S) downloads use a default `http_storage` whose request budget
+    /// equals `concurrency`; replace it with `with_http_storage`.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
         validation::validate_http_concurrency(concurrency.get())?;
         validation::validate_download_limit(max_buffered_bytes)?;
-        opendal::install_default();
         Ok(Self {
-            operator: Operator::new(Http::default().endpoint("https://download.invalid"))
-                .map_err(backend)?,
+            http: Self::http_storage(StorageConfig::default())?
+                .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(concurrency.get())?),
             sources: crate::StorageResolver::default(),
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
@@ -56,20 +57,23 @@ impl DownloadPool {
         })
     }
 
-    /// Use a caller-provided HTTP transport for authentication, instrumentation,
-    /// or deterministic tests. Existing concurrency and policy layers are replayed
-    /// around this transport, including any explicitly shared HTTP request budget.
-    pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
-        let context = self.operator.base_context().with_http_transport(transport);
-        self.operator = self.operator.with_context(context);
-        self
+    /// Build storage for HTTP(S) sources with the given retry/timeout policies.
+    /// Configure its request budget and transport like any other `Storage`.
+    pub fn http_storage(config: StorageConfig) -> Result<Storage> {
+        opendal::install_default();
+        let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
+        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(backend)?;
+        Storage::try_new(operator, HTTP_PLACEHOLDER.parse().map_err(backend)?, config)
     }
 
-    /// Configure OpenDAL policies. Add TimeoutLayer before RetryLayer so every
-    /// retry attempt receives its own I/O deadline. Neither is added by default.
-    pub fn with_layer(mut self, layer: impl Layer) -> Self {
-        self.operator = self.operator.layer(layer);
-        self
+    /// Route HTTP(S) downloads through `storage`, keeping its policies, request
+    /// budget, and transport. Build it with `http_storage`.
+    pub fn with_http_storage(mut self, storage: Storage) -> Result<Self> {
+        if storage.operator().info().scheme() != "http" {
+            return Err(error::http_storage_service());
+        }
+        self.http = storage;
+        Ok(self)
     }
 
     /// Register a source store for non-HTTP downloads, including custom S3 credentials.
@@ -106,17 +110,14 @@ impl DownloadPool {
             .expect("pool is never closed");
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
-            let context = self.operator.base_context();
+            let operator = self.http.operator();
+            let context = operator.base_context();
             let transport = HttpTransporter::new(UrlTransport {
                 uri,
                 inner: context.http_transport().clone(),
             });
-            (
-                self.operator
-                    .clone()
-                    .with_context(context.with_http_transport(transport)),
-                "blob".to_owned(),
-            )
+            let context = context.with_http_transport(transport);
+            (operator.with_context(context), "blob".to_owned())
         } else {
             let storage = self.sources.resolve(&url)?;
             (storage.operator(), storage.path(&url)?)
