@@ -8,13 +8,12 @@ description = "Shared OpenDAL storage for Arrow sinks"
 
 [features]
 default = []
-http = ["opendal/services-http", "opendal/http-transport-reqwest", "dep:async-stream"]
-aws = ["opendal/services-s3", "opendal/http-transport-reqwest"]
-gcp = ["opendal/services-gcs", "opendal/http-transport-reqwest"]
-azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
+aws = ["opendal/services-s3"]
+gcp = ["opendal/services-gcs"]
+azure = ["opendal/services-azblob"]
 
 [dependencies]
-async-stream = { workspace = true, optional = true }
+async-stream.workspace = true
 bytes = "1"
 futures.workspace = true
 http = "1"
@@ -23,6 +22,8 @@ open-arrow-sink-core.workspace = true
 opendal = { version = "0.59.2", default-features = false, features = [
   "auto-register-services",
   "services-fs",
+  "services-http",
+  "http-transport-reqwest",
   "executors-tokio",
   "layers-retry",
   "layers-timeout",
