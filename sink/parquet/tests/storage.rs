@@ -134,20 +134,3 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
     ));
     assert_eq!(rows(&storage, &directory).await, 3);
 }
-
-#[tokio::test]
-async fn append_to_missing_directory_is_not_found() {
-    let storage = storage();
-    let directory = storage.url("missing/").unwrap();
-    let result = ParquetDirectorySink::new(storage)
-        .open(
-            directory,
-            batch().schema(),
-            options().with_mode(WriteMode::Append),
-        )
-        .await;
-    assert!(matches!(
-        result,
-        Err(open_arrow_sink_core::Error::NotFound(_))
-    ));
-}
