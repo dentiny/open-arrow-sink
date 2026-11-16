@@ -14,21 +14,15 @@ impl SessionCommitter<u64> for ParquetCommitter {
         let rows_written = outputs.into_iter().sum();
         // Idle workers never open a file. A newly created empty dataset
         // still needs one footer to make its schema readable; empty Append does not.
-        if rows_written == 0
-            && self.destination.needs_empty_file()
-            && let Err(error) = self
-                .destination
+        if rows_written == 0 && self.destination.needs_empty_file() {
+            self.destination
                 .write_empty_file(self.schema, self.properties)
-                .await
-        {
-            let _ = self.destination.cleanup_reservation().await;
-            return Err(error);
+                .await?;
         }
-        self.destination.complete_reservation().await?;
         // Parquet has no metadata transaction; data writers already closed footers.
         Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        self.destination.cleanup_reservation().await
+        Ok(())
     }
 }

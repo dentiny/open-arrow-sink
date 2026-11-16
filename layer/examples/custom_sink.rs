@@ -19,7 +19,7 @@ async fn main() -> open_arrow_sink_core::Result<()> {
     let published = Arc::new(AtomicU64::new(0));
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
-            .map_err(|error| open_arrow_sink_core::Error::Backend(Box::new(error)))?;
+            .map_err(open_arrow_sink_core::Error::backend)?;
     let sink = CountingSink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()));
     let mut writer = sink
         .open(

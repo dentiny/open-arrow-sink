@@ -5,11 +5,12 @@ Production crates must not depend on it.
 
 - `int64_schema`, `int64_batch`, and `unordered_options` build common Arrow inputs
   and portable write options. Tests keep their backend-specific setup locally.
-- `http::serve` accepts a request-aware callback over the original URI and attempt
-  number, so tests can route paths, inspect signed queries, and inject retries.
-- `Reply` controls HTTP status, header delay, body gates, bytes, or a generated
+- `http::serve` accepts a request-aware callback over the original URI,
+  so tests can route paths, inspect signed queries, and inject retries.
+- `Reply` controls HTTP status, body gates, bytes, or a generated
   constant-byte body. Generated bodies use at most 64 KiB per chunk.
-- `Server` owns the listening task and stops it on drop.
+- `Server` owns the listening task, stops it on drop, and exposes the received
+  request count through `requests()`.
 
 Deliberately malformed HTTP framing remains in the owning failure tests: an axum
 response cannot represent a truncated chunk header or a false Content-Length.
@@ -22,3 +23,17 @@ to break ties when tied rows have different values. Backend scan setup remains
 in the backend tests; this crate does not depend on Lance or another sink.
 `seeded_bytes(seed, len)` generates reproducible payloads for rolling/compression
 fixtures without duplicating a PRNG loop.
+
+`conformance::SinkFixture` lets a backend supply an isolated destination factory,
+its sink/request/options, a representative batch, a published-data reader, and an
+abort-state assertion. `assert_conforms::<Fixture>()` runs each shared contract on
+a fresh fixture: multi-batch round trip, readable empty commit, explicit abort,
+schema-error termination, abort before input, and poisoned commit cleanup. Iceberg can supply Append while file backends use
+Create. Keep backend-specific checks (snapshot identity, row-group layout,
+partitions, indexes, compression metadata, cleanup of existing data) beside the
+backend. These checks complement the core adapter's direct failure/cancellation
+and publication-boundary tests.
+
+`memory_storage(base)` constructs an isolated memory operator rooted at an
+explicit namespace. `read_parquet_dir(storage, directory)` reads all Parquet
+files in path order through shared storage, for memory and filesystem fixtures.

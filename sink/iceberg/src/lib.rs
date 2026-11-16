@@ -1,6 +1,7 @@
 //! Append batches to an existing Iceberg table.
 
 mod committer;
+mod compression;
 mod error;
 mod partition;
 mod sink;

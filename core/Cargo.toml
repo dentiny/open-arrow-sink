@@ -12,3 +12,6 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }

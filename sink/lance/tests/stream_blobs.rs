@@ -6,14 +6,9 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
-use open_arrow_sink_storage::opendal;
 
 fn storage() -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 fn input() -> RecordBatch {
     let field = Field::new("blob", DataType::LargeBinary, true)
@@ -40,7 +35,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            options().with_io_metrics(Some(io.clone())),
+            options().with_io_metrics(io.clone()),
         )
         .await
         .unwrap();
@@ -90,7 +85,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
 }
 
 #[tokio::test]
-async fn overwrite_abort_removes_attached_session_blobs() {
+async fn overwrite_abort_preserves_attached_session_blobs() {
     let storage = storage();
     let url = storage.url("existing/").unwrap();
     let sink = LanceDatasetSink::new(storage.clone());
@@ -123,8 +118,8 @@ async fn overwrite_abort_removes_attached_session_blobs() {
         .unwrap();
     writer.abort().await.unwrap();
     assert!(
-        storage
-            .list(&url.join("_blobs/").unwrap())
+        !storage
+            .list(&storage.resolve(&url.join("_blobs/").unwrap()).unwrap())
             .await
             .unwrap()
             .is_empty()
@@ -137,7 +132,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
 #[case::dropped(true)]
 #[case::unfinished(false)]
 #[tokio::test]
-async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
+async fn partial_or_unfinished_blobs_prevent_publication_and_preserve_output(
     #[case] drop_partial: bool,
 ) {
     let storage = storage();
@@ -147,6 +142,10 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
         .open(url.clone(), input().schema(), options())
         .await
         .unwrap();
+    // Persist a completed blob before poisoning the session with another upload.
+    let mut completed = writer.create_blob().await.unwrap();
+    completed.write(BlobChunk::new("retained")).await.unwrap();
+    let _completed = completed.finish().await.unwrap();
     let mut blob = Some(writer.create_blob().await.unwrap());
     blob.as_mut()
         .unwrap()
@@ -157,7 +156,13 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
         drop(blob.take());
     }
     assert!(writer.commit().await.is_err());
-    assert!(storage.list(&url).await.unwrap().is_empty());
+    assert!(
+        !storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     if let Some(mut blob) = blob {
         assert!(blob.write(BlobChunk::new("late")).await.is_err());
         assert!(blob.finish().await.is_err());
@@ -201,7 +206,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
         .open(
             storage.url("io-failure").unwrap(),
             input().schema(),
-            options().with_io_metrics(Some(io.clone())),
+            options().with_io_metrics(io.clone()),
         )
         .await
         .unwrap();

@@ -1,11 +1,11 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
+use crate::decorate::{Decorator, impl_sink};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, Layer, ParallelSink, Poison, RecordBatch, Result,
-    SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary,
-    Writer, async_trait,
+    BlobPlacement, BlobWriter, DataWriter, GuardedDataWriter, GuardedWriter, Layer, RecordBatch,
+    Result, SchemaRef, SessionCommitter, Sink, WriteOptions, WriteSession, WriteSummary, Writer,
+    async_trait,
 };
 use std::{
-    num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -108,7 +108,7 @@ enum Operation {
     Commit,
     Other,
 }
-struct Observation {
+pub(crate) struct Observation {
     metrics: WriteMetrics,
     operation: Operation,
     start: Instant,
@@ -143,34 +143,58 @@ impl Drop for Observation {
     }
 }
 
-#[async_trait]
-impl<S: Sink> Sink for MetricsSink<S> {
-    type Request = S::Request;
-    fn capability(&self) -> SinkCapability {
-        self.inner.capability()
+impl_sink!(MetricsSink);
+
+impl<S: Sink> Decorator for MetricsSink<S> {
+    type Inner = S;
+    type Context = Observation;
+
+    fn inner(&self) -> &S {
+        &self.inner
     }
-    async fn open(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-    ) -> Result<Box<dyn Writer>> {
-        self.metrics.observe_io(&mut options);
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        let inner = self.inner.open(request, schema, options).await?;
+
+    fn prepare(&self, _schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<Observation> {
+        self.metrics.observe_io(options);
+        Ok(Observation::new(&self.metrics, Operation::Other))
+    }
+
+    fn wrap_writer(&self, observation: Observation, inner: Box<dyn Writer>) -> Box<dyn Writer> {
         self.metrics.update(|s| s.sessions_opened += 1);
         observation.success();
-        Ok(Box::new(MetricsWriter {
-            inner,
+        Box::new(MetricsWriter {
+            inner: GuardedWriter::new(inner),
             metrics: self.metrics.clone(),
-            state: Poison::default(),
-        }))
+        })
+    }
+
+    fn wrap_session<T: Send + 'static>(
+        &self,
+        observation: Observation,
+        session: WriteSession<T>,
+    ) -> WriteSession<T> {
+        self.metrics.update(|s| s.sessions_opened += 1);
+        observation.success();
+        WriteSession {
+            writers: session
+                .writers
+                .into_iter()
+                .map(|inner| {
+                    Box::new(MetricsDataWriter {
+                        inner: GuardedDataWriter::new(inner),
+                        metrics: self.metrics.clone(),
+                    }) as Box<dyn DataWriter<Output = T>>
+                })
+                .collect(),
+            committer: Box::new(MetricsCommitter {
+                inner: session.committer,
+                metrics: self.metrics.clone(),
+            }),
+        }
     }
 }
 struct MetricsWriter {
-    inner: Box<dyn Writer>,
+    inner: GuardedWriter,
     metrics: WriteMetrics,
-    state: Poison,
 }
 impl MetricsWriter {
     async fn accept(
@@ -178,7 +202,7 @@ impl MetricsWriter {
         batch: RecordBatch,
         blobs: Option<Vec<BlobPlacement>>,
     ) -> Result<()> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         match blobs {
@@ -186,7 +210,6 @@ impl MetricsWriter {
             None => self.inner.write(batch).await?,
         }
         self.metrics.accepted(rows);
-        self.state.complete();
         observation.success();
         Ok(())
     }
@@ -207,29 +230,23 @@ impl Writer for MetricsWriter {
         self.accept(batch, Some(blobs)).await
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let blob = self.inner.create_blob().await?;
-        self.state.complete();
         observation.success();
         Ok(blob)
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        if let Err(error) = self.state.check() {
-            if self.inner.abort().await.is_ok() {
-                self.metrics.update(|s| s.sessions_aborted += 1);
-            }
-            return Err(error);
-        }
-        let summary = self.inner.commit().await?;
+        self.inner.check()?;
+        let summary = Box::new(self.inner).commit().await?;
         self.metrics.committed(&summary);
         observation.success();
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        self.inner.abort().await?;
+        Box::new(self.inner).abort().await?;
         self.metrics.update(|s| s.sessions_aborted += 1);
         observation.success();
         Ok(())
@@ -237,9 +254,8 @@ impl Writer for MetricsWriter {
 }
 
 struct MetricsDataWriter<T: Send + 'static> {
-    inner: Box<dyn DataWriter<Output = T>>,
+    inner: GuardedDataWriter<T>,
     metrics: WriteMetrics,
-    state: Poison,
 }
 #[async_trait]
 impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
@@ -248,17 +264,16 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         self.inner.write(batch).await?;
         self.metrics.accepted(rows);
-        self.state.complete();
         observation.success();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let output = self.inner.finish().await?;
         observation.success();
@@ -266,7 +281,7 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        self.inner.abort().await?;
+        Box::new(self.inner).abort().await?;
         observation.success();
         Ok(())
     }
@@ -290,42 +305,5 @@ impl<T: Send + 'static> SessionCommitter<T> for MetricsCommitter<T> {
         self.metrics.update(|s| s.sessions_aborted += 1);
         observation.success();
         Ok(())
-    }
-}
-#[async_trait]
-impl<S: ParallelSink> ParallelSink for MetricsSink<S> {
-    type Output = S::Output;
-    async fn open_writers(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-        count: NonZeroUsize,
-    ) -> Result<WriteSession<Self::Output>> {
-        self.metrics.observe_io(&mut options);
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        let session = self
-            .inner
-            .open_writers(request, schema, options, count)
-            .await?;
-        self.metrics.update(|s| s.sessions_opened += 1);
-        observation.success();
-        Ok(WriteSession {
-            writers: session
-                .writers
-                .into_iter()
-                .map(|inner| {
-                    Box::new(MetricsDataWriter {
-                        inner,
-                        metrics: self.metrics.clone(),
-                        state: Poison::default(),
-                    }) as Box<dyn DataWriter<Output = Self::Output>>
-                })
-                .collect(),
-            committer: Box::new(MetricsCommitter {
-                inner: session.committer,
-                metrics: self.metrics.clone(),
-            }),
-        })
     }
 }

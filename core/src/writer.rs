@@ -13,7 +13,9 @@ pub trait Writer: Send {
     /// Start a native blob. An unfinished or failed blob poisons the write session.
     /// Sinks advertise this interface with `SinkCapability.supports_blob_streaming`.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Err(crate::error::unsupported_blob_streams())
+        Err(crate::Error::Unsupported(
+            "sink does not support streaming blobs".into(),
+        ))
     }
 
     /// Attach native blobs to empty, non-null cells of blob-marked binary columns.
@@ -26,14 +28,15 @@ pub trait Writer: Send {
         if blobs.is_empty() {
             return self.write(batch).await;
         }
-        Err(crate::error::unsupported_blob_streams())
+        Err(crate::Error::Unsupported(
+            "sink does not support streaming blobs".into(),
+        ))
     }
 
     /// Finish buffered writes and commit using the backend's documented semantics.
-    /// Consumes the writer even on failure; no automatic retry is provided.
+    /// Consumes the writer even on failure; no automatic cleanup or retry is provided.
     async fn commit(self: Box<Self>) -> Result<WriteSummary>;
 
-    /// End the session, applying the cleanup policy from `WriteOptions`.
-    /// Cleanup is best effort and cannot guarantee rollback of already visible data.
+    /// Stop writing and end the session without deleting persisted output.
     async fn abort(self: Box<Self>) -> Result<()>;
 }

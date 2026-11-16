@@ -15,10 +15,11 @@ restrictions below. Cargo features are additive.
 | Overwrite | Unsupported | Unsupported | New manifest version; historical versions retained |
 | Preserve input order | Unsupported | Unsupported | Unsupported |
 | Partition routing | Unsupported | Existing spec: Identity, Year, Month, Day, Hour, Bucket, Truncate, Void | Unsupported |
-| Compression, global | Uncompressed; opt-in Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Zstd |
-| Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd |
+| Compression, global | Uncompressed; opt-in Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Snappy, Gzip, Zstd, Lz4Raw | Uncompressed, Zstd, Lz4Raw |
+| Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd, Lz4Raw |
 | Structural encoding | Unsupported | Unsupported | Miniblock, Fullzip; global and per-column |
 | Explicit Zstd level | 1–22 | 1–22 | 0–22 |
+| Session upload part size / concurrency | Supported | Unsupported; configure catalog Storage | Supported |
 | Target file size | Soft target; rolls between batches, default one file per writer | SDK soft target; table default otherwise | Native soft target; SDK default otherwise |
 | Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_FLAT L2, Text/Inverted, BloomFilter |
 | Native streaming blobs | Unsupported | Unsupported | Single-writer blob schema only |
@@ -29,6 +30,8 @@ Partition options select the transform category already present in the Iceberg
 spec; every field must use that category. They do not define a new spec. Mixed
 transform categories are unsupported. Schema metadata must retain Iceberg field IDs.
 Lance append compares the effective schema, including compression metadata.
+Lance maps `Lz4Raw` to its native `lz4` policy; some Fullzip per-value paths in
+Lance 14 may substitute Zstd. Miniblock encoding uses LZ4.
 
 ## Features and storage
 
@@ -49,12 +52,12 @@ provide one configured `Storage` rather than resolving fresh `memory://` stores.
 
 | Backend | Before commit | Successful commit | Failure or abort |
 | --- | --- | --- | --- |
-| Parquet | Parts may already be visible | Finish footers | Best-effort removal of session-owned output; no general directory transaction/fsync guarantee |
-| Iceberg | Unreferenced data files may exist | One fast-append catalog transaction | Before publication, best-effort private-prefix cleanup; uncertain commits retain files |
+| Parquet | Parts may already be visible | Finish footers | Output retained; no general directory transaction/fsync guarantee |
+| Iceberg | Unreferenced data files may exist | One fast-append catalog transaction | Output retained; commit outcome can be uncertain |
 | Lance | Uncommitted fragments/blobs may exist | Data manifest, followed by optional independent index commits | Existing data is preserved; publication errors can be uncertain; index errors leave committed data and successful indexes |
 
-`cleanup_on_error = true` is best effort, not rollback or an exactly-once
-protocol. No writer performs async cleanup on drop. Applications must exclude
+Failures return directly without automatic abort, deletion, or rollback.
+Explicit abort stops writing and retains persisted output. Drop performs no async cleanup. Applications must exclude
 unsupported concurrent destination mutation and reconcile uncertain commits
 before retrying. No general upsert, automatic schema evolution, sorting, or
 session-level retry is supplied.

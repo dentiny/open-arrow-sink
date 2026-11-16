@@ -52,10 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WriteOptions::default().with_ordering(Ordering::Unordered),
         )
         .await?;
-    if let Err(error) = writer.write(batch).await {
-        let _ = writer.abort().await;
-        return Err(error.into());
-    }
+    writer.write(batch).await?;
     let summary = writer.commit().await?;
     println!("Committed {} rows", summary.rows_written);
     Ok(())

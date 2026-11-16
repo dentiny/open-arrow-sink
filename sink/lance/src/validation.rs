@@ -1,9 +1,13 @@
 //! Configuration, destination, transaction, and writer-state validation.
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, FieldRef, Fields, Schema};
+use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
-    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Compression, CompressionOptions, Error, IndexSpec, IndexType, Result, SinkCapability,
+    WriteOptions, is_blob_field, validation,
 };
+
+use lance::index::DatasetIndexExt;
+use lance_file::version::LanceFileVersion;
 
 use crate::error;
 
@@ -11,33 +15,30 @@ pub(crate) fn validate_options(
     schema: &Schema,
     options: &WriteOptions,
     capability: SinkCapability,
-) -> Result<()> {
+) -> Result<Option<LanceFileVersion>> {
     validation::validate_options(schema, options, capability)?;
-    parse_storage_version(options.storage_version.as_deref())?;
+    let storage_version = parse_storage_version(options.storage_version.as_deref())?;
     validate_encoding(schema, &options.compression)?;
-    validate_compression(&options.compression)?;
-    validate_indexes(schema, &options.indexes)
-}
-
-fn validate_compression(options: &CompressionOptions) -> Result<()> {
-    for compression in options
-        .global
-        .iter()
-        .chain(options.columns.values())
-        .chain(options.nested_columns.values())
-    {
-        // Lance accepts 0 as the native Zstd default, in addition to positive levels.
-        if let Compression::Zstd { level: Some(level) } = compression
-            && *level != 0
-            && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
-        {
-            return Err(error::invalid_compression_level(*level));
-        }
-    }
-    Ok(())
+    validate_indexes(schema, &options.indexes)?;
+    Ok(storage_version)
 }
 
 fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    // Native blob descriptors are opaque to Lance users. Keep this backend rule
+    // here rather than teaching core's Arrow path resolver about Lance metadata.
+    for path in options.nested_columns.keys() {
+        if (1..path.len()).any(|end| {
+            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2")
+            })
+        }) {
+            return Err(error::nested_blob_compression(path));
+        }
+    }
     for field in schema.fields() {
         let encoding = options
             .column_encodings
@@ -45,27 +46,18 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
             .copied()
             .or(options.structural_encoding);
         if encoding.is_some()
-            && (field
-                .metadata()
-                .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-                .map(String::as_str)
-                == Some("true")
+            && (is_blob_field(field)
                 || field
                     .metadata()
                     .get("ARROW:extension:name")
                     .map(String::as_str)
                     == Some("lance.blob.v2"))
         {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "structural encoding on blob column {}",
-                field.name()
-            )));
+            return Err(error::blob_structural_encoding(field.name()));
         }
     }
     Ok(())
 }
-
-use crate::error::{missing_index_column, unsupported_index};
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
@@ -73,7 +65,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
     for index in indexes {
         let field = schema
             .field_with_name(&index.column)
-            .map_err(|_| missing_index_column(&index.column))?;
+            .map_err(|_| error::missing_index_column(&index.column))?;
         let supported = match index.index_type {
             IndexType::Scalar => matches!(
                 field.data_type(),
@@ -126,7 +118,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
             ),
         };
         if !supported {
-            return Err(unsupported_index(index, field.data_type()));
+            return Err(error::unsupported_index(index, field.data_type()));
         }
     }
     Ok(())
@@ -135,9 +127,9 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
-    storage_version: Option<&str>,
-) -> Result<()> {
-    let dataset = builder.load().await.map_err(error::backend)?;
+    storage_version: Option<LanceFileVersion>,
+) -> Result<lance::Dataset> {
+    let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
         lance_file::version::ConcreteFileVersion::V2_2
@@ -147,7 +139,7 @@ pub(crate) async fn validate_existing_dataset(
             dataset.manifest().data_storage_format.version,
         ));
     }
-    if let Some(requested) = parse_storage_version(storage_version)?
+    if let Some(requested) = storage_version
         && requested.resolve() != dataset.manifest().data_storage_format.version
     {
         return Err(error::storage_version_mismatch(
@@ -158,9 +150,9 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(error::schema_mismatch());
+        return Err(Error::SchemaMismatch);
     }
-    Ok(())
+    Ok(dataset)
 }
 
 pub(crate) fn validate_transaction_compatibility(
@@ -199,13 +191,7 @@ pub(crate) fn validate_session_transaction(
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     for field in schema.fields() {
-        if field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-            && field.data_type() != &DataType::LargeBinary
-        {
+        if is_blob_field(field) && field.data_type() != &DataType::LargeBinary {
             return Err(error::invalid_blob_column(field.name()));
         }
     }
@@ -213,34 +199,8 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
 }
 pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     validate_blob_schema(schema)?;
-    if schema.fields().iter().any(|field| {
-        field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-    }) {
+    if schema.fields().iter().any(|field| is_blob_field(field)) {
         return Err(error::parallel_blobs());
-    }
-    Ok(())
-}
-pub(crate) fn validate_blob_state(
-    state: &open_arrow_sink_core::Poison,
-    session: &crate::blob::BlobSession,
-) -> Result<()> {
-    state.check()?;
-    if session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(open_arrow_sink_core::Error::Poisoned);
-    }
-    Ok(())
-}
-pub(crate) fn validate_blob_commit(
-    state: &open_arrow_sink_core::Poison,
-    session: &crate::blob::BlobSession,
-) -> Result<()> {
-    validate_blob_state(state, session)?;
-    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
-        return Err(error::unfinished_blobs());
     }
     Ok(())
 }
@@ -251,7 +211,6 @@ pub(crate) fn validate_blob_placements(
 ) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
     use crate::blob::NativeBlob;
     use arrow_array::{Array, LargeBinaryArray};
-    use open_arrow_sink_core::BLOB_METADATA_KEY;
     let mut placements = std::collections::HashMap::new();
     for blob in blobs {
         let field = batch
@@ -259,10 +218,8 @@ pub(crate) fn validate_blob_placements(
             .fields()
             .get(blob.column)
             .ok_or_else(error::blob_column_out_of_bounds)?;
-        if blob.row >= batch.num_rows()
-            || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
-        {
-            return Err(error::blob_cell());
+        if blob.row >= batch.num_rows() || !is_blob_field(field) {
+            return Err(error::invalid_blob_cell());
         }
         let array = batch
             .column(blob.column)
@@ -270,7 +227,7 @@ pub(crate) fn validate_blob_placements(
             .downcast_ref::<LargeBinaryArray>()
             .ok_or_else(|| error::invalid_blob_column(field.name()))?;
         if array.is_null(blob.row) || !array.value(blob.row).is_empty() {
-            return Err(error::blob_placeholder());
+            return Err(error::invalid_blob_placeholder());
         }
         let native = blob
             .blob
@@ -299,4 +256,149 @@ pub(crate) fn parse_storage_version(
         Some("2.3") => Ok(Some(LanceFileVersion::V2_3)),
         Some(version) => Err(error::unsupported_storage_version(version)),
     }
+}
+
+/// Convert shared codec requests to native Lance parameters before schema conversion.
+pub(crate) fn native_compression(compression: Compression) -> Result<CompressionConfig> {
+    let (scheme, level) = match compression {
+        Compression::Uncompressed => (CompressionScheme::None, None),
+        // Preserve Lance's native codec policy, including Fullzip's native fallback.
+        Compression::Lz4Raw => (CompressionScheme::Lz4, None),
+        Compression::Zstd { level } => {
+            // Lance also accepts 0 as the native Zstd default.
+            if let Some(level) = level
+                && level != 0
+                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
+            {
+                return Err(error::invalid_compression_level(level));
+            }
+            (CompressionScheme::Zstd, level)
+        }
+        _ => {
+            return Err(error::unsupported_compression(compression));
+        }
+    };
+    Ok(CompressionConfig::new(scheme, level))
+}
+
+pub(crate) fn validate_nested_compression_path(path: &[String]) -> Result<()> {
+    if path.len() < 2 {
+        return Err(error::invalid_compression_path(path));
+    }
+    Ok(())
+}
+
+pub(crate) fn nested_compression_field<'a, 'p>(
+    fields: &'a Fields,
+    path: &'p [String],
+) -> Result<(usize, &'a FieldRef, &'p [String])> {
+    let (name, rest) = path
+        .split_first()
+        .ok_or_else(|| error::invalid_compression_path(path))?;
+    let mut matches = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.name() == name);
+    let (index, field) = matches
+        .next()
+        .ok_or_else(|| error::invalid_compression_path(path))?;
+    if matches.next().is_some() {
+        return Err(error::invalid_compression_path(path));
+    }
+    Ok((index, field, rest))
+}
+
+pub(crate) enum CompressionContainer<'a> {
+    Struct(&'a Fields),
+    List(&'a FieldRef),
+    LargeList(&'a FieldRef),
+    FixedSizeList(&'a FieldRef, i32),
+}
+
+pub(crate) fn compression_container<'a>(
+    field: &'a FieldRef,
+    path: &[String],
+) -> Result<CompressionContainer<'a>> {
+    match field.data_type() {
+        DataType::Struct(children) => Ok(CompressionContainer::Struct(children)),
+        DataType::List(item) => Ok(CompressionContainer::List(item)),
+        DataType::LargeList(item) => Ok(CompressionContainer::LargeList(item)),
+        DataType::FixedSizeList(item, size) => Ok(CompressionContainer::FixedSizeList(item, *size)),
+        _ => Err(error::invalid_compression_path(path)),
+    }
+}
+
+pub(crate) async fn validate_existing_indexes(
+    dataset: &lance::Dataset,
+    indexes: &[IndexSpec],
+) -> open_arrow_sink_core::Result<()> {
+    let existing = dataset.load_indices().await.map_err(Error::backend)?;
+    for spec in indexes {
+        if spec.existing == open_arrow_sink_core::ExistingIndexPolicy::Error
+            && existing
+                .iter()
+                .any(|i| i.name == crate::index::index_name(spec))
+        {
+            return Err(Error::AlreadyExists(format!(
+                "index {} already exists; select Keep or Rebuild",
+                crate::index::index_name(spec),
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_destination_path(path: &open_arrow_sink_storage::ObjectPath) -> Result<()> {
+    if path.is_root() {
+        return Err(error::invalid_destination_root());
+    }
+    Ok(())
+}
+
+/// Validate and return an existing dataset for reuse by subsequent checks.
+/// None means this session will create a new destination.
+pub(crate) async fn validate_destination(
+    destination: &crate::destination::LanceDestination,
+    schema: &open_arrow_sink_core::SchemaRef,
+    mode: open_arrow_sink_core::WriteMode,
+    storage_version: Option<LanceFileVersion>,
+) -> Result<Option<lance::Dataset>> {
+    use open_arrow_sink_core::WriteMode;
+    use open_arrow_sink_storage::DirectoryState;
+    if mode == WriteMode::Append {
+        return validate_existing_dataset(
+            destination.dataset_builder(),
+            Some(schema),
+            storage_version,
+        )
+        .await
+        .map(Some);
+    }
+    if destination
+        .storage
+        .inspect_directory(&destination.path)
+        .await?
+        == DirectoryState::Missing
+    {
+        return Ok(None);
+    }
+    if mode == WriteMode::Create {
+        return Err(Error::AlreadyExists(destination.url.to_string()));
+    }
+    validate_existing_dataset(destination.dataset_builder(), None, None)
+        .await
+        .map(Some)
+}
+
+pub(crate) async fn validate_index_requests(
+    existing: Option<&lance::Dataset>,
+    options: &WriteOptions,
+) -> Result<()> {
+    if options.mode == open_arrow_sink_core::WriteMode::Append
+        && !options.indexes.is_empty()
+        && let Some(dataset) = existing
+    {
+        validate_existing_indexes(dataset, &options.indexes).await?;
+    }
+    Ok(())
 }

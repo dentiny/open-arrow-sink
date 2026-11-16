@@ -6,15 +6,12 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, Poison, RecordBatch, Result, SchemaRef,
-    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    BLOB_METADATA_KEY, BLOB_METADATA_VALUE, BlobPlacement, BlobWriter, Error, GuardedWriter, Layer,
+    RecordBatch, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer,
+    async_trait, validation,
 };
 
-use crate::{
-    DownloadPool,
-    error::{self, backend},
-    validation::validate_download_config,
-};
+use crate::{DownloadPool, error, validation::validate_download_config};
 
 /// Stream selected URL columns into native blobs and attach their descriptors.
 /// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
@@ -75,7 +72,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             let mut metadata = field.metadata().clone();
             metadata.remove("ARROW:extension:name");
             metadata.remove("ARROW:extension:metadata");
-            metadata.insert(BLOB_METADATA_KEY.into(), "true".into());
+            metadata.insert(BLOB_METADATA_KEY.into(), BLOB_METADATA_VALUE.into());
             fields[column_index] = Arc::new(
                 field
                     .clone()
@@ -93,15 +90,14 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             .inner
             .open(request, output_schema.clone(), options)
             .await?;
-        Ok(Box::new(DownloadBlobWriter {
+        Ok(Box::new(GuardedWriter::new(Box::new(DownloadBlobWriter {
             inner,
             schema,
             output_schema,
             indices,
             pool,
-            state: Poison::default(),
             io_metrics,
-        }))
+        }))))
     }
 }
 
@@ -111,7 +107,6 @@ struct DownloadBlobWriter {
     output_schema: SchemaRef,
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
-    state: Poison,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
@@ -144,12 +139,9 @@ async fn download(
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 ) -> Result<BlobPlacement> {
     let result = async {
-        let mut stream = pool.stream(&url).await?;
+        let mut stream = pool.stream_with_metrics(&url, io_metrics).await?;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            if let Some(metrics) = &io_metrics {
-                metrics.record_read(chunk.as_ref().len() as u64);
-            }
             native.write(chunk).await?;
         }
         Ok(BlobPlacement {
@@ -168,7 +160,6 @@ impl Writer for DownloadBlobWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
@@ -213,18 +204,13 @@ impl Writer for DownloadBlobWriter {
                     None => break,
                 }
             }
-            let output =
-                RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
+            let output = RecordBatch::try_new(self.output_schema.clone(), columns)
+                .map_err(Error::backend)?;
             self.inner.write_with_blobs(output, blobs).await?;
         }
-        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.state.check() {
-            let _ = self.inner.abort().await;
-            return Err(error);
-        }
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {

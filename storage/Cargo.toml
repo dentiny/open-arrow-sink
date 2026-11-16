@@ -13,7 +13,8 @@ gcp = ["opendal/services-gcs"]
 azure = ["opendal/services-azblob"]
 
 [dependencies]
-async-stream.workspace = true
+object_store = { version = "0.14.2", default-features = false }
+object_store_opendal = { version = "0.60.2", default-features = false }
 bytes = "1"
 futures.workspace = true
 http = "1"
@@ -32,7 +33,7 @@ percent-encoding = "2"
 url = "2"
 
 [dev-dependencies]
-more-asserts.workspace = true
+open-arrow-sink-test-support.workspace = true
 tempfile.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }

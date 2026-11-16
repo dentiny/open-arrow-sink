@@ -11,7 +11,7 @@ and storage dependencies.
 | `Writer` | Owned `Send` session; fixed schema; bounded writes; consuming commit/abort |
 | `ParallelSink` | Exactly N schema-compatible data writers and one publication authority |
 | `DataWriter` | Physical output; `finish(&mut self)` returns metadata; abort remains possible after finish |
-| `SessionCommitter<T>` | Publish every output once, or clean up session resources after writer aborts |
+| `SessionCommitter<T>` | Publish every output once, or end an explicitly aborted session without deleting output |
 | `Layer<S>` / `SinkExt` | Construct decorators without I/O, preserving the request type |
 | `BlobWriter` / `BlobHandle` / `BlobPlacement` | Stream bytes and attach completed session-owned native blob descriptors |
 
@@ -23,10 +23,16 @@ partition specs. Index-capable implementations also call `validate_indexes`.
 one exact top-level name; dots are literal and duplicate names are ambiguous.
 
 `WriteSummary.rows_written` is the successful session's committed row count.
-`Error::Unsupported` covers rejected requests, `SchemaMismatch` covers batch
-schemas, and `Backend` retains an error source. `IndexCommitError`, wrapped in
-`Backend`, identifies index construction failure after data publication and
-retains the successful data write in its `summary` field.
+`Error::Unsupported` covers unavailable capabilities; `InvalidConfig` covers
+malformed options and `InvalidInput` covers malformed URLs, paths, and blob
+placements. `AlreadyExists` reports a destination or index conflict with context.
+`NotFound` reports a missing destination detected by validation, and `SchemaMismatch`
+covers batch schemas. Native I/O failures remain in `Backend`, which retains
+the original source chain and backend context.
+
+`Error::IndexCommit(IndexCommitError)` identifies index construction failure
+after data publication and retains the successful data write in `summary`.
+Match this variant directly; retry indexing rather than replaying the write.
 
 `Error`, `WriteOptions`, `SinkCapability`, and `CompressionCapability` are
 non-exhaustive so new errors and options can be added after release. Construct

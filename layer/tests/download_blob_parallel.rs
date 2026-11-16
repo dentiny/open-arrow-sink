@@ -3,7 +3,7 @@ mod parallel_sink;
 use open_arrow_sink_core::{RecordBatch, Sink, SinkExt};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_test_support::unordered_options as options;
-use parallel_sink::{Config, Operation, State, TestSink};
+use parallel_sink::{Config, Event, State, TestSink};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -37,14 +37,14 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
     sink.open(
         (),
         input.schema(),
-        options().with_blob_handle(Some(Default::default())),
+        options().with_blob_handle(Default::default()),
     )
     .await
     .unwrap()
     .abort()
     .await
     .unwrap();
-    let opened = state.lock().unwrap().count(Operation::Open);
+    let opened = state.lock().unwrap().count(|e| matches!(e, Event::Open(_)));
     assert_eq!(opened, 2);
     assert!(
         sink.layer(DownloadBlobLayer::new(["url".to_owned()].into()))
@@ -52,5 +52,8 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
             .await
             .is_err()
     );
-    assert_eq!(state.lock().unwrap().count(Operation::Open), opened);
+    assert_eq!(
+        state.lock().unwrap().count(|e| matches!(e, Event::Open(_))),
+        opened
+    );
 }

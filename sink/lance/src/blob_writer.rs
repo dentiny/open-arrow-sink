@@ -1,37 +1,27 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
-use lance::Dataset;
+use lance::dataset::WriteParams;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary,
-    Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
+    WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{
-    compression::writer_batch,
-    error::{backend, worker_stopped},
-    index::build_indexes,
-    parallel::{ChannelReader, Message},
-    storage::NativeStorage,
-};
+use crate::{committer::LanceCommitter, destination::LanceDestination, worker::FragmentWorker};
 
 pub(crate) struct BlobDatasetWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
-    storage_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     blob_session: Arc<crate::blob::BlobSession>,
-    sender: Option<mpsc::Sender<Message>>,
-    task: JoinHandle<lance::Result<Dataset>>,
-    rows: u64,
+    worker: FragmentWorker,
     state: Poison,
-    destination: NativeStorage,
+    destination: LanceDestination,
     options: WriteOptions,
+    storage_version: Option<lance_file::version::LanceFileVersion>,
 }
 
 #[async_trait]
 impl Writer for BlobDatasetWriter {
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
@@ -39,10 +29,13 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.check()?;
+        self.blob_session.check()?;
         self.state.poison();
-        let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+        let blob = self
+            .blob_session
+            .create_blob(&self.destination.path)
+            .await?;
         self.state.complete();
         Ok(blob)
     }
@@ -52,95 +45,62 @@ impl Writer for BlobDatasetWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.state.check()?;
+        self.blob_session.check()?;
         self.state.poison();
-        validation::validate_batch(&self.schema, &batch)?;
-        let rows = batch.num_rows() as u64;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let batch =
-            crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
-            .send(Message::Batch(batch))
-            .await
-            .map_err(|_| worker_stopped())?;
-        self.rows += rows;
+            crate::blob::storage_batch(batch, &self.schemas.encoded, blobs, &self.blob_session)?;
+        self.worker.write(batch).await?;
         self.state.complete();
         Ok(())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = crate::validation::validate_blob_commit(&self.state, &self.blob_session)
-        {
-            let _ = self.abort().await;
-            return Err(error);
-        }
-        if let Err(error) = self.blob_session.cleanup().await {
-            let _ = self.abort().await;
-            return Err(error);
-        }
-        let sender = self.sender.take().unwrap();
-        // Channel closure is an error; only this marker permits native publication.
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
-        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        let summary = WriteSummary {
-            rows_written: self.rows,
-        };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(backend)?;
-        Ok(summary)
+        let validation = self
+            .state
+            .check()
+            .and_then(|()| self.blob_session.ensure_idle());
+        self.blob_session.fail();
+        validation?;
+        self.blob_session.cleanup().await?;
+        let fragments = self.worker.finish().await?;
+        // Share manifest publication, index creation, and failure semantics with
+        // ordinary writers. Once publication starts, retain files on failure.
+        Box::new(LanceCommitter {
+            destination: self.destination,
+            options: self.options,
+            storage_version: self.storage_version,
+        })
+        .commit(vec![fragments])
+        .await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.blob_session.failed.store(true, Ordering::Release);
-        drop(self.sender.take());
-        // Let native writing stop before removing only our reserved directory.
-        let _ = self.task.await;
-        if self.options.cleanup_on_error {
-            let blobs = self.blob_session.abort().await;
-            let directory = self.destination.cleanup().await;
-            return blobs.and(directory);
-        }
+        self.blob_session.fail();
+        // Stop native writing and retain persisted output.
+        self.worker.abort().await;
         Ok(())
     }
 }
 
 impl BlobDatasetWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        storage_schema: SchemaRef,
-        encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        schemas: crate::write_options::LanceSchemas,
+        destination: LanceDestination,
         options: WriteOptions,
-    ) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        };
-        let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
-        let uri = destination.url.to_string();
-        let task =
-            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
-        Ok(Self {
-            schema,
-            storage_schema,
-            encoding_schema,
-            blob_session: Arc::new(crate::blob::BlobSession::new(
-                destination.storage.clone(),
-                &destination.url,
-                destination.io_tracker.clone(),
-            )),
-            sender: Some(sender),
-            task,
-            rows: 0,
+        params: WriteParams,
+    ) -> Self {
+        let storage_version = params.data_storage_version;
+        let worker = FragmentWorker::new(schemas.encoded.clone(), &destination, params);
+        Self {
+            schemas,
+            blob_session: Arc::new(crate::blob::BlobSession::new(destination.storage.clone())),
+            worker,
             state: Poison::default(),
             destination,
             options,
-        })
+            storage_version,
+        }
     }
 }

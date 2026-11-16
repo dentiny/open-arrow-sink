@@ -76,9 +76,8 @@ interface; it does not implement this task scheduler.
 
 A write error or cancellation makes the session terminal. Commit drains accepted
 writes and finishes every data writer before passing all outputs to one committer.
-A finish failure aborts all writers, including finished ones, before aborting the
-session. Abort waits for in-flight writes and attempts every cleanup even if one
-fails. Once publication begins, the committer owns uncertain outcomes; the layer
+A finish failure returns the error without aborting writers or deleting output.
+Explicit abort waits for in-flight writes and stops every writer even if one fails. Once publication begins, the committer owns uncertain outcomes; the layer
 does not delete potentially committed output. Drop performs no async cleanup.
 
 Ordering and compression decorators forward `ParallelSink`. The concurrent sink
@@ -117,14 +116,16 @@ can exceed the transfer-buffer budget; retaining chunks holds their reservations
 Stream concurrency and byte budgets belong to each pool; every constructor
 honors its limits. Without a configured pool, each opened writer gets independent
 default limits. Share an `Arc<DownloadPool>` when writers should share stream and
-transfer budgets. HTTP(S) downloads go through the pool's HTTP `Storage`; replace
-it with `with_http_storage(DownloadPool::http_storage(config)?)` to configure
-retries, timeouts, or a request budget shared with other storage. Transfer
+transfer budgets. The pool owns its HTTP operator and transport directly; use
+`with_http_config(config)` to configure retries and timeouts, and
+`with_http_transport(transport)` to customize HTTP access. HTTP downloads use the
+stream limit without a second request limiter. Non-HTTP sources use
+`StorageResolver` and can be configured with `with_source_storage`. Transfer
 budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
 default.
 
 A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Existing accepted batches may have created
+commit then returns the error without aborting the inner writer. Existing accepted batches may have created
 output. Cleanup follows the native writer's guarantees. See the
 [complete download contracts](../docs/options.md#streaming-download-pool) and
 [Lance blob guide](../sink/lance/README.md#streaming-native-blobs).

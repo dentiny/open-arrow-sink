@@ -2,7 +2,7 @@ pub(crate) use open_arrow_sink_test_support::http::Server;
 use open_arrow_sink_test_support::http::{Reply, serve};
 
 pub(crate) async fn server() -> Server {
-    serve(|uri, _| {
+    serve(|uri| {
         Reply::repeated(
             b'x',
             if uri.path() == "/empty" {

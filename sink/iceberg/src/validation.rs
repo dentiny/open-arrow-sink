@@ -2,8 +2,8 @@ use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::Transform;
 use iceberg::table::Table;
 use open_arrow_sink_core::{
-    Compression, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability, WriteOptions,
-    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Compression, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
+    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -17,7 +17,11 @@ pub(crate) fn validate_options(
     if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
         && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
     {
-        return Err(error::invalid_zstd_level(level));
+        return Err(Error::InvalidConfig(format!(
+            "Iceberg Zstd compression level must be between {} and {}: {level}",
+            ZSTD_COMPRESSION_LEVEL_RANGE.start(),
+            ZSTD_COMPRESSION_LEVEL_RANGE.end()
+        )));
     }
     Ok(())
 }
@@ -28,11 +32,13 @@ pub(crate) fn validate_table(
     partition: Option<PartitionOptions>,
 ) -> Result<()> {
     if table.readonly() {
-        return Err(error::read_only_table());
+        return Err(Error::Unsupported("read-only Iceberg table".into()));
     }
     let spec = table.metadata().default_partition_spec();
     if !spec.fields().is_empty() && partition.is_none() {
-        return Err(error::partition_required());
+        return Err(Error::InvalidConfig(
+            "partitioned tables require WriteOptions.partition".into(),
+        ));
     }
     if let Some(partition) = partition {
         for field in spec.fields() {
@@ -47,25 +53,24 @@ pub(crate) fn validate_table(
                 Transform::Truncate(width) if width > 0 => PartitionType::Truncate,
                 Transform::Void => PartitionType::Void,
                 transform => {
-                    return Err(error::unsupported_partition_transform(
-                        transform,
-                        &field.name,
-                    ));
+                    return Err(Error::Unsupported(format!(
+                        "Iceberg partition transform {transform:?} on field {}",
+                        field.name
+                    )));
                 }
             };
             if category != partition.partition_type {
-                return Err(error::partition_mismatch(
-                    partition.partition_type,
-                    &field.name,
-                    field.transform,
-                ));
+                return Err(Error::InvalidConfig(format!(
+                    "requested {:?} partitioning, but field {} uses {:?}",
+                    partition.partition_type, field.name, field.transform
+                )));
             }
         }
     }
     let table_schema =
-        schema_to_arrow_schema(table.metadata().current_schema()).map_err(error::backend)?;
+        schema_to_arrow_schema(table.metadata().current_schema()).map_err(Error::backend)?;
     if schema.as_ref() != &table_schema {
-        return Err(error::schema_mismatch());
+        return Err(Error::SchemaMismatch);
     }
     Ok(())
 }
@@ -73,8 +78,12 @@ pub(crate) fn validate_table(
 /// Parse native SDK locations before validating them against the storage scope.
 pub(crate) fn storage_location(path: &str) -> iceberg::Result<open_arrow_sink_storage::Url> {
     if path.starts_with('/') {
-        open_arrow_sink_storage::Url::from_file_path(path)
-            .map_err(|_| error::invalid_storage_location())
+        open_arrow_sink_storage::Url::from_file_path(path).map_err(|_| {
+            iceberg::Error::new(
+                iceberg::ErrorKind::DataInvalid,
+                "invalid filesystem location",
+            )
+        })
     } else {
         open_arrow_sink_storage::Url::parse(path).map_err(error::storage_backend)
     }
