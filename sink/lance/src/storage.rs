@@ -66,7 +66,7 @@ impl NativeStorage {
     }
     pub async fn validate_index_requests(
         &self,
-        options: &open_arrow_sink_core::WriteOptions,
+        options: &crate::config::SessionOptions,
     ) -> Result<()> {
         if options.mode == WriteMode::Append && !options.indexes.is_empty() {
             let dataset = self

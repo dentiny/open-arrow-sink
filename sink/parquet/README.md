@@ -81,9 +81,8 @@ cargo run -p open-arrow-sink-parquet --example write_directory -- /tmp/new-parqu
 
 ## Index requests
 
-This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
-`WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
-or accessing the destination. The default empty list keeps existing behavior.
+Index construction is configured on the concrete Lance sink; the Parquet API
+has no index option.
 
 ## Compression
 

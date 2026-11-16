@@ -1,5 +1,6 @@
 //! Translate shared write options into Lance schema metadata and native parameters.
 //! This module performs no destination I/O and owns the configuration conversion order.
+use crate::config::SessionOptions;
 use std::sync::Arc;
 
 use arrow_schema::Schema;
@@ -7,19 +8,17 @@ use lance::{
     blob::{BlobFieldOptions, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
-use open_arrow_sink_core::{
-    BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode, WriteOptions,
-};
+use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode};
 
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.
-pub(crate) fn writer_schema(schema: &SchemaRef, options: &WriteOptions) -> Result<SchemaRef> {
+pub(crate) fn writer_schema(schema: &SchemaRef, options: &SessionOptions) -> Result<SchemaRef> {
     let compressed = crate::compression::writer_schema(schema, &options.compression);
     let prepared = crate::blob::storage_schema(&compressed)?;
     Ok(blob_schema(&prepared, options.blob_handle.as_ref()))
 }
 
-pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
+pub(crate) fn write_params(options: &SessionOptions) -> Result<WriteParams> {
     let defaults = WriteParams::default();
     let default_blob = BlobHandleConfig::default();
     let blob = options.blob_handle.as_ref().unwrap_or(&default_blob);
@@ -28,9 +27,7 @@ pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
         },
-        data_storage_version: crate::validation::parse_storage_version(
-            options.storage_version.as_deref(),
-        )?,
+        data_storage_version: options.storage_version,
         mode: match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
             WriteMode::Append => LanceWriteMode::Append,

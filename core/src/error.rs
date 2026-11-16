@@ -26,17 +26,6 @@ pub struct IndexCommitError {
     pub message: String,
 }
 
-pub(crate) fn unsupported_partition(partition: crate::PartitionType) -> Error {
-    Error::Unsupported(format!("partitioned writes with {partition:?}"))
-}
-
-pub(crate) fn unsupported_index(index: &crate::IndexSpec) -> Error {
-    Error::Unsupported(format!(
-        "{:?} index construction on column {}",
-        index.index_type, index.column
-    ))
-}
-
 pub(crate) fn duplicate_index(column: &str) -> Error {
     Error::Unsupported(format!("multiple indexes requested for column {column}"))
 }

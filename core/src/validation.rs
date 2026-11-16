@@ -3,11 +3,10 @@ use std::collections::HashSet;
 
 use crate::error::{
     duplicate_index, invalid_index_column, invalid_target_file_size, preserve_input_unsupported,
-    unsupported_index, unsupported_partition,
 };
 use crate::{
-    CompressionCapability, CompressionOptions, Error, IndexSpec, IndexType, Ordering,
-    PartitionOptions, PartitionType, RecordBatch, Result, SinkCapability, WriteOptions,
+    CompressionCapability, CompressionOptions, Error, IndexSpec, Ordering, RecordBatch, Result,
+    SinkCapability, WriteOptions,
 };
 use arrow_schema::Schema;
 
@@ -19,16 +18,7 @@ pub fn validate_options(
     capability: SinkCapability,
 ) -> Result<()> {
     validate_mode_options(options.mode, capability.supported_modes)?;
-    if options.blob_handle.is_some() && !capability.supports_blob_handle {
-        return Err(Error::Unsupported("blob handle configuration".into()));
-    }
-    validate_storage_version_options(
-        options.storage_version.as_deref(),
-        capability.supports_storage_version,
-    )?;
     validate_compression_options(schema, &options.compression, capability.compression)?;
-    validate_partition_options(options.partition, &capability.supported_partitions)?;
-    validate_index_options(&options.indexes, capability.supported_indexes)?;
     validate_target_file_size_options(options.target_file_size)?;
     validate_ordering_options(options.ordering, capability.ordering)?;
     Ok(())
@@ -104,32 +94,6 @@ pub fn validate_compression_options(
     Ok(())
 }
 
-/// Check that the sink supports the requested partition transform.
-pub fn validate_partition_options(
-    options: Option<PartitionOptions>,
-    supported_partitions: &[PartitionType],
-) -> Result<()> {
-    if let Some(partition) = options
-        && !supported_partitions.contains(&partition.partition_type)
-    {
-        return Err(unsupported_partition(partition.partition_type));
-    }
-    Ok(())
-}
-
-/// Check index types. Schema and column-type checks are performed separately.
-pub fn validate_index_options(
-    indexes: &[IndexSpec],
-    supported_indexes: &[IndexType],
-) -> Result<()> {
-    for index in indexes {
-        if !supported_indexes.contains(&index.index_type) {
-            return Err(unsupported_index(index));
-        }
-    }
-    Ok(())
-}
-
 /// Check that an explicit target file size is positive.
 pub fn validate_target_file_size_options(target_file_size: Option<usize>) -> Result<()> {
     if target_file_size == Some(0) {
@@ -184,18 +148,6 @@ pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
         }
         unique_column_index(schema, &index.column)
             .ok_or_else(|| invalid_index_column(&index.column))?;
-    }
-    Ok(())
-}
-
-/// Reject explicit storage versions when the backend does not support them.
-/// Supporting backends additionally validate their version syntax.
-pub fn validate_storage_version_options(
-    storage_version: Option<&str>,
-    supports_storage_version: bool,
-) -> Result<()> {
-    if storage_version.is_some() && !supports_storage_version {
-        return Err(Error::Unsupported("storage version".into()));
     }
     Ok(())
 }

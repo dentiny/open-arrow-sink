@@ -150,7 +150,7 @@ let mut writer = sink.open(identifier, schema, WriteOptions {
 // Build batches with this exact schema, write, then commit.
 ```
 
-For a partitioned table, set `partition: Some(PartitionOptions { partition_type:
+For a partitioned table, configure the sink with `.with_partition(PartitionOptions { partition_type:
 PartitionType::Day })` for an existing `day(...)` spec, for example. Every field
 must use the requested category. Bucket counts and truncate widths come from the
 table spec. This option enables routing and does not create/change the spec.
@@ -160,7 +160,7 @@ See [Iceberg](../sink/iceberg/README.md) for all transforms and storage injectio
 
 Construct `LanceDatasetSink::default()` with a URL, or `new(storage)` for a shared
 operator. Select unordered writes and a supported mode. Add `IndexSpec` entries
-to `WriteOptions.indexes` for supported column types. Index construction runs
+to `LanceOptions.indexes` via `sink.with_options(config)` for supported column types. Index construction runs
 after the data commit and can publish additional versions; `IndexCommitError`
 inside `Error::Backend` means data is already committed. Do not replay those rows
 in response to an index error.

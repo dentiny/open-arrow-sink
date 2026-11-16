@@ -1,5 +1,7 @@
 //! Versioned Lance datasets over shared OpenDAL storage. Requires a Tokio runtime.
 
+mod config;
+pub use config::{LanceFileVersion, LanceOptions};
 mod blob;
 mod blob_writer;
 mod committer;

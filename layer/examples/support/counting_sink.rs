@@ -20,14 +20,10 @@ impl Sink for CountingSink {
 
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            supports_blob_handle: false,
             supports_blob_streaming: false,
             supported_modes: &[WriteMode::Create],
             ordering: Ordering::Unordered,
             compression: CompressionCapability::default(),
-            supported_partitions: vec![],
-            supports_storage_version: false,
-            supported_indexes: &[],
         }
     }
 

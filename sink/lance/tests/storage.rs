@@ -38,12 +38,15 @@ fn write_options() -> WriteOptions {
 async fn shared_operator_commit_indexes_and_read_back() {
     use lance::index::DatasetIndexExt;
     let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone());
+    let sink =
+        LanceDatasetSink::new(storage.clone()).with_options(open_arrow_sink_lance::LanceOptions {
+            indexes: vec![IndexSpec::new("value", IndexType::Scalar)],
+            ..Default::default()
+        });
     let url = storage.url("雪 output%20/").unwrap();
     let io = open_arrow_sink_core::IoMetrics::default();
     let options = WriteOptions {
         io_metrics: Some(io.clone()),
-        indexes: vec![IndexSpec::new("value", IndexType::Scalar)],
         ..write_options()
     };
     let mut writer = sink
@@ -120,18 +123,19 @@ async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
 async fn explicit_storage_version() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    assert!(sink.capability().supports_storage_version);
-    for version in ["2.2", "2.3"] {
+    for (version, native) in [
+        ("2.2", open_arrow_sink_lance::LanceFileVersion::V2_2),
+        ("2.3", open_arrow_sink_lance::LanceFileVersion::V2_3),
+    ] {
+        let sink = sink
+            .clone()
+            .with_options(open_arrow_sink_lance::LanceOptions {
+                storage_version: Some(native),
+                ..Default::default()
+            });
         let url = storage.url(&format!("version-{version}/")).unwrap();
         let mut writer = sink
-            .open(
-                url.clone(),
-                batch().schema(),
-                WriteOptions {
-                    storage_version: Some(version.into()),
-                    ..write_options()
-                },
-            )
+            .open(url.clone(), batch().schema(), write_options())
             .await
             .unwrap();
         writer.write(batch()).await.unwrap();
@@ -142,18 +146,25 @@ async fn explicit_storage_version() {
             version
         );
     }
-    assert!(matches!(
-        sink.open(
-            storage.url("unsupported/").unwrap(),
-            batch().schema(),
-            WriteOptions {
-                storage_version: Some("2.1".into()),
-                ..write_options()
-            }
-        )
-        .await,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
-    ));
+    for version in [
+        open_arrow_sink_lance::LanceFileVersion::V2_0,
+        open_arrow_sink_lance::LanceFileVersion::V2_1,
+    ] {
+        assert!(matches!(
+            sink.clone()
+                .with_options(open_arrow_sink_lance::LanceOptions {
+                    storage_version: Some(version),
+                    ..Default::default()
+                })
+                .open(
+                    storage.url("unsupported/").unwrap(),
+                    batch().schema(),
+                    write_options()
+                )
+                .await,
+            Err(open_arrow_sink_core::Error::Unsupported(_))
+        ));
+    }
 }
 
 #[rstest::rstest]
@@ -180,15 +191,16 @@ async fn ingests_blob_with_configured_layout(
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let options = WriteOptions {
+    let config = open_arrow_sink_lance::LanceOptions {
         blob_handle: Some(BlobHandleConfig {
             inline_size_threshold: Some(1),
             dedicated_size_threshold: NonZeroUsize::new(2),
             ..Default::default()
         }),
-        ..write_options()
+        ..Default::default()
     };
-    let sink = LanceDatasetSink::new(storage.clone());
+    let options = write_options();
+    let sink = LanceDatasetSink::new(storage.clone()).with_options(config);
     let url = storage.url("ingested/").unwrap();
     let mut writer = if parallel {
         sink.clone()

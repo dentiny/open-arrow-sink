@@ -292,13 +292,6 @@ fn identity_spec(composite: bool) -> UnboundPartitionSpec {
     }
 }
 
-fn partition_options() -> WriteOptions {
-    WriteOptions {
-        partition: Some(PartitionOptions::default()),
-        ..options()
-    }
-}
-
 #[rstest::rstest]
 #[case::composite(true)]
 #[tokio::test]
@@ -327,7 +320,8 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
     )
     .unwrap();
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, partition_options())
+        .with_partition(PartitionOptions::default())
+        .open(identifier.clone(), schema, options())
         .await
         .unwrap();
     writer.write(batch.slice(0, 0)).await.unwrap();
@@ -417,12 +411,12 @@ async fn partitioned_empty_sessions_and_file_rolling(
     let (catalog, identifier, schema) = table_with_spec(Some(spec)).await;
     let data = batch(schema.clone());
     let mut writer = IcebergTableSink::new(catalog.clone())
+        .with_partition(PartitionOptions { partition_type })
         .open(
             identifier.clone(),
             schema,
             WriteOptions {
                 target_file_size: Some(1),
-                partition: Some(PartitionOptions { partition_type }),
                 ..options()
             },
         )
@@ -508,14 +502,8 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     )
     .unwrap();
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
-        )
+        .with_partition(PartitionOptions { partition_type })
+        .open(identifier.clone(), schema, options())
         .await
         .unwrap();
     writer.write(data.slice(0, 0)).await.unwrap();
@@ -665,14 +653,8 @@ async fn assert_numeric_partition_round_trip(
     )
     .unwrap();
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
-        )
+        .with_partition(PartitionOptions { partition_type })
+        .open(identifier.clone(), schema, options())
         .await
         .unwrap();
     writer.write(data.slice(0, 0)).await.unwrap();

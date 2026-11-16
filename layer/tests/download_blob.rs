@@ -60,11 +60,8 @@ impl Sink for Capture {
                 nested_columns: false,
             },
             ordering: Ordering::PreserveInput,
-            supported_partitions: vec![],
-            supports_blob_handle: true,
+
             supports_blob_streaming: true,
-            supports_storage_version: false,
-            supported_indexes: &[],
         }
     }
     async fn open(
@@ -826,7 +823,6 @@ async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it()
     let sink = capture
         .clone()
         .layer(download_layer(["url".to_owned()].into()));
-    assert!(sink.capability().supports_blob_handle);
     assert!(!sink.capability().supports_blob_streaming);
     let input = batch(vec![Some("https://example.invalid/blob")]);
     let result = sink

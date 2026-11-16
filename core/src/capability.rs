@@ -1,4 +1,4 @@
-use crate::{CompressionCapability, IndexType, Ordering};
+use crate::{CompressionCapability, Ordering};
 
 /// Partition transforms a sink can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,12 +17,10 @@ pub enum PartitionType {
 }
 
 /// Guarantees provided by the configured sink.
-/// Each sink explicitly declares ordering, partition, index, compression, and blob handle support.
+/// Shared mode, ordering, compression, and streaming guarantees.
+/// Backend-specific configuration belongs to each concrete sink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkCapability {
-    /// Supports native logical blob inputs and explicit per-write blob configuration.
-    /// Writer/schema and parallel-session restrictions still apply.
-    pub supports_blob_handle: bool,
     /// Supports `Writer::create_blob` and `Writer::write_with_blobs` for compatible
     /// schemas. Independent of native logical blob input/configuration support.
     pub supports_blob_streaming: bool,
@@ -34,12 +32,4 @@ pub struct SinkCapability {
     pub ordering: Ordering,
     /// Compression scopes, codecs, and structural encodings accepted by this sink.
     pub compression: CompressionCapability,
-    /// Partition transforms accepted by this sink. An empty list means
-    /// `WriteOptions.partition` is unsupported.
-    pub supported_partitions: Vec<PartitionType>,
-    /// Whether an explicit `WriteOptions.storage_version` is accepted.
-    pub supports_storage_version: bool,
-    /// Logical index types this sink can construct. Empty means none.
-    /// Backends additionally validate column-type compatibility before writing.
-    pub supported_indexes: &'static [IndexType],
 }

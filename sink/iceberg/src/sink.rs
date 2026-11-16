@@ -12,8 +12,7 @@ use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
     Compression, CompressionCapability, CompressionCodec, DataWriter, Ordering, ParallelSink,
-    PartitionType, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
-    async_trait,
+    Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{
@@ -31,11 +30,20 @@ use crate::{
 /// creation configuration. Tables are never dropped/recreated to emulate overwrite.
 pub struct IcebergTableSink {
     catalog: Arc<dyn Catalog>,
+    partition: Option<open_arrow_sink_core::PartitionOptions>,
 }
 
 impl IcebergTableSink {
+    /// Enable routing with the destination table partition specification.
+    pub fn with_partition(mut self, partition: open_arrow_sink_core::PartitionOptions) -> Self {
+        self.partition = Some(partition);
+        self
+    }
     pub fn new(catalog: Arc<dyn Catalog>) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            partition: None,
+        }
     }
 }
 
@@ -59,20 +67,7 @@ impl Sink for IcebergTableSink {
                 structural_encodings: &[],
                 nested_columns: false,
             },
-            supported_partitions: vec![
-                PartitionType::Identity,
-                PartitionType::Year,
-                PartitionType::Month,
-                PartitionType::Day,
-                PartitionType::Hour,
-                PartitionType::Bucket,
-                PartitionType::Truncate,
-                PartitionType::Void,
-            ],
-            supports_blob_handle: false,
             supports_blob_streaming: false,
-            supports_storage_version: false,
-            supported_indexes: &[],
         }
     }
 
@@ -101,7 +96,7 @@ impl ParallelSink for IcebergTableSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         let table = self.catalog.load_table(&request).await.map_err(backend)?;
-        validate_table(&table, &schema, options.partition)?;
+        validate_table(&table, &schema, self.partition)?;
         let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
         for _ in 0..count.get() {
             match self
@@ -183,33 +178,32 @@ impl IcebergTableSink {
             DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
         );
         let builder = DataFileWriterBuilder::new(rolling);
-        let inner: Box<dyn IcebergWriter> = if options.partition.is_some()
-            && !metadata.default_partition_spec().is_unpartitioned()
-        {
-            Box::new(
-                PartitionWriterAdapter::try_new(
-                    builder,
-                    metadata.current_schema().clone(),
-                    metadata.default_partition_spec().clone(),
+        let inner: Box<dyn IcebergWriter> =
+            if self.partition.is_some() && !metadata.default_partition_spec().is_unpartitioned() {
+                Box::new(
+                    PartitionWriterAdapter::try_new(
+                        builder,
+                        metadata.current_schema().clone(),
+                        metadata.default_partition_spec().clone(),
+                    )
+                    .map_err(backend)?,
                 )
-                .map_err(backend)?,
-            )
-        } else {
-            let partition = PartitionKey::new(
-                metadata.default_partition_spec().as_ref().clone(),
-                metadata.current_schema().clone(),
-                // All-void specs are unpartitioned to the SDK, but their file
-                // metadata must retain one null value per partition field.
-                Struct::from_iter(
-                    metadata
-                        .default_partition_spec()
-                        .fields()
-                        .iter()
-                        .map(|_| None),
-                ),
-            );
-            Box::new(builder.build(Some(partition)).await.map_err(backend)?)
-        };
+            } else {
+                let partition = PartitionKey::new(
+                    metadata.default_partition_spec().as_ref().clone(),
+                    metadata.current_schema().clone(),
+                    // All-void specs are unpartitioned to the SDK, but their file
+                    // metadata must retain one null value per partition field.
+                    Struct::from_iter(
+                        metadata
+                            .default_partition_spec()
+                            .fields()
+                            .iter()
+                            .map(|_| None),
+                    ),
+                );
+                Box::new(builder.build(Some(partition)).await.map_err(backend)?)
+            };
         Ok(Box::new(IcebergTableWriter::new(
             table, schema, prefix, inner, options,
         )))

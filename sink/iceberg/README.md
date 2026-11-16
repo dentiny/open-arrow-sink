@@ -7,7 +7,7 @@ own catalog and use its `TableIdent` as the request.
 
 `open` loads the table, checks that the session schema exactly matches
 `iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema())`, and
-rejects read-only tables. Partitioned tables require `WriteOptions.partition` and
+rejects read-only tables. Partitioned tables require `IcebergTableSink::with_partition` and
 support `Identity`, `Year`, `Month`, `Day`, `Hour`, `Bucket`, `Truncate`, and
 `Void` transforms. Exact schema
 matching includes Iceberg field-ID metadata on Arrow fields; derive the input
@@ -20,20 +20,15 @@ scans do not provide an input-row-order guarantee.
 Only file metadata accumulates until commit; rows are not collected in memory.
 An empty session leaves the table unchanged.
 
-Enable identity partition routing with the shared write option:
+Enable identity partition routing on the sink:
 
-```rust
-use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions};
-
-let options = WriteOptions {
-    mode: WriteMode::Append,
-    ordering: Ordering::Unordered,
-    partition: Some(PartitionOptions {
-        partition_type: PartitionType::Identity,
-    }),
-    ..WriteOptions::default()
-};
+```rust,ignore
+use open_arrow_sink_core::{PartitionOptions, PartitionType};
+let sink = IcebergTableSink::new(catalog).with_partition(PartitionOptions {
+    partition_type: PartitionType::Identity,
+});
 ```
+
 
 The table's default partition spec and current schema are fixed when the session
 opens. `partition_type` requests a transform type (default `Identity`); it must
@@ -103,9 +98,8 @@ rows, and reads them through the Iceberg scanner.
 
 ## Index requests
 
-This sink declares `SinkCapability.supported_indexes = &[]`. A nonempty
-`WriteOptions.indexes` list returns `Error::Unsupported` before opening a writer
-or accessing the destination. The default empty list keeps existing behavior.
+Index construction is configured only on `LanceDatasetSink`; Iceberg's sink API
+has no index setting.
 
 ## Compression
 

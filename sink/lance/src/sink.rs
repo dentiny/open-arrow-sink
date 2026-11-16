@@ -2,8 +2,8 @@ use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::num::NonZeroUsize;
 
 use open_arrow_sink_core::{
-    CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
-    SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
+    CompressionCapability, CompressionCodec, DataWriter, Ordering, ParallelSink, Result, SchemaRef,
+    Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
 use crate::{storage::NativeStorage, validation::validate_options, write_options};
@@ -14,6 +14,7 @@ use crate::{storage::NativeStorage, validation::validate_options, write_options}
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
     sources: StorageResolver,
+    options: crate::LanceOptions,
 }
 
 impl LanceDatasetSink {
@@ -21,7 +22,13 @@ impl LanceDatasetSink {
         Self {
             storage: Some(storage),
             sources: StorageResolver::default(),
+            options: crate::LanceOptions::default(),
         }
+    }
+    /// Configure backend-specific options before applying reusable layers.
+    pub fn with_options(mut self, options: crate::LanceOptions) -> Self {
+        self.options = options;
+        self
     }
     /// Configure an independent source namespace for native external blob ingestion.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
@@ -62,16 +69,7 @@ impl Sink for LanceDatasetSink {
                 ],
                 nested_columns: true,
             },
-            supported_partitions: vec![],
-            supports_blob_handle: true,
             supports_blob_streaming: true,
-            supports_storage_version: true,
-            supported_indexes: &[
-                IndexType::Scalar,
-                IndexType::Vector,
-                IndexType::Text,
-                IndexType::BloomFilter,
-            ],
         }
     }
 
@@ -83,6 +81,7 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         let storage_schema = crate::blob::storage_schema(&schema)?;
         if storage_schema != schema {
+            let options = self.options.session(options);
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
@@ -116,6 +115,7 @@ impl ParallelSink for LanceDatasetSink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
+        let options = self.options.session(options);
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;

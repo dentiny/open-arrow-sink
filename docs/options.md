@@ -129,7 +129,7 @@ let summary = writer.commit().await?;
 The unordered layer advertises `supports_blob_streaming: false`: its data writers
 have no native streaming blob interface. An outer `DownloadBlobLayer` selecting
 URL columns is rejected before opening writers. Native logical blob inputs and
-`WriteOptions.blob_handle` configuration remain backend-controlled.
+`LanceOptions.blob_handle` configuration remain backend-controlled.
 
 The inner sink implements `ParallelSink`. It reserves a single destination and
 returns a `WriteSession` containing independent `DataWriter`s and one
@@ -163,27 +163,22 @@ cleanup honors `cleanup_on_error` and removes only session-owned output.
 
 ## Partitioning
 
-`WriteOptions.partition: Some(PartitionOptions::default())` enables routing using
-an existing destination's partition spec. `None` disables routing (the default).
-Only the Iceberg sink currently supports this option, for `Identity`, `Year`,
-`Month`, `Day`, `Hour`, `Bucket`, `Truncate`, and `Void` transforms; Parquet and
-Lance reject it before creating output. Backends declare supported transform categories
-through `SinkCapability.supported_partitions`; an empty list means partitioning
-is unsupported.
-The requested `PartitionOptions.partition_type` (default `Identity`) must be
-in that list and match every partition field in the destination spec. No
-partition layer is required. Bucket counts and truncate widths come from the
-destination spec. All-void specs write a single logical partition with null keys.
+Configure `IcebergTableSink::new(catalog).with_partition(PartitionOptions::default())`
+to route using the destination partition spec. Routing is disabled by default.
+Iceberg supports `Identity`, `Year`, `Month`, `Day`, `Hour`, `Bucket`, `Truncate`,
+and `Void`. The requested transform must match every partition field; bucket
+counts and truncate widths come from the existing spec. This does not change the
+spec. All-void specs write a single logical partition with null keys.
 
 The Iceberg adapter uses the SDK's fanout writer behavior. See the
 [Iceberg sink](../sink/iceberg/README.md) for configuration and commit semantics.
 
 ## Storage version
 
-`WriteOptions.storage_version: Option<String>` selects the backend data-file format
-version. `None` preserves the backend default. `SinkCapability.supports_storage_version`
-advertises support: currently only Lance returns `true`. Parquet and Iceberg reject
-explicit versions with `Error::Unsupported` before destination I/O.
+Configure `LanceOptions.storage_version: Option<LanceFileVersion>` through
+`LanceDatasetSink::with_options`. `None` preserves the native default; `V2_2`
+and `V2_3` select an explicit version. Other native enum variants are rejected
+before destination I/O. Shared `WriteOptions` has no file-version setting.
 
 ## File size
 
@@ -208,25 +203,18 @@ limits may also cause rolling before the target is reached.
 
 ## Index construction
 
-Index requests are backend-independent `IndexSpec` and `IndexType` values in
-`WriteOptions.indexes`. The request list is empty by default.
-`SinkCapability.supported_indexes` lists the supported `IndexType` values. Each
-requested type must appear in that list. Lance supports Scalar, Vector, Text,
-and BloomFilter; Parquet and Iceberg expose empty lists and reject index requests
-before opening a writer or accessing the destination.
-General layers forward this capability and the options to their inner sink.
+Configure `LanceOptions.indexes` on the concrete Lance sink before applying layers.
+The list defaults to empty; Lance supports Scalar, Vector, Text, and BloomFilter.
+Parquet and Iceberg expose no index configuration.
 
 ```rust
-use open_arrow_sink::{IndexType, IndexSpec, Ordering, WriteOptions};
+use open_arrow_sink_core::{IndexType, IndexSpec};
+use open_arrow_sink_lance::{LanceDatasetSink, LanceOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    indexes: vec![
-        IndexSpec::new("id", IndexType::Scalar),
-        IndexSpec::new("embedding", IndexType::Vector),
-    ],
-    ..WriteOptions::default()
-};
+let sink = LanceDatasetSink::default().with_options(LanceOptions {
+    indexes: vec![IndexSpec::new("id", IndexType::Scalar)],
+    ..Default::default()
+});
 ```
 
 Backends choose the concrete implementation of each logical index type and validate
@@ -278,8 +266,7 @@ Completed, session-owned descriptors are attached to the corresponding rows.
 The download layer consumes native streams internally and advertises
 `supports_blob_streaming: false` to callers. Select all URL columns in one layer;
 nesting download layers is rejected before opening the destination.
-`supports_blob_handle` separately governs native logical blob inputs and
-`WriteOptions.blob_handle` configuration.
+Configure native blob layout on the concrete Lance sink before applying layers.
 
 ```rust,no_run
 use std::{num::NonZeroUsize, sync::Arc};
@@ -318,15 +305,13 @@ the writer's abort/drop guarantees.
 
 ### Blob handle configuration
 
-`WriteOptions.blob_handle: Option<BlobHandleConfig>` configures each write session.
-The configuration follows Lance's `BlobFieldOptions`: `inline_size_threshold`
-(inline to packed) and `dedicated_size_threshold` (packed to dedicated), plus
-`external_blob_mode` (`Ingest` by default or explicit `Reference`). Thresholds
-apply to top-level native blob fields; omitted thresholds preserve field metadata
-or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
-`SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
-configuration before destination I/O. Native schema and parallel-session restrictions
-still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
+`LanceOptions.blob_handle: Option<BlobHandleConfig>` configures Lance writes via
+`LanceDatasetSink::with_options`. It controls `inline_size_threshold`,
+`dedicated_size_threshold`, and `external_blob_mode` (`Ingest` by default).
+Omitted thresholds preserve field metadata or native defaults. `None` still uses
+`Ingest`. Configure the concrete sink before applying reusable layers; Parquet
+and Iceberg expose no blob-layout option. Native schema and parallel-session
+restrictions still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
 
 ### Existing indexes
 

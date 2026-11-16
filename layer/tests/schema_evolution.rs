@@ -70,11 +70,8 @@ mod counting_sink {
                 supported_modes: &[WriteMode::Create],
                 ordering: open_arrow_sink_core::Ordering::Unordered,
                 compression: CompressionCapability::default(),
-                supported_partitions: vec![],
-                supports_blob_handle: false,
+
                 supports_blob_streaming: false,
-                supports_storage_version: false,
-                supported_indexes: &[],
             }
         }
         async fn open(

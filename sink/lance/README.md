@@ -49,33 +49,24 @@ The native Lance dependency needs `protoc` available when building from source.
 
 ## Index construction
 
-Set the shared `WriteOptions.indexes` list when opening `LanceDatasetSink`:
+Configure indexes on `LanceDatasetSink` before opening or applying layers:
 
 ```rust,ignore
-use open_arrow_sink::{IndexType, IndexSpec, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
-
-let mut writer = LanceDatasetSink::default().open(
-    "file:///tmp/indexed.lance".parse()?,
-    schema,
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        indexes: vec![
-            IndexSpec::new("id", IndexType::Scalar),
-            IndexSpec::new("embedding", IndexType::Vector),
-        ],
-        ..WriteOptions::default()
-    },
-).await?;
+use open_arrow_sink::{IndexType, IndexSpec, lance::{LanceDatasetSink, LanceOptions}};
+let sink = LanceDatasetSink::default().with_options(LanceOptions {
+    indexes: vec![IndexSpec::new("id", IndexType::Scalar)],
+    ..Default::default()
+});
+let mut writer = sink.open(url, schema, options).await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
 
+
 `IndexType`, `IndexSpec`, and `IndexCommitError` are defined
 in `open-arrow-sink-core` and re-exported by the facade. They have no Lance SDK
-dependency. Lance lists Scalar, Vector, Text, and BloomFilter in
-`SinkCapability.supported_indexes`. Parquet and Iceberg expose empty lists and
-reject index requests before destination I/O. Shared validation checks every
-requested type against the supported list.
+dependency. Configure Scalar, Vector, Text, and BloomFilter indexes only on the
+concrete Lance sink; Parquet and Iceberg expose no index option.
 
 The shared `validation.rs` checks index column existence and uniqueness. Lance's
 `validation.rs` checks each requested kind against its supported Arrow types before
@@ -133,22 +124,21 @@ streamed blobs when appending to or overwriting an existing dataset.
 
 ## External blob ingestion
 
-Lance advertises `SinkCapability.supports_blob_handle`. Configure each session
-through `WriteOptions.blob_handle`; the storage thresholds match Lance `BlobFieldOptions`:
+Configure the Lance sink through `LanceOptions.blob_handle`; the storage thresholds match Lance `BlobFieldOptions`:
 
 ```rust
 use std::num::NonZeroUsize;
-use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Ordering, WriteOptions};
+use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
+use open_arrow_sink_lance::{LanceDatasetSink, LanceOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
+let sink = LanceDatasetSink::default().with_options(LanceOptions {
     blob_handle: Some(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
     }),
     ..Default::default()
-};
+});
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with
@@ -258,10 +248,9 @@ native session, and a rejected commit aborts the reserved dataset directory.
 
 ## Storage version
 
-Set `WriteOptions.storage_version` to `Some("2.2".into())` to select Lance's native
-data-file format version. `SinkCapability.supports_storage_version` is `true`.
-Only `2.2` and `2.3` are supported. Older versions and aliases such as `stable`
-and `next` are rejected before destination I/O. Existing datasets must also use
+Set `LanceOptions.storage_version` to `Some(LanceFileVersion::V2_2)` via
+`LanceDatasetSink::with_options` to select the native format. Only `V2_2` and
+`V2_3` are supported; other enum variants are rejected before destination I/O. Existing datasets must also use
 format `2.2` or `2.3`.
 `None` keeps Lance's default: the latest stable format for a new dataset, or the
 existing manifest's format for an existing dataset. An explicit version is passed

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use lance::index::DatasetIndexExt;
 use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, WriteOptions};
-use open_arrow_sink_lance::{LanceDatasetSink, Url};
+use open_arrow_sink_lance::{LanceDatasetSink, LanceOptions, Url};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +16,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Url::from_directory_path(std::path::absolute(argument)?).map_err(|_| "invalid path")?
         }
     };
-    let sink = LanceDatasetSink::default();
+    let sink = LanceDatasetSink::default().with_options(LanceOptions {
+        indexes: vec![
+            IndexSpec::new("id", IndexType::Scalar),
+            IndexSpec::new("text", IndexType::Text),
+        ],
+        ..Default::default()
+    });
     let batch = RecordBatch::try_from_iter([
         ("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef),
         (
@@ -34,10 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch.schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
-                indexes: vec![
-                    IndexSpec::new("id", IndexType::Scalar),
-                    IndexSpec::new("text", IndexType::Text),
-                ],
                 ..Default::default()
             },
         )

@@ -1,5 +1,6 @@
+use crate::config::SessionOptions;
 use lance::dataset::transaction::Transaction;
-use open_arrow_sink_core::{Result, SessionCommitter, WriteOptions, WriteSummary, async_trait};
+use open_arrow_sink_core::{Result, SessionCommitter, WriteSummary, async_trait};
 
 use crate::{error::backend, index::build_indexes, storage::NativeStorage};
 
@@ -7,7 +8,7 @@ type Output = (u64, Transaction);
 
 pub(crate) struct LanceCommitter {
     pub destination: NativeStorage,
-    pub options: WriteOptions,
+    pub options: SessionOptions,
 }
 
 #[async_trait]
@@ -30,9 +31,7 @@ impl SessionCommitter<Output> for LanceCommitter {
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut builder = self.destination.commit_builder();
-        if let Some(version) =
-            crate::validation::parse_storage_version(self.options.storage_version.as_deref())?
-        {
+        if let Some(version) = self.options.storage_version {
             // Fragment writes and manifest publication must use the same format.
             // Lance preserves the existing manifest default for append operations.
             builder = builder.with_storage_format(version);

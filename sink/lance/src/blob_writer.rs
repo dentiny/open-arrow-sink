@@ -1,9 +1,10 @@
+use crate::config::SessionOptions;
 use std::sync::{Arc, atomic::Ordering};
 
 use lance::Dataset;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary, Writer,
-    async_trait, validation,
+    BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
+    validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -25,7 +26,7 @@ pub(crate) struct BlobDatasetWriter {
     rows: u64,
     failed: bool,
     destination: NativeStorage,
-    options: WriteOptions,
+    options: SessionOptions,
 }
 
 #[async_trait]
@@ -113,7 +114,7 @@ impl BlobDatasetWriter {
         storage_schema: SchemaRef,
         encoding_schema: SchemaRef,
         destination: NativeStorage,
-        options: WriteOptions,
+        options: SessionOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {

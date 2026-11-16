@@ -52,7 +52,12 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
     let path = temp.path().join("dataset");
     let url = Url::from_directory_path(&path).unwrap();
     let input = batch(10 * 1024);
-    let compression = LanceDatasetSink::default().layer(CompressionLayer::new(policy()));
+    let compression = LanceDatasetSink::default()
+        .with_options(open_arrow_sink_lance::LanceOptions {
+            storage_version: Some(open_arrow_sink_lance::LanceFileVersion::V2_2),
+            ..Default::default()
+        })
+        .layer(CompressionLayer::new(policy()));
     let sink: Box<dyn Sink<Request = Url>> = if parallel {
         Box::new(
             compression.layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
@@ -68,7 +73,6 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
             input.schema(),
             WriteOptions {
                 ordering: Ordering::Unordered,
-                storage_version: Some("2.2".into()),
                 target_file_size: Some(1),
                 ..Default::default()
             },

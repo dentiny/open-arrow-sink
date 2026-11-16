@@ -18,7 +18,7 @@ pub(crate) fn read_only_table() -> Error {
 }
 
 pub(crate) fn partition_required() -> Error {
-    Error::Unsupported("partitioned tables require WriteOptions.partition".into())
+    Error::Unsupported("partitioned tables require IcebergTableSink::with_partition".into())
 }
 
 pub(crate) fn unsupported_partition_transform(transform: Transform, field: &str) -> Error {

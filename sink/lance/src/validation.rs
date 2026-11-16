@@ -1,7 +1,8 @@
 //! Configuration, destination, transaction, and writer-state validation.
+use crate::config::SessionOptions;
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability, WriteOptions,
+    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability,
     ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
@@ -9,11 +10,19 @@ use crate::error;
 
 pub(crate) fn validate_options(
     schema: &Schema,
-    options: &WriteOptions,
+    options: &SessionOptions,
     capability: SinkCapability,
 ) -> Result<()> {
     validation::validate_options(schema, options, capability)?;
-    parse_storage_version(options.storage_version.as_deref())?;
+    if let Some(version) = options.storage_version {
+        if !matches!(
+            version,
+            lance_file::version::LanceFileVersion::V2_2
+                | lance_file::version::LanceFileVersion::V2_3
+        ) {
+            return Err(error::unsupported_storage_version(version));
+        }
+    }
     validate_encoding(schema, &options.compression)?;
     validate_compression(&options.compression)?;
     validate_indexes(schema, &options.indexes)
@@ -279,16 +288,4 @@ pub(crate) fn validate_blob_placements(
         }
     }
     Ok(placements)
-}
-
-pub(crate) fn parse_storage_version(
-    version: Option<&str>,
-) -> Result<Option<lance_file::version::LanceFileVersion>> {
-    use lance_file::version::LanceFileVersion;
-    match version {
-        None => Ok(None),
-        Some("2.2") => Ok(Some(LanceFileVersion::V2_2)),
-        Some("2.3") => Ok(Some(LanceFileVersion::V2_3)),
-        Some(version) => Err(error::unsupported_storage_version(version)),
-    }
 }

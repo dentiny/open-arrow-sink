@@ -30,11 +30,10 @@ table sink, or a typed struct for your service. Do not require source-library
 metadata or assume where batches originated.
 
 Return a complete `SinkCapability`: supported modes, actual read-order guarantee,
-global/per-column codecs, partition transform categories, index kinds, blob
-configuration support (`supports_blob_handle`), streaming blob interfaces
-(`supports_blob_streaming`), and storage-version support. Empty codec/index/partition collections mean
-unsupported. A permission to reorder is not a guarantee of preserved order.
-Directory file numbering alone cannot establish scan order.
+compression capabilities, and streaming blob interfaces (`supports_blob_streaming`).
+Keep destination-specific index, partition, file-version, and blob-layout configuration
+on the concrete sink or its typed request. A permission to reorder is not a
+guarantee of preserved order.
 
 Capabilities cannot express every request restriction. Document and validate
 those restrictions at open, such as filesystem-only overwrite or a schema that

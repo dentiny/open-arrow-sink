@@ -1,9 +1,8 @@
+use crate::config::SessionOptions;
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
-use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
-};
+use open_arrow_sink_core::{DataWriter, RecordBatch, Result, SchemaRef, async_trait, validation};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
@@ -68,7 +67,7 @@ impl FragmentWriter {
         schema: SchemaRef,
         encoding_schema: SchemaRef,
         destination: NativeStorage,
-        options: &WriteOptions,
+        options: &SessionOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
