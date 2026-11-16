@@ -57,17 +57,14 @@ async fn compression_survives_rolling_and_round_trips(
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                target_file_size: Some(1),
-                // The layer replaces these session settings.
-                compression: CompressionOptions {
+            WriteOptions::default()
+                .with_ordering(Ordering::Unordered)
+                .with_target_file_size(Some(1))
+                .with_compression(CompressionOptions {
                     global: None,
                     columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
                     ..Default::default()
-                },
-                ..Default::default()
-            },
+                }),
         )
         .await
         .unwrap();
@@ -134,23 +131,17 @@ async fn option_layers_compose_before_backend_validation() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("output");
         let batch = batch();
-        let options = WriteOptions {
-            compression: CompressionOptions {
-                columns: [("missing".into(), Codec::Snappy)].into(),
-                ..Default::default()
-            },
+        let options = WriteOptions::default().with_compression(CompressionOptions {
+            columns: [("missing".into(), Codec::Snappy)].into(),
             ..Default::default()
-        };
+        });
         // Deferring validation must still reject invalid effective options
         // before the backend creates a destination.
         assert!(
             sink.open(
                 Url::from_directory_path(&directory).unwrap(),
                 batch.schema(),
-                WriteOptions {
-                    target_file_size: Some(0),
-                    ..options.clone()
-                },
+                options.clone().with_target_file_size(Some(0)),
             )
             .await
             .is_err()

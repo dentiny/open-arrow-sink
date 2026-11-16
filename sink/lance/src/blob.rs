@@ -11,8 +11,8 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, RecordBatch, Result,
-    SchemaRef, async_trait,
+    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Poison, RecordBatch,
+    Result, SchemaRef, async_trait,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
@@ -71,7 +71,7 @@ struct NativeBlobWriter {
     url: Url,
     relative: String,
     finished: bool,
-    failed: bool,
+    state: Poison,
 }
 impl Drop for NativeBlobWriter {
     fn drop(&mut self) {
@@ -84,8 +84,8 @@ impl Drop for NativeBlobWriter {
 #[async_trait]
 impl BlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        validation::validate_blob_state(self.failed, &self.session)?;
-        self.failed = true;
+        validation::validate_blob_state(&self.state, &self.session)?;
+        self.state.poison();
         let result = async {
             if self.inner.is_none()
                 && self.inline_limit.is_some_and(|limit| {
@@ -123,11 +123,11 @@ impl BlobWriter for NativeBlobWriter {
             self.session.failed.store(true, Ordering::Release);
             return Err(error);
         }
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
-        validation::validate_blob_state(self.failed, &self.session)?;
+        validation::validate_blob_state(&self.state, &self.session)?;
         let (descriptor, url) = if let Some(inner) = self.inner.as_mut() {
             let size = inner.close().await?;
             self.session.io_tracker.record_write(
@@ -193,7 +193,7 @@ pub(crate) async fn create_blob(
         url,
         relative,
         finished: false,
-        failed: false,
+        state: Poison::default(),
     }))
 }
 
