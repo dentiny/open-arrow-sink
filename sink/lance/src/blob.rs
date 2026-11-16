@@ -1,9 +1,6 @@
-use std::{
-    collections::HashSet,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
@@ -19,7 +16,6 @@ pub(crate) struct BlobSession {
     failed: AtomicBool,
     storage: Storage,
     relative_prefix: String,
-    unattached: Mutex<HashSet<ObjectPath>>,
 }
 impl BlobSession {
     pub fn new(storage: Storage) -> Self {
@@ -29,7 +25,6 @@ impl BlobSession {
             failed: AtomicBool::new(false),
             storage,
             relative_prefix,
-            unattached: Mutex::default(),
         }
     }
     pub fn check(&self) -> Result<()> {
@@ -60,22 +55,15 @@ impl BlobSession {
         self.check()?;
         let relative = format!("{}{}.blob", self.relative_prefix, uuid::Uuid::new_v4());
         let path = directory.join(&relative)?;
-        // Retain ownership before opening: cancellation can leave an object behind.
-        self.unattached.lock().unwrap().insert(path.clone());
         let inner = self.storage.writer(&path).await?;
         self.active.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(NativeBlobWriter {
             inner,
             session: self.clone(),
-            path,
             relative,
             finished: false,
             state: Poison::default(),
         }))
-    }
-
-    fn attach(&self, blob: &NativeBlob) {
-        self.unattached.lock().unwrap().remove(&blob.path);
     }
 
     fn release_writer(&self, finished: bool) {
@@ -84,26 +72,16 @@ impl BlobSession {
         }
         self.active.fetch_sub(1, Ordering::Release);
     }
-
-    pub async fn cleanup(&self) -> Result<()> {
-        let files: Vec<_> = self.unattached.lock().unwrap().drain().collect();
-        for path in files {
-            self.storage.delete(&path).await?;
-        }
-        Ok(())
-    }
 }
 
 pub(crate) struct NativeBlob {
     pub session: Arc<BlobSession>,
     pub descriptor: BlobDescriptor,
-    path: ObjectPath,
 }
 
 struct NativeBlobWriter {
     inner: StorageWriter,
     session: Arc<BlobSession>,
-    path: ObjectPath,
     relative: String,
     finished: bool,
     state: Poison,
@@ -139,7 +117,6 @@ impl BlobWriter for NativeBlobWriter {
                 offset: 0,
                 size,
             },
-            path: self.path.clone(),
         }))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -199,9 +176,5 @@ pub(crate) fn storage_batch(
         .with_row_count(Some(batch.num_rows()));
     let output = RecordBatch::try_new_with_options(schema.clone(), columns, &options)
         .map_err(Error::backend)?;
-    for handle in placements.values() {
-        let native = handle.downcast_ref::<NativeBlob>().unwrap();
-        session.attach(native);
-    }
     Ok(output)
 }

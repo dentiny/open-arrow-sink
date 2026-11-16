@@ -85,6 +85,29 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
 }
 
 #[tokio::test]
+async fn successful_commit_preserves_unattached_blobs() {
+    let storage = storage();
+    let url = storage.url("unattached/").unwrap();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let mut writer = sink
+        .open(url.clone(), input().schema(), options())
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new("orphan")).await.unwrap();
+    drop(blob.finish().await.unwrap());
+    let prefix = storage.resolve(&url.join("_blobs/").unwrap()).unwrap();
+    let before = storage.list(&prefix).await.unwrap();
+    assert_eq!(before.len(), 1);
+
+    writer.write(input()).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    assert_eq!(storage.list(&prefix).await.unwrap(), before);
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
+}
+
+#[tokio::test]
 async fn overwrite_abort_preserves_attached_session_blobs() {
     let storage = storage();
     let url = storage.url("existing/").unwrap();

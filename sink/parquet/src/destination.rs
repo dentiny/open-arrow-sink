@@ -5,13 +5,7 @@ use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
 
-/// Whether this session owns the directory or only its newly created parts.
-pub(crate) enum Destination {
-    Owned(Directory),
-    Shared(Directory),
-}
-
-pub(crate) struct Directory {
+pub(crate) struct Destination {
     pub(crate) storage: Storage,
     pub(crate) path: ObjectPath,
     prefix: String,
@@ -49,22 +43,11 @@ impl Destination {
                 ));
             }
         };
-        let directory = Directory {
+        Ok(Self {
             storage,
             path: directory,
             prefix,
-        };
-        Ok(match mode {
-            WriteMode::Create => Self::Owned(directory),
-            WriteMode::Append => Self::Shared(directory),
-            WriteMode::Overwrite => unreachable!(),
         })
-    }
-
-    pub(crate) fn directory(&self) -> &Directory {
-        match self {
-            Self::Owned(directory) | Self::Shared(directory) => directory,
-        }
     }
 
     pub(crate) async fn open_writer(
@@ -74,16 +57,12 @@ impl Destination {
         schema: SchemaRef,
         properties: WriterProperties,
     ) -> Result<AsyncArrowWriter<FileWriter>> {
-        let directory = self.directory();
-        let path = directory
+        let path = self
             .path
-            .join(&format!(
-                "{}{writer}-{sequence:05}.parquet",
-                directory.prefix
-            ))
+            .join(&format!("{}{writer}-{sequence:05}.parquet", self.prefix))
             .unwrap();
-        directory.storage.create(&path, Bytes::new()).await?;
-        let file = FileWriter(directory.storage.writer(&path).await?);
+        self.storage.create(&path, Bytes::new()).await?;
+        let file = FileWriter(self.storage.writer(&path).await?);
         AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
     }
 }

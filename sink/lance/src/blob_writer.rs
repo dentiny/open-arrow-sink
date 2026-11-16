@@ -63,7 +63,6 @@ impl Writer for BlobDatasetWriter {
             .and_then(|()| self.blob_session.ensure_idle());
         self.blob_session.fail();
         validation?;
-        self.blob_session.cleanup().await?;
         let fragments = self.worker.finish().await?;
         // Share manifest publication, index creation, and failure semantics with
         // ordinary writers. Once publication starts, retain files on failure.

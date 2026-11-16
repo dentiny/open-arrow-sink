@@ -35,7 +35,9 @@ Lance to publish a new manifest version. `abort` stops the worker and retains
 persisted output. Dropping closes the stream
 with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
-have an uncertain publication outcome; do not automatically retry.
+have an uncertain publication outcome; do not automatically retry. Finished native
+blobs that are never attached to a batch remain as orphan files, including after a
+successful commit; callers are responsible for their cleanup.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
 Create checks that the destination prefix does not exist without creating marker
@@ -309,7 +311,7 @@ Compression is applied first; logical blob fields and encoded descriptors are th
 derived together with the same metadata and explicit layout overrides.
 `LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
-owns handles, placements, and cleanup.
+owns handles and placements.
 
 ## Upload buffering
 
