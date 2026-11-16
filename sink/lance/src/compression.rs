@@ -17,12 +17,13 @@ const DICT_LEVEL: &str = "lance-encoding:dict-values-compression-level";
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) -> SchemaRef {
     if options.global.is_none()
         && options.columns.is_empty()
+        && options.nested_columns.is_empty()
         && options.structural_encoding.is_none()
         && options.column_encodings.is_empty()
     {
         return schema.clone();
     }
-    let fields: Vec<_> = schema
+    let mut fields: Vec<_> = schema
         .fields()
         .iter()
         .map(|field| {
@@ -43,7 +44,41 @@ pub(crate) fn writer_schema(schema: &SchemaRef, options: &CompressionOptions) ->
             }
         })
         .collect();
+    for (path, codec) in &options.nested_columns {
+        let index = fields
+            .iter()
+            .position(|f| f.name() == &path[0])
+            .expect("validated path");
+        fields[index] = nested_override(&fields[index], &path[1..], *codec);
+    }
     Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+fn nested_override(field: &Arc<Field>, path: &[String], codec: Compression) -> Arc<Field> {
+    if path.is_empty() {
+        return Arc::new(compression_field(field, Some(codec), None));
+    }
+    let ty = match field.data_type() {
+        DataType::Struct(children) => DataType::Struct(
+            children
+                .iter()
+                .map(|child| {
+                    if child.name() == &path[0] {
+                        nested_override(child, &path[1..], codec)
+                    } else {
+                        child.clone()
+                    }
+                })
+                .collect(),
+        ),
+        DataType::List(item) => DataType::List(nested_override(item, path, codec)),
+        DataType::LargeList(item) => DataType::LargeList(nested_override(item, path, codec)),
+        DataType::FixedSizeList(item, size) => {
+            DataType::FixedSizeList(nested_override(item, path, codec), *size)
+        }
+        _ => unreachable!("nested path validated before schema conversion"),
+    };
+    Arc::new(field.as_ref().clone().with_data_type(ty))
 }
 
 fn compression_field(

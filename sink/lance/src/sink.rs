@@ -60,6 +60,7 @@ impl Sink for LanceDatasetSink {
                     open_arrow_sink_core::StructuralEncoding::Miniblock,
                     open_arrow_sink_core::StructuralEncoding::Fullzip,
                 ],
+                nested_columns: true,
             },
             supported_partitions: vec![],
             supports_blob_handle: true,
@@ -88,6 +89,7 @@ impl Sink for LanceDatasetSink {
             destination
                 .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
                 .await?;
+            destination.validate_index_requests(&options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
                 storage_schema,
@@ -119,6 +121,7 @@ impl ParallelSink for LanceDatasetSink {
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
         let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
         destination.prepare(&encoding_schema, options.mode).await?;
+        destination.validate_index_requests(&options).await?;
         let writers = (0..count.get())
             .map(|_| {
                 Ok(Box::new(crate::parallel::FragmentWriter::new(

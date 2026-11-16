@@ -118,3 +118,36 @@ Create a layer, keep its cloneable `metrics()` handle, then install the layer an
 inspect `snapshot()` for lifecycle, accepted/committed rows, durations, failures,
 and measured backend payload bytes (including unsuccessful sessions). The layer collects observations; backends remain
 responsible for measuring real encoded I/O. See [metrics contracts](../docs/options.md#observing-sessions-with-metricslayer).
+
+## Schema evolution
+
+`SchemaEvolutionLayer` performs one-to-one top-level field remapping. It plans
+once at open, then applies callbacks to each batch. It never adds, removes, or
+reorders columns. All source names refer to the original input schema; renames
+can therefore swap names. Missing/ambiguous sources, repeated mappings, and
+output name collisions fail before the inner sink opens.
+
+```rust,ignore
+use arrow_schema::{DataType, Field};
+use open_arrow_sink::{SinkExt, layer::{FieldRemap, SchemaEvolutionLayer}};
+
+let layer = SchemaEvolutionLayer::new(vec![FieldRemap::new(
+    "old_name",
+    Field::new("new_name", DataType::Int32, true),
+    Ok, // Reuse the array for a rename or metadata-only remap.
+)]);
+let sink = sink.layer(layer);
+```
+
+Each mapping supplies the complete target field (including metadata) and a
+synchronous `ArrayRef -> Result<ArrayRef>` callback. Use a callback for type or
+nested-array conversion; ATIF/Lance policy belongs in the caller. Callbacks must
+preserve row count, row order, and relevant nulls/offsets. The layer checks output
+length, type, and nullability. Unmapped arrays and schema metadata are preserved.
+The public writer exposes the input schema; the backend receives the target
+schema. Options, including column names in compression/index policies, refer to
+the target schema and pass through unchanged.
+
+Single and parallel sessions are supported. Write errors or cancellation make
+the writer terminal. Arbitrary array remaps cannot safely forward native blob
+placements, so this adapter does not expose `create_blob`/`write_with_blobs`.

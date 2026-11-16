@@ -71,6 +71,9 @@ pub struct CompressionOptions {
     /// Overrides keyed by exact top-level Arrow field name (dots are literal).
     /// For nested fields, applies to all descendant physical columns.
     pub columns: BTreeMap<String, Compression>,
+    /// Explicit nested field paths, omitting list item names. Applied after top-level overrides.
+    /// Segments are literal names, so dots never make a path ambiguous.
+    pub nested_columns: BTreeMap<Vec<String>, Compression>,
     /// Default structural encoding. None preserves backend/schema defaults.
     /// Independent of the global codec and per-column codec overrides.
     pub structural_encoding: Option<StructuralEncoding>,
@@ -87,6 +90,7 @@ pub struct CompressionOptions {
 pub struct CompressionCapability {
     pub global: &'static [CompressionCodec],
     pub per_column: &'static [CompressionCodec],
+    pub nested_columns: bool,
     /// Supported global and per-column structural encodings. Empty means unsupported.
     pub structural_encodings: &'static [StructuralEncoding],
 }

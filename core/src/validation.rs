@@ -80,6 +80,16 @@ pub fn validate_compression_options(
             )));
         }
     }
+    for (path, compression) in &options.nested_columns {
+        if !capability.nested_columns || !capability.per_column.contains(&compression.codec()) {
+            return Err(Error::Unsupported(format!("nested compression: {path:?}")));
+        }
+        if path.len() < 2 || nested_field(schema, path).is_none() {
+            return Err(Error::Unsupported(format!(
+                "nested compression path must identify one field: {path:?}"
+            )));
+        }
+    }
     for column in options
         .columns
         .keys()
@@ -188,4 +198,49 @@ pub fn validate_storage_version_options(
         return Err(Error::Unsupported("storage version".into()));
     }
     Ok(())
+}
+
+/// Resolve literal struct names through list containers without list-item segments.
+/// Native blob internals are not user-addressable column paths.
+pub fn nested_field<'a>(schema: &'a Schema, path: &[String]) -> Option<&'a arrow_schema::Field> {
+    fn fields<'a>(
+        fields: &'a arrow_schema::Fields,
+        path: &[String],
+    ) -> Option<&'a arrow_schema::Field> {
+        let mut matches = fields.iter().filter(|f| f.name() == &path[0]);
+        let field = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        if path.len() == 1 {
+            return Some(field);
+        }
+        if field
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str)
+            == Some("lance.blob.v2")
+        {
+            return None;
+        }
+        descend(field.data_type(), &path[1..])
+    }
+    fn descend<'a>(
+        ty: &'a arrow_schema::DataType,
+        path: &[String],
+    ) -> Option<&'a arrow_schema::Field> {
+        use arrow_schema::DataType;
+        match ty {
+            DataType::Struct(children) => fields(children, path),
+            DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
+                descend(item.data_type(), path)
+            }
+            _ => None,
+        }
+    }
+    if path.is_empty() {
+        None
+    } else {
+        fields(schema.fields(), path)
+    }
 }

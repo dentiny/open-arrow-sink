@@ -18,3 +18,6 @@ pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};
 
 mod metrics;
 pub use metrics::{MetricsLayer, MetricsSink, MetricsSnapshot, WriteMetrics};
+
+mod schema_evolution;
+pub use schema_evolution::{FieldRemap, SchemaEvolutionLayer, SchemaEvolutionSink};
