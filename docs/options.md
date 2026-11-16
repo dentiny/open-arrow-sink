@@ -15,7 +15,7 @@ destination. Atomicity and cleanup are backend-specific; see the
 The default is Create for every sink. Iceberg supports only Append, so callers
 must explicitly set `mode: WriteMode::Append`. `SinkCapability.supported_modes`
 lists implemented modes, but destination-dependent restrictions still apply
-(for example, Parquet Overwrite requires a filesystem URL/operator).
+(for example, Append requires an existing destination).
 
 ## Ordering
 
