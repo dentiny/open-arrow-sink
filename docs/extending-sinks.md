@@ -31,6 +31,8 @@ metadata or assume where batches originated.
 
 Return a complete `SinkCapability`: supported modes, actual read-order guarantee,
 compression capabilities, and streaming blob interfaces (`supports_blob_streaming`).
+Use `..SinkCapability::default()` for unsupported optional features: it advertises
+no write modes, compression features, streaming blobs, or input-order guarantee.
 Keep destination-specific index, partition, file-version, and blob-layout configuration
 on the concrete sink or its typed request. A permission to reorder is not a
 guarantee of preserved order.

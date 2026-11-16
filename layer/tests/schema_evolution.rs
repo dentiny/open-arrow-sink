@@ -56,8 +56,8 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit() {
 mod counting_sink {
     use super::*;
     use open_arrow_sink_core::{
-        CompressionCapability, DataWriter, Result, SchemaRef, SessionCommitter, SinkCapability,
-        WriteMode, WriteSession, WriteSummary, Writer, async_trait, validation,
+        DataWriter, Result, SchemaRef, SessionCommitter, SinkCapability, WriteMode, WriteSession,
+        WriteSummary, Writer, async_trait, validation,
     };
     use std::num::NonZeroUsize;
 
@@ -68,10 +68,7 @@ mod counting_sink {
         fn capability(&self) -> SinkCapability {
             SinkCapability {
                 supported_modes: &[WriteMode::Create],
-                ordering: open_arrow_sink_core::Ordering::Unordered,
-                compression: CompressionCapability::default(),
-
-                supports_blob_streaming: false,
+                ..Default::default()
             }
         }
         async fn open(
