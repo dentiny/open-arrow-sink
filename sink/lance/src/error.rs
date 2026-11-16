@@ -1,43 +1,9 @@
-use open_arrow_sink_core::{Error, ZSTD_COMPRESSION_LEVEL_RANGE};
+use open_arrow_sink_core::Error;
 
 use std::io;
 
-use arrow_schema::ArrowError;
-
-pub(crate) fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::Backend(Box::new(error))
-}
-
-pub(crate) fn invalid_compression_level(level: i32) -> Error {
-    Error::Unsupported(format!(
-        "Lance Zstd compression level must be between 0 and {}: {level}",
-        ZSTD_COMPRESSION_LEVEL_RANGE.end(),
-    ))
-}
-
-pub(crate) fn aborted() -> ArrowError {
-    ArrowError::ExternalError(Box::new(io::Error::new(
-        io::ErrorKind::Interrupted,
-        "Lance writer aborted or dropped",
-    )))
-}
-
 pub(crate) fn worker_stopped() -> Error {
-    backend(io::Error::other("Lance write worker stopped"))
-}
-
-pub(crate) fn missing_index_column(column: &str) -> Error {
-    Error::Unsupported(format!("index column not found: {column}"))
-}
-
-pub(crate) fn unsupported_index(
-    index: &open_arrow_sink_core::IndexSpec,
-    data_type: &arrow_schema::DataType,
-) -> Error {
-    Error::Unsupported(format!(
-        "cannot create {:?} index on column {} with type {}",
-        index.index_type, index.column, data_type
-    ))
+    Error::backend(io::Error::other("Lance write worker stopped"))
 }
 
 pub(crate) fn index_creation(
@@ -54,94 +20,57 @@ pub(crate) fn index_creation(
     )
 }
 
-pub(crate) fn index_task(
-    error: impl std::fmt::Display,
-    summary: open_arrow_sink_core::WriteSummary,
-) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError::new(
-        format!("index construction task failed: {error}"),
-        summary,
-    )
-}
-
-pub(crate) fn index_refresh(
-    error: impl std::fmt::Display,
-    summary: open_arrow_sink_core::WriteSummary,
-) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError::new(
-        format!("refreshing dataset after index construction: {error}"),
-        summary,
-    )
-}
-
-pub(crate) fn destination_exists() -> Error {
-    backend(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "destination exists",
-    ))
-}
-
 pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
     lance::Error::invalid_input(error.to_string())
 }
 
-pub(crate) fn invalid_create_fragments() -> Error {
-    Error::Unsupported("expected compatible uncommitted Lance write fragments".into())
-}
-
-pub(crate) fn empty_writer_session() -> Error {
-    Error::Unsupported("empty Lance writer session".into())
-}
-
-pub(crate) fn different_dataset_versions() -> Error {
-    Error::Unsupported("Lance writers observed different dataset versions".into())
-}
-
-pub(crate) fn invalid_blob(message: &'static str) -> Error {
-    Error::Unsupported(message.into())
-}
 pub(crate) fn invalid_blob_column(column: &str) -> Error {
-    Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
+    Error::InvalidInput(format!("blob column must be LargeBinary: {column}"))
 }
-pub(crate) fn unfinished_blobs() -> Error {
-    backend(io::Error::other(
-        "writer failed or has unfinished blobs; session aborted",
-    ))
-}
-pub(crate) fn parallel_blobs() -> Error {
-    invalid_blob("parallel sessions do not support blob-marked columns")
-}
-pub(crate) fn schema_mismatch() -> Error {
-    Error::SchemaMismatch
-}
-
-pub(crate) fn blob_column_out_of_bounds() -> Error {
-    invalid_blob("blob column out of bounds")
-}
-
-pub(crate) fn blob_cell() -> Error {
-    invalid_blob("blob placement must target a blob-marked cell")
-}
-
-pub(crate) fn blob_placeholder() -> Error {
-    invalid_blob("blob placement must replace an empty non-null payload")
-}
-
-pub(crate) fn foreign_blob() -> Error {
-    invalid_blob("foreign blob handle")
-}
-
-pub(crate) fn blob_owner() -> Error {
-    invalid_blob("blob handle belongs to another session")
-}
-
-pub(crate) fn duplicate_blob_placement() -> Error {
-    invalid_blob("duplicate blob placement")
-}
-
 pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Error {
     Error::Unsupported(format!(
         "Lance storage version must be 2.2 or 2.3: {version}"
+    ))
+}
+
+pub(crate) fn invalid_compression_level(level: i32) -> Error {
+    Error::InvalidConfig(format!(
+        "Lance Zstd compression level must be between 0 and {}: {level}",
+        open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.end(),
+    ))
+}
+
+pub(crate) fn unsupported_compression(compression: open_arrow_sink_core::Compression) -> Error {
+    Error::Unsupported(format!("Lance compression: {compression:?}"))
+}
+
+pub(crate) fn invalid_compression_path(path: &[String]) -> Error {
+    Error::Unsupported(format!(
+        "nested compression path must identify one field: {path:?}"
+    ))
+}
+
+pub(crate) fn nested_blob_compression(path: &[String]) -> Error {
+    Error::Unsupported(format!(
+        "nested compression inside native blob column: {path:?}"
+    ))
+}
+
+pub(crate) fn blob_structural_encoding(column: &str) -> Error {
+    Error::Unsupported(format!("structural encoding on blob column {column}"))
+}
+
+pub(crate) fn missing_index_column(column: &str) -> Error {
+    Error::InvalidConfig(format!("index column not found: {column}"))
+}
+
+pub(crate) fn unsupported_index(
+    index: &open_arrow_sink_core::IndexSpec,
+    data_type: &arrow_schema::DataType,
+) -> Error {
+    Error::Unsupported(format!(
+        "cannot create {:?} index on column {} with type {}",
+        index.index_type, index.column, data_type
     ))
 }
 
@@ -149,7 +78,44 @@ pub(crate) fn storage_version_mismatch(
     requested: impl std::fmt::Display,
     existing: impl std::fmt::Display,
 ) -> Error {
-    Error::Unsupported(format!(
+    Error::InvalidConfig(format!(
         "Lance append storage version {requested} does not match existing dataset version {existing}"
     ))
+}
+
+pub(crate) fn poisoned() -> Error {
+    Error::Poisoned
+}
+pub(crate) fn different_dataset_versions() -> Error {
+    Error::InvalidInput("Lance writers observed different dataset versions".into())
+}
+pub(crate) fn invalid_create_fragments() -> Error {
+    Error::InvalidInput("expected compatible uncommitted Lance write fragments".into())
+}
+pub(crate) fn empty_writer_session() -> Error {
+    Error::InvalidInput("empty Lance writer session".into())
+}
+pub(crate) fn parallel_blobs() -> Error {
+    Error::Unsupported("parallel sessions do not support blob-marked columns".into())
+}
+pub(crate) fn blob_column_out_of_bounds() -> Error {
+    Error::InvalidInput("blob column out of bounds".into())
+}
+pub(crate) fn invalid_blob_cell() -> Error {
+    Error::InvalidInput("blob placement must target a blob-marked cell".into())
+}
+pub(crate) fn invalid_blob_placeholder() -> Error {
+    Error::InvalidInput("blob placement must replace an empty non-null payload".into())
+}
+pub(crate) fn foreign_blob() -> Error {
+    Error::InvalidInput("foreign blob handle".into())
+}
+pub(crate) fn blob_owner() -> Error {
+    Error::InvalidInput("blob handle belongs to another session".into())
+}
+pub(crate) fn duplicate_blob_placement() -> Error {
+    Error::InvalidInput("duplicate blob placement".into())
+}
+pub(crate) fn invalid_destination_root() -> Error {
+    Error::InvalidInput("destination must not be the storage root".into())
 }

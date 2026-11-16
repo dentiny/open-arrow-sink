@@ -57,9 +57,8 @@ async fn compression_survives_rolling_and_round_trips(
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
-                .with_target_file_size(Some(1))
+            open_arrow_sink_test_support::unordered_options()
+                .with_target_file_size(1)
                 .with_compression(CompressionOptions {
                     global: None,
                     columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
@@ -72,7 +71,7 @@ async fn compression_survives_rolling_and_round_trips(
     writer.write(batch.clone()).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 6);
     for index in 0..2 {
-        let file = tokio::fs::File::open(directory.join(format!("part-{index:05}.parquet")))
+        let file = tokio::fs::File::open(directory.join(format!("part-0-{index:05}.parquet")))
             .await
             .unwrap();
         let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
@@ -141,7 +140,7 @@ async fn option_layers_compose_before_backend_validation() {
             sink.open(
                 Url::from_directory_path(&directory).unwrap(),
                 batch.schema(),
-                options.clone().with_target_file_size(Some(0)),
+                options.clone().with_target_file_size(0),
             )
             .await
             .is_err()

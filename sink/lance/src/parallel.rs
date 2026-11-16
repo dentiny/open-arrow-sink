@@ -1,149 +1,56 @@
-use arrow_array::RecordBatchReader;
-use arrow_schema::ArrowError;
-use lance::dataset::{InsertBuilder, transaction::Transaction};
+use lance::dataset::WriteParams;
 use open_arrow_sink_core::{
-    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+    DataWriter, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    compression::writer_batch,
-    error::{aborted, backend, worker_stopped},
-    storage::NativeStorage,
+    LanceFragments, compression::writer_batch, destination::LanceDestination,
+    worker::FragmentWorker,
 };
-
-type Output = (u64, Transaction);
-
-pub(crate) enum Message {
-    Batch(RecordBatch),
-    Commit,
-}
-
-pub(crate) struct ChannelReader {
-    pub(crate) schema: SchemaRef,
-    pub(crate) receiver: mpsc::Receiver<Message>,
-    pub(crate) finished: bool,
-}
-
-impl Iterator for ChannelReader {
-    type Item = std::result::Result<RecordBatch, ArrowError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-        // Lance polls RecordBatchReader on its blocking background iterator.
-        match self.receiver.blocking_recv() {
-            Some(Message::Batch(batch)) => Some(Ok(batch)),
-            Some(Message::Commit) => {
-                self.finished = true;
-                None
-            }
-            None => {
-                self.finished = true;
-                Some(Err(aborted()))
-            }
-        }
-    }
-}
-
-impl RecordBatchReader for ChannelReader {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
-    sender: Option<mpsc::Sender<Message>>,
-    task: Option<JoinHandle<lance::Result<Transaction>>>,
-    rows: u64,
+    schemas: crate::write_options::LanceSchemas,
+    worker: FragmentWorker,
     state: Poison,
 }
 
 impl FragmentWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        encoding_schema: SchemaRef,
-        destination: NativeStorage,
-        options: &WriteOptions,
-    ) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        };
-        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
-        let uri = destination.url.to_string();
-        let task = tokio::spawn(async move {
-            InsertBuilder::new(uri.as_str())
-                .with_params(&params)
-                .execute_uncommitted_stream(
-                    Box::new(reader) as Box<dyn arrow_array::RecordBatchReader + Send>
-                )
-                .await
-        });
-        Ok(Self {
-            schema,
-            encoding_schema,
-            sender: Some(sender),
-            task: Some(task),
-            rows: 0,
+        schemas: crate::write_options::LanceSchemas,
+        destination: LanceDestination,
+        params: WriteParams,
+    ) -> Self {
+        let worker = FragmentWorker::new(schemas.encoded.clone(), &destination, params);
+        Self {
+            schemas,
+            worker,
             state: Poison::default(),
-        })
+        }
     }
 }
 
 #[async_trait]
 impl DataWriter for FragmentWriter {
-    type Output = Output;
+    type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
-        if self.sender.is_none() {
-            return Err(open_arrow_sink_core::Error::Poisoned);
-        }
-        validation::validate_batch(&self.schema, &batch)?;
-        let rows = batch.num_rows() as u64;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
-            .send(Message::Batch(batch))
-            .await
-            .map_err(|_| worker_stopped())?;
-        self.rows += rows;
+        validation::validate_batch(&self.schemas.input, &batch)?;
+        let batch = writer_batch(batch, &self.schemas.encoded)?;
+        self.worker.write(batch).await?;
         self.state.complete();
         Ok(())
     }
-    async fn finish(&mut self) -> Result<Output> {
+    async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
-        let sender = self
-            .sender
-            .take()
-            .ok_or(open_arrow_sink_core::Error::Poisoned)?;
-        let _ = sender.send(Message::Commit).await;
-        drop(sender);
-        let transaction = self
-            .task
-            .take()
-            .ok_or(open_arrow_sink_core::Error::Poisoned)?
-            .await
-            .map_err(backend)?
-            .map_err(backend)?;
-        Ok((self.rows, transaction))
+        self.worker.finish().await
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        drop(self.sender.take());
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
-        // Session cleanup runs only after every worker has stopped.
+        self.worker.abort().await;
+        // Persisted output is retained after stopping the worker.
         Ok(())
     }
 }

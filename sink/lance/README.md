@@ -31,12 +31,17 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish a new manifest version. `abort` stops the worker and removes the
-reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
+Lance to publish a new manifest version. `abort` stops the worker and retains
+persisted output. Dropping closes the stream
+with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Create checks that the destination prefix does not exist without creating marker
+files. Callers must exclude concurrent writes or directory replacement during a
+session. After a process crash, uncommitted output may require manual cleanup
+before another Create.
 Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
@@ -100,12 +105,12 @@ training failures, including insufficient usable vectors, are returned explicitl
 An empty index list preserves the underlying sink behavior.
 
 Index creation clones the dataset handle returned by the native data commit and
-spawns one Tokio task per requested index. Each task builds and commits its index
+builds requested indexes one at a time to bound peak native build memory. Each task builds and commits its index
 through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
 when one fails, and the original dataset handle is refreshed after they finish.
-The first observed error is returned after all tasks complete. Successfully built
-indexes and committed data remain visible regardless of `cleanup_on_error`.
-`Error::Backend` contains an `IndexCommitError` identifying the failed index type
+The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
+indexes and committed data remain visible after an error.
+`Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
 than rewriting already committed rows. Dropping the commit future aborts
@@ -132,10 +137,9 @@ Lance managed-blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a freshly reserved dataset
-when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
-owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
-streamed blobs when appending to or overwriting an existing dataset.
+poisons the session. Abort stops writing and retains persisted output. A rejected
+commit returns directly without deleting the dataset or its streamed blobs.
+Each session owns a separate `_blobs/<session>/` namespace.
 
 ## External blob ingestion
 
@@ -148,11 +152,11 @@ use std::num::NonZeroUsize;
 
 let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
-    .with_blob_handle(Some(BlobHandleConfig {
+    .with_blob_handle(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
-    }));
+    });
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with
@@ -194,9 +198,9 @@ removing `validate_parallel_blob_schema` alone would not supply those guarantees
 
 ## Compression
 
-Supports global and per-column `Compression::Zstd { level }` and
-`Compression::Uncompressed`, directly in `WriteOptions.compression` or through
-`CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
+Supports global, per-column, and nested-column `Compression::Zstd { level }`,
+`Compression::Lz4Raw`, and `Compression::Uncompressed`, directly in
+`WriteOptions.compression` or through `CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
 Lance's codec default. Unsupported codecs and levels fail before destination
 creation. Empty compression options preserve existing field metadata and native
 defaults.
@@ -212,8 +216,8 @@ The adapter sets `lance-encoding:compression` and
 separate dictionary-value compression settings. `Uncompressed` disables native
 general-purpose compression. Structural encoding is independently controlled by
 `CompressionOptions.structural_encoding` and `.column_encodings`: `Miniblock`
-uses a block-oriented layout, while `Fullzip` uses a per-value layout. Neither
-setting changes the codec. Column overrides replace only the corresponding
+uses a block-oriented layout, while `Fullzip` uses a per-value layout.
+The requested codec is passed to Lance for either layout. Column overrides replace only the corresponding
 structural default, and both policies propagate to nested descendants.
 Unspecified structural settings preserve native/schema defaults. Native blob
 fields own their layout and reject explicit structural settings before I/O.
@@ -222,9 +226,11 @@ Append compares the effective metadata, so use the same policies as at creation.
 Batches reuse their existing value buffers with the internal schema, and readback
 includes the persisted encoding metadata. These settings survive file rolling.
 
-Snappy and Gzip are unsupported by Lance. `Lz4Raw` is not advertised: Lance's
-stable format can substitute Zstd for LZ4 on per-value paths, so it cannot honor
-that shared codec request consistently.
+`Lz4Raw` maps to Lance's native `lz4` policy. Native encoding determines the
+on-disk framing; this is not a Parquet-compatible raw LZ4 stream. Miniblock
+encoding uses LZ4, while some Fullzip per-value paths in Lance 14 substitute
+Zstd. The adapter preserves this native behavior and the requested `lz4` schema
+metadata. Snappy and Gzip are unsupported by Lance.
 
 ```rust
 use open_arrow_sink_core::{Compression, CompressionOptions, StructuralEncoding};
@@ -269,16 +275,16 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
-create a missing dataset. Abort waits for workers to stop and removes only a
-freshly reserved destination when `cleanup_on_error` is enabled. Existing
-datasets and files with an uncertain publication outcome are retained.
+create a missing dataset. Explicit abort waits for workers to stop and retains
+persisted output. Write and commit failures return directly without automatic
+abort, deletion, or rollback.
 
 `DownloadBlobLayer` uses this streaming interface directly: network chunks are
 appended to native blob files and only completed handles enter record batches.
 A blob larger than the download pool's buffer budget is supported. The shared
 budget applies to application-owned download chunks; Lance's internal I/O and
 encoding buffers are separate. HTTP errors or cancellation poison the layer and
-native session, and a rejected commit aborts the reserved dataset directory.
+native session, and a rejected commit leaves output in place.
 
 ## Storage version
 
@@ -296,8 +302,12 @@ default version. This selects the file format, independently of the dataset's co
 ## Configuration adaptation
 
 The Lance `write_options` adapter translates shared configuration into native
-`WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression, prepared blob fields, then explicit layout overrides. Storage binds
+`WriteParams` and encoding metadata. Both writer paths prepare one
+`write_options::LanceSchemas` containing the original input schema, the logical
+schema for dataset validation, and the encoded schema for native writes.
+Compression is applied first; logical blob fields and encoded descriptors are then
+derived together with the same metadata and explicit layout overrides.
+`LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 
@@ -306,8 +316,16 @@ owns handles, placements, and cleanup.
 Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
 sink to control the native data-file and sidecar multipart upload buffers, as
 well as streamed blob uploads through the shared storage writer. For example, select a 16 MiB part
-size to tune buffering for your workload. Conditional manifest writes retain
+size to tune buffering for your workload. Uploads default to 4 MiB parts and four
+concurrent requests per writer; use `Storage::with_upload_concurrency` to increase
+parallelism within your memory budget. This shared default replaces the native
+adapter's previous implicit concurrency of eight. Conditional manifest writes retain
 the ordinary OpenDAL adapter; multipart parts preserve their submission order.
+
+Session upload buffering can be tuned with `WriteOptions.upload.part_size` and
+`WriteOptions.upload.concurrency` (positive values represented by `NonZeroUsize`).
+These override Storage settings for the session; unset values preserve defaults.
+See [upload options](../../docs/options.md#upload-buffering-and-concurrency).
 
 ## Related documentation
 
@@ -322,8 +340,36 @@ requiring custom credentials, endpoints, or operators. The destination store
 always takes precedence inside its own namespace; sources use the most specific
 configured root. Destination credentials are never reused for unrelated sources.
 Unregistered sources use URL-configured storage cached by `StorageResolver`.
-The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
-adapts the selected storage to Lance.
+Lance’s `Provider` applies destination precedence and adapts the selected storage
+to Lance.
+
+Configure sources once and pass the same `Arc<StorageResolver>` to the download
+pool and native Lance sink. Both paths then use the same source operators,
+credentials, and URL-derived cache:
+
+```rust
+use std::sync::Arc;
+use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_layer::DownloadPool;
+use open_arrow_sink_storage::{Storage, StorageResolver, opendal};
+
+let source = Storage::new(
+    opendal::Operator::new(opendal::services::Memory::default())?,
+    "memory://sources/".parse()?,
+)?;
+let sources = Arc::new(StorageResolver::default().with_storage(source));
+let pool = Arc::new(DownloadPool::with_defaults()?.with_source_resolver(sources.clone()));
+let sink = LanceDatasetSink::default().with_source_resolver(sources);
+// Pass pool to DownloadBlobLayer::with_download_pool when composing the sink.
+# let _ = (pool, sink);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`with_source_resolver` replaces prior source registrations. Calling
+`with_source_storage` afterwards adds a store only to that consumer's resolver;
+configure all shared stores before wrapping the resolver in `Arc`.
+HTTP(S) downloads use the pool's operator and transport; configure their policies
+with `DownloadPool::with_http_config`.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
@@ -331,6 +377,7 @@ sink or constructing a dataset builder; Lance snapshots the available schemes.
 
 `DownloadPool::with_source_storage` configures non-HTTP source stores. File and
 enabled cloud downloads share the same transfer-buffer budget and active-stream
-limit as HTTP(S). Explicit stores retain their policies; `with_http_storage`
-configures HTTP downloads with a `Storage` built by `DownloadPool::http_storage`. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
+limit as HTTP(S). Explicit stores retain their policies; `with_http_config`
+configures HTTP download retry/timeout policies directly, and `with_http_transport`
+replaces the provider transport. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
 their complete URL, including the query.

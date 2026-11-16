@@ -1,7 +1,7 @@
 # Parquet directory sink
 
 `ParquetDirectorySink` accepts a destination `Url` for Create or Append and, with default features, writes uncompressed
-files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
+files named `part-0-00000.parquet`, `part-0-00001.parquet`, etc. By default it writes
 one file per session. Missing parents are created. The default Create mode
 rejects an existing target, including an empty local directory. Enable facade feature `sink-parquet`
 and import `open_arrow_sink::parquet::ParquetDirectorySink`, or use this crate directly.
@@ -30,14 +30,14 @@ Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-g
 `parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
 layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
 
-Create reserves a new prefix with conditional creation of `.open-arrow-sink`.
-It also claims each part name before opening a streaming writer. Backends without
-conditional-create support fail instead of overwriting. External writers must
-not modify a reserved prefix. The marker is removed after a file finishes; all
-part names have already been claimed, so the destination remains occupied.
-Abort removes owned parts and the marker when no other objects remain, preserving
-unrelated files. Drop performs no async cleanup. These rules apply to local and
-remote destinations alike.
+Create checks that the destination prefix does not exist, then claims each part
+name with conditional creation before opening a streaming writer. Backends without
+conditional-create support fail instead of overwriting. Callers must exclude
+concurrent writes or directory replacement during a session. No marker files are
+created. Abort stops writing and retains persisted output.
+Drop performs no async cleanup; a process crash can
+leave output files that require manual cleanup before another Create. These rules
+apply to local and remote destinations alike.
 
 Use `WriteOptions::default().with_ordering(Ordering::Unordered)`: this
 sink does not promise directory scan order. Each write validates its schema. Small
@@ -56,19 +56,18 @@ roll at the next nonempty batch. An empty session still creates one readable fil
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
 
-`WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
-removal of this session's files and directory; failed open/commit also attempts
-cleanup. Set it to `false` to retain session-created output on abort or failure.
-Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
-and never commits.
+Write, finish, open, and commit failures leave output in place and return the
+error without automatic abort or deletion. Explicit abort retains output too.
+Applications own any later cleanup of incomplete files.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 
 For concurrent files, wrap the sink in
 `UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap())`. The layer calls
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
-files. Each writer rolls independently using disjoint indices (writer 0 owns
-0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+files. Each writer rolls independently using its own `part-{writer}-{seq}`
+prefix (for example, `part-0-00000.parquet` and `part-1-00000.parquet`).
+Append adds a session UUID before the writer index. The target size applies to each file.
 This overlaps file I/O; Parquet encoding and compression still run in the layer
 caller's task. Extra writers do not provide CPU parallelism and each retains its
 own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
@@ -76,7 +75,7 @@ for using `ParallelSink` directly with application-managed worker tasks.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
-failure aborts every writer according to the cleanup policy. Files remain visible
+failure returns directly without aborting writers or deleting output. Files remain visible
 before commit; there is no atomic directory transaction. See the [layer guide](../../layer/README.md) for
 buffering, cancellation, partial commit, and layer composition semantics.
 
@@ -127,6 +126,11 @@ Both modes behave identically on every storage backend, local or remote.
 Overwrite is unsupported and rejected before creating output: a directory of
 Parquet files has no backend-independent way to replace its contents atomically.
 External writers must not modify a destination during a session.
+
+Session upload buffering can be tuned with `WriteOptions.upload.part_size` and
+`WriteOptions.upload.concurrency` (positive values represented by `NonZeroUsize`).
+These override Storage settings for the session; unset values preserve defaults.
+See [upload options](../../docs/options.md#upload-buffering-and-concurrency).
 
 ## Related documentation
 

@@ -11,9 +11,10 @@ use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
     ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
 };
-use tokio::task::JoinSet;
+use std::sync::Arc;
+use tokio::{sync::OnceCell, task::JoinSet};
 
-use crate::error::{index_creation, index_refresh, index_task};
+use crate::error::index_creation;
 
 const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 const MAX_VECTOR_PARTITIONS: usize = 4096;
@@ -26,23 +27,26 @@ pub(crate) async fn build_indexes(
     if indexes.is_empty() {
         return Ok(());
     }
+    // Keep task cancellation/panic isolation, but bound index construction to one
+    // job: each native build can independently consume substantial memory.
     let mut tasks = JoinSet::new();
+    let vector_rows = Arc::new(OnceCell::new());
+    let mut first_error = None;
     for spec in indexes {
         let mut dataset = dataset.clone();
         let spec = spec.clone();
-        let summary = summary.clone();
-        tasks.spawn(async move {
-            create_index(&mut dataset, &spec)
-                .await
-                .map_err(|error| index_creation(&spec, error, summary))
+        let task_summary = summary.clone();
+        let rows = vector_rows.clone();
+        tasks.spawn(async move { create_index(&mut dataset, &spec, &rows, &task_summary).await });
+        // Await before starting the next request. Attempt every request after
+        // failures, and report the first failure in input order deterministically.
+        let result = tasks.join_next().await.expect("one index task was started");
+        let result = result.unwrap_or_else(|error| {
+            Err(IndexCommitError::new(
+                format!("index construction task failed: {error}"),
+                summary.clone(),
+            ))
         });
-    }
-
-    // Drain every started task even after an error, so returning never detaches
-    // index commits that could keep modifying the dataset in the background.
-    let mut first_error = None;
-    while let Some(result) = tasks.join_next().await {
-        let result = result.unwrap_or_else(|error| Err(index_task(error, summary.clone())));
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -50,7 +54,12 @@ pub(crate) async fn build_indexes(
     // Each task commits through its own handle. Refresh the caller's snapshot
     // after all tasks finish, including when only some indexes succeeded.
     if let Err(error) = dataset.checkout_latest().await {
-        first_error.get_or_insert_with(|| index_refresh(error, summary.clone()));
+        first_error.get_or_insert_with(|| {
+            IndexCommitError::new(
+                format!("refreshing dataset after index construction: {error}"),
+                summary.clone(),
+            )
+        });
     }
     match first_error {
         Some(error) => Err(error),
@@ -58,32 +67,17 @@ pub(crate) async fn build_indexes(
     }
 }
 
-pub(crate) async fn validate_existing_indexes(
-    dataset: &Dataset,
-    indexes: &[IndexSpec],
-) -> open_arrow_sink_core::Result<()> {
-    let existing = dataset
-        .load_indices()
-        .await
-        .map_err(crate::error::backend)?;
-    for spec in indexes {
-        if spec.existing == ExistingIndexPolicy::Error
-            && existing.iter().any(|i| i.name == index_name(spec))
-        {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "index {} already exists; select Keep or Rebuild",
-                index_name(spec)
-            )));
-        }
-    }
-    Ok(())
-}
-
-async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<()> {
+async fn create_index(
+    dataset: &mut Dataset,
+    spec: &IndexSpec,
+    vector_rows: &OnceCell<lance::Result<usize>>,
+    summary: &WriteSummary,
+) -> std::result::Result<(), IndexCommitError> {
     if spec.existing == ExistingIndexPolicy::Keep
         && dataset
             .load_indices()
-            .await?
+            .await
+            .map_err(|error| index_creation(spec, error, summary.clone()))?
             .iter()
             .any(|i| i.name == index_name(spec))
     {
@@ -95,7 +89,14 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             Box::new(ScalarIndexParams::for_builtin(BuiltinIndexType::BTree)),
         ),
         IndexType::Vector => {
-            let rows = dataset.count_rows(None).await?;
+            // All handles start from the same post-data-commit snapshot. Cache
+            // the complete result so multiple vector requests also share failures.
+            // Keep requests that find an existing index never initialize this cell.
+            let rows = vector_rows
+                .get_or_init(|| dataset.count_rows(None))
+                .await
+                .as_ref()
+                .map_err(|error| index_creation(spec, error, summary.clone()))?;
             (
                 LanceIndexType::IvfFlat,
                 Box::new(VectorIndexParams::ivf_flat(
@@ -125,26 +126,18 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             params.as_ref(),
             /*replace=*/ spec.existing == ExistingIndexPolicy::Rebuild,
         )
-        .await?;
+        .await
+        .map_err(|error| index_creation(spec, error, summary.clone()))?;
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").unwrap();
-    }
-    encoded
-}
-
 /// Native names reflect Lance's implementation of each logical index category.
-fn index_name(spec: &IndexSpec) -> String {
+pub(crate) fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
         IndexType::Scalar => "btree",
         IndexType::Vector => "ivf_flat",
         IndexType::Text => "text",
         IndexType::BloomFilter => "bloom",
     };
-    format!("oas_{kind}_{}", hex(spec.column.as_bytes()))
+    format!("oas_{kind}_{}", hex::encode(spec.column.as_bytes()))
 }

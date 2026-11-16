@@ -7,17 +7,24 @@ mod compression;
 mod error;
 mod provider;
 mod sink;
-mod upload;
 mod validation;
+mod worker;
 mod write_options;
 
 pub use sink::LanceDatasetSink;
 
+/// Uncommitted fragments produced by a Lance data writer.
+///
+/// Pass this opaque output to the same write session's committer to publish it.
+/// Its fields are private so native Lance transaction types remain internal.
+pub struct LanceFragments {
+    rows_written: u64,
+    transaction: lance::dataset::transaction::Transaction,
+}
+
 mod index;
-mod io_metrics;
 
 mod parallel;
 
-mod storage;
-mod storage_router;
+mod destination;
 pub use open_arrow_sink_storage::{Storage, Url};

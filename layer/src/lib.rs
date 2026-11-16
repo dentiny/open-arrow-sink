@@ -1,4 +1,5 @@
 //! Composable sink decorators.
+mod decorate;
 mod error;
 mod options;
 pub use options::{OptionsLayer, OptionsSink};
@@ -6,7 +7,8 @@ mod ordering;
 mod validation;
 pub use ordering::{OrderingLayer, OrderingSink};
 
-pub use open_arrow_sink_storage::DownloadPool;
+mod download_pool;
+pub use download_pool::DownloadPool;
 
 mod unordered;
 pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};

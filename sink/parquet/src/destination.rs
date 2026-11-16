@@ -1,108 +1,89 @@
 use bytes::Bytes;
-use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
 
-const RESERVATION: &str = ".open-arrow-sink";
-
-/// Session-owned parts in a destination directory.
-pub(crate) struct Destination {
-    storage: Storage,
-    directory: Url,
-    prefix: String,
-    // Create owns the destination. Append shares an existing directory and must
-    // preserve its reservation. Only owners create/remove the reservation and
-    // clean up the empty directory.
-    owns_directory: bool,
-    cleanup_on_error: bool,
+/// Whether this session owns the directory or only its newly created parts.
+pub(crate) enum Destination {
+    Owned(Directory),
+    Shared(Directory),
 }
+
+pub(crate) struct Directory {
+    pub(crate) storage: Storage,
+    pub(crate) path: ObjectPath,
+    prefix: String,
+}
+
 impl Destination {
     pub(crate) async fn open(
         storage: Storage,
         directory: Url,
         schema: &SchemaRef,
         mode: WriteMode,
-        cleanup_on_error: bool,
     ) -> Result<Self> {
-        let directory = storage.directory_url(&directory)?;
-        let (prefix, owns_directory) = match mode {
-            WriteMode::Create => ("part-".into(), true),
+        let directory = storage.resolve(&directory)?.as_dir();
+        if directory.is_root() {
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
+        }
+        let prefix = match mode {
+            WriteMode::Create => {
+                if storage.inspect_directory(&directory).await? != DirectoryState::Missing {
+                    return Err(Error::AlreadyExists(
+                        storage.url(directory.as_str())?.to_string(),
+                    ));
+                }
+                "part-".into()
+            }
             WriteMode::Append => {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
-                (format!("part-{}-", uuid::Uuid::new_v4()), false)
+                format!("part-{}-", uuid::Uuid::new_v4())
             }
-            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
+            WriteMode::Overwrite => {
+                return Err(Error::Unsupported(
+                    "Parquet directory sink does not support Overwrite".into(),
+                ));
+            }
         };
-        let destination = Self {
+        let directory = Directory {
             storage,
-            directory,
+            path: directory,
             prefix,
-            owns_directory,
-            cleanup_on_error,
         };
-        if destination.owns_directory {
-            destination.reserve().await?;
+        Ok(match mode {
+            WriteMode::Create => Self::Owned(directory),
+            WriteMode::Append => Self::Shared(directory),
+            WriteMode::Overwrite => unreachable!(),
+        })
+    }
+
+    pub(crate) fn directory(&self) -> &Directory {
+        match self {
+            Self::Owned(directory) | Self::Shared(directory) => directory,
         }
-        Ok(destination)
     }
-    fn child(&self, name: &str) -> Url {
-        self.directory.join(name).unwrap()
-    }
-    fn file(&self, index: usize) -> Url {
-        self.child(&format!("{}{index:05}.parquet", self.prefix))
-    }
-    async fn reserve(&self) -> Result<()> {
-        if self.storage.prefix_exists(&self.directory).await? {
-            return Err(crate::error::destination_exists());
-        }
-        self.storage
-            .create(&self.child(RESERVATION), Bytes::new())
-            .await
-    }
+
     pub(crate) async fn open_writer(
         &self,
-        index: usize,
+        writer: usize,
+        sequence: usize,
         schema: SchemaRef,
         properties: WriterProperties,
     ) -> Result<AsyncArrowWriter<FileWriter>> {
-        let path = self.file(index);
-        self.storage.create(&path, Bytes::new()).await?;
-        let result = async {
-            let file = FileWriter(self.storage.writer(&path).await?);
-            AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(crate::error::backend)
-        }
-        .await;
-        if result.is_err() && self.cleanup_on_error {
-            let _ = self.storage.delete(&path).await;
-        }
-        result
-    }
-    pub(crate) async fn complete_reservation(&self) -> Result<()> {
-        if self.owns_directory {
-            self.storage.delete(&self.child(RESERVATION)).await?;
-        }
-        Ok(())
-    }
-    pub(crate) async fn remove_file(&self, index: usize) -> Result<()> {
-        self.storage.delete(&self.file(index)).await
-    }
-    pub(crate) async fn remove_reservation(&self) -> Result<()> {
-        if !self.owns_directory {
-            return Ok(());
-        }
-        let marker = self.child(RESERVATION);
-        if self
-            .storage
-            .list(&self.directory)
-            .await?
-            .iter()
-            .any(|url| url != &marker)
-        {
-            return Ok(());
-        }
-        self.storage.delete(&marker).await?;
-        self.storage.remove_empty_directory(&self.directory).await
+        let directory = self.directory();
+        let path = directory
+            .path
+            .join(&format!(
+                "{}{writer}-{sequence:05}.parquet",
+                directory.prefix
+            ))
+            .unwrap();
+        directory.storage.create(&path, Bytes::new()).await?;
+        let file = FileWriter(directory.storage.writer(&path).await?);
+        AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
     }
 }

@@ -4205,6 +4205,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4218,6 +4219,7 @@ dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
  "open-arrow-sink-storage",
+ "open-arrow-sink-test-support",
  "parquet",
  "rstest",
  "serde",
@@ -4233,8 +4235,11 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "bytes",
+ "datafusion-physical-plan",
  "futures",
+ "hex",
  "lance",
+ "lance-encoding",
  "lance-file",
  "lance-index",
  "lance-io",
@@ -4242,7 +4247,6 @@ dependencies = [
  "lance-table",
  "more-asserts",
  "object_store 0.14.2",
- "object_store_opendal",
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
  "open-arrow-sink-storage",
@@ -4260,12 +4264,16 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "arrow-select",
+ "async-stream",
  "async-trait",
  "futures",
+ "http",
+ "more-asserts",
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
  "open-arrow-sink-test-support",
  "rstest",
+ "tempfile",
  "tokio",
 ]
 
@@ -4291,12 +4299,13 @@ dependencies = [
 name = "open-arrow-sink-storage"
 version = "0.1.0"
 dependencies = [
- "async-stream",
  "bytes",
  "futures",
  "http",
- "more-asserts",
+ "object_store 0.14.2",
+ "object_store_opendal",
  "open-arrow-sink-core",
+ "open-arrow-sink-test-support",
  "opendal",
  "percent-encoding",
  "rstest",
@@ -4316,6 +4325,8 @@ dependencies = [
  "axum",
  "futures",
  "open-arrow-sink-core",
+ "open-arrow-sink-storage",
+ "parquet",
  "tokio",
 ]
 

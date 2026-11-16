@@ -14,7 +14,7 @@ separate transaction for every worker.
 | `open-arrow-sink-core` / `core` | Sink/writer/session/layer traits, options, capabilities, validation, blob contracts | Backend I/O or catalog transactions |
 | `open-arrow-sink-layer` / `layer` | Option overrides, bounded concurrent dispatch, URL-to-blob transformation | File naming or native publication metadata |
 | `open-arrow-sink-storage` / `storage` | OpenDAL byte streams, URL namespaces, HTTP budgets, I/O policies | Arrow encoding or destination write modes |
-| `open-arrow-sink-parquet` / `sink/parquet` | Directory reservation, Parquet encoding/rolling, append cleanup | A table catalog |
+| `open-arrow-sink-parquet` / `sink/parquet` | Directory validation, Parquet encoding/rolling, append handling | A table catalog |
 | `open-arrow-sink-iceberg` / `sink/iceberg` | Existing-table validation, partition routing, native fast append | Table creation or schema evolution |
 | `open-arrow-sink-lance` / `sink/lance` | Fragment/blob writers, native manifests, optional indexes | Input production or general schema reconciliation |
 
@@ -91,19 +91,19 @@ stateDiagram-v2
     [*] --> Open: validated open
     Open --> Open: successful write
     Open --> Failed: write error or cancellation
-    Failed --> Aborted: abort (best effort)
+    Failed --> Aborted: explicit abort
     Open --> Aborted: abort
     Open --> Finishing: commit
-    Finishing --> Aborted: pre-publication failure cleanup
+    Finishing --> Failed: error
     Finishing --> Publishing: all writers finished
     Publishing --> Committed: publication succeeded
     Publishing --> Uncertain: error or cancellation
 ```
 
 Drop can end any owned session without asynchronous cleanup. A commit consumes
-the writer even on failure. Once publication starts, cleanup belongs exclusively
-to the backend committer: deleting files on an ambiguous error could destroy
-already committed data. Reconcile with the destination before retrying.
+the writer even on failure. Errors return directly without automatic abort or
+deletion. Explicit abort stops I/O and retains output. Deleting files on an
+ambiguous error could destroy already committed data. Reconcile with the destination before retrying.
 
 Publication is backend-specific. Parquet files may be visible while writing;
 commit completes footers. Iceberg publishes
@@ -118,8 +118,10 @@ adapters retain that storage so data, metadata, reads, and cleanup use the same
 credentials and namespace. Iceberg injects it through the catalog's
 `OpenDalStorageFactory`; table metadata still selects the locations.
 
-`DownloadPool` owns explicit stream and transfer-buffer budgets. Callers share
-an `Arc<DownloadPool>` for a common budget, or install clones of an explicit
-`HttpConcurrencyLimitLayer` to share HTTP capacity across independent pools. Chunks retain accounting reservations until dropped. It streams blobs
+`layer::DownloadPool` owns its HTTP operator, provider transport, and explicit
+stream and transfer-buffer budgets. HTTP downloads use the stream semaphore
+without a second request limiter. Non-HTTP sources use `StorageResolver` and
+retain their storage policies. Callers share an `Arc<DownloadPool>` for a common
+budget. Chunks retain accounting reservations until dropped. It streams blobs
 larger than the budget; the budget does not include all SDK or encoding memory.
 See [layers](../layer/README.md) and [storage](../storage/README.md).

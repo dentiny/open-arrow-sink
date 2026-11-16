@@ -48,6 +48,8 @@ pub struct SinkCapability {
     /// Partition transforms accepted by this sink. An empty list means
     /// `WriteOptions.partition` is unsupported.
     pub supported_partitions: Vec<PartitionType>,
+    /// Whether session upload part-size and concurrency overrides are accepted.
+    pub supports_upload_options: bool,
     /// Whether an explicit `WriteOptions.storage_version` is accepted.
     pub supports_storage_version: bool,
     /// Logical index types this sink can construct. Empty means none.
@@ -86,6 +88,11 @@ impl SinkCapability {
         self.supported_partitions = supported_partitions;
         self
     }
+    /// Set `supports_upload_options` while preserving all other options.
+    pub fn with_supports_upload_options(mut self, supports_upload_options: bool) -> Self {
+        self.supports_upload_options = supports_upload_options;
+        self
+    }
     /// Set `supports_storage_version` while preserving all other options.
     pub fn with_supports_storage_version(mut self, supports_storage_version: bool) -> Self {
         self.supports_storage_version = supports_storage_version;
@@ -109,6 +116,7 @@ impl Default for SinkCapability {
             ordering: Ordering::Unordered,
             compression: CompressionCapability::default(),
             supported_partitions: Vec::new(),
+            supports_upload_options: false,
             supports_storage_version: false,
             supported_indexes: &[],
         }

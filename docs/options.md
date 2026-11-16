@@ -21,7 +21,9 @@ lists implemented modes, but destination-dependent restrictions still apply
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-Single-writer backends can adapt their `WriteSession` with `into_writer()`.
+Parallel backends can delegate `Sink::open` to the default
+`ParallelSink::open_writer()`, which opens one writer and adapts its `WriteSession`
+with `into_writer()`.
 This shares write-failure, cancellation, finish, abort, and publication handling
 across sinks; backend data writers only produce output, and committers publish it.
 
@@ -98,6 +100,10 @@ overrides do not reset codecs or their levels. Both policies apply recursively t
 nested descendants. Empty policies preserve existing schema metadata and backend
 defaults. `CompressionLayer` replaces all four fields together.
 
+Lance accepts `Compression::Lz4Raw` as its native `lz4` policy for global,
+per-column, and nested overrides. Native framing and codec selection still apply:
+Miniblock uses LZ4, while some Fullzip per-value paths in Lance 14 substitute Zstd.
+
 `CompressionCapability.structural_encodings` advertises supported layouts for
 both scopes. Lance supports both; Parquet and Iceberg reject nonempty structural
 policy before destination I/O. Lance rejects structural overrides on native blob
@@ -121,7 +127,7 @@ let mut writer = sink
         schema,
         WriteOptions::default()
             .with_ordering(Ordering::Unordered)
-            .with_target_file_size(Some(256 * 1024 * 1024)),
+            .with_target_file_size(256 * 1024 * 1024),
     )
     .await?;
 writer.write(batch).await?;
@@ -158,8 +164,8 @@ CPU scheduling and its writer ownership requirements, see
 A successful `write` means accepted; an asynchronous error may surface
 in a later call. An error or cancellation of `write` makes the session terminal;
 abort or drop it. Commit drains accepted writes, finishes every data writer,
-then calls the session committer once with all outputs. A finish failure aborts
-all writers, including those that already finished, without publishing the session.
+then calls the session committer once with all outputs. A finish failure returns
+an error without aborting writers or publishing the session.
 Abort waits for in-flight I/O and attempts to abort every writer, even if another
 abort fails, then aborts the session. Drop never commits or performs async cleanup.
 
@@ -169,8 +175,8 @@ abort fails, then aborts the session. Drop never commits or performs async clean
 Publication guarantees belong to the backend. Parquet files become visible before
 commit and have no atomic directory transaction. Transactional adapters can gather all outputs into one native data commit. Once publication begins, its outcome may be
 uncertain on error or cancellation: the layer does not delete potentially committed
-data. The session committer owns publication-failure handling. Before publication,
-cleanup honors `cleanup_on_error` and removes only session-owned output.
+data. Failures return directly without automatic abort or deletion. Explicit
+abort stops pending I/O and retains persisted output.
 
 ## Partitioning
 
@@ -205,7 +211,7 @@ use open_arrow_sink::{Ordering, WriteOptions};
 
 let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
-    .with_target_file_size(Some(256 * 1024 * 1024));
+    .with_target_file_size(256 * 1024 * 1024);
 ```
 
 This is a soft data-file target, not a strict maximum or a total-output limit.
@@ -245,8 +251,7 @@ reusing them across sessions.
 
 ## Streaming download pool
 
-`layer::DownloadPool` re-exports the common storage downloader, using its HTTP
-concurrency limiter. Construct a pool with
+`layer::DownloadPool` owns the downloader used by `DownloadBlobLayer`. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
 writers. Each new pool owns the requested stream-concurrency and transfer-buffer
 budgets. No environment variable or process-wide singleton changes these limits.
@@ -256,15 +261,18 @@ The former `DownloadPool::global()` and
 and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
 `DownloadBlobLayer` creates one default pool per opened writer.
 
-HTTP(S) downloads go through the pool's HTTP `Storage`. By default its request
-budget equals the pool's `concurrency`. To share HTTP capacity across otherwise
-independent pools or with other storage, create one `HttpConcurrencyLimitLayer`,
-install its clones with `with_http_concurrency_limit` on each `Storage` (including
-one built by `DownloadPool::http_storage`), and pass that storage to
-`DownloadPool::with_http_storage`. Stream slots also cover non-HTTP sources; HTTP
-permits cover network requests until response-body release. These are separate
-budgets.
-
+HTTP(S) downloads use a directly owned OpenDAL operator and provider transport.
+The pool's stream semaphore is their only built-in concurrency limiter; it covers
+HTTP(S), file, and cloud streams until cancellation or EOF, including retry waits.
+Share an `Arc<DownloadPool>` across writers to share both stream and byte budgets.
+Configure policies with `with_http_config(StorageConfig)` and replace the provider
+with `with_http_transport(HttpTransporter)` for authentication or instrumentation.
+These replace the former `http_storage` / `with_http_storage` configuration API;
+import `DownloadPool` from `open_arrow_sink_layer` (or the facade's `layer` module).
+Non-HTTP stores retain their own backend request limits. Use `with_config(config)`
+to apply policies to both HTTP downloads and URL-derived non-HTTP stores; explicit
+source stores keep their own policies. Share source registrations and cached
+backends with other consumers through `with_source_resolver(Arc<StorageResolver>)`.
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.
@@ -281,7 +289,7 @@ classifies the status to avoid collecting unbounded diagnostic payloads.
 
 HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
 retry policy is enabled by default. Configure them with the same `StorageConfig`
-used by other storage: `DownloadPool::http_storage(config)` applies the timeout
+used by other storage: `pool.with_http_config(config)` applies the timeout
 inside the retry so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
 
@@ -345,7 +353,7 @@ clones/sessions; fail-fast and cancellation may leave some URLs unattempted.
 Place a general `MetricsLayer` inside this layer to observe filtered row counts.
 
 A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Earlier batches may already have been accepted.
+commit then returns the error without aborting the inner writer. Earlier batches may already have been accepted.
 Dropping chunks releases the shared byte budget, and native blob cleanup follows
 the writer's abort/drop guarantees.
 
@@ -406,20 +414,28 @@ commit success. You can also supply your own handle without installing the layer
 Existing complete `WriteOptions` literals should add `io_metrics: None` or
 `..Default::default()`.
 
-Lance registers a fresh counter for each session, covering native reads, parallel
-fragment writes, manifest/index work, and successfully closed streamed blobs.
-Counters are visible while sessions are active and retained after commit, failure,
-cancellation, abort, or drop. Active sources are released after their I/O owners
-are dropped, retaining final totals. DownloadBlobLayer records each source chunk
-as it is consumed, including chunks consumed before a later error or cancellation.
-Failed I/O requests and unfinished streamed-blob writes are not counted as
-successful payload writes. These are measured logical payloads, not HTTP headers,
-network retries, process memory, or bytes inferred from Arrow batches.
+`Storage` uses one OpenDAL `IoMetricsLayer` for byte observations across backends.
+Lance and Parquet attach the session handle from `WriteOptions`; native adapters,
+parallel fragments, metadata payloads, streamed blobs, and index work use the same
+operator layer. DownloadBlobLayer applies it to each source reader. The old
+`IoMetricsSource`, `IoMetricsRegistration`, and `IoMetrics::track` APIs are removed;
+byte owners retain cloned observers directly. No manual blob accounting is needed.
 
-Byte counters start at zero and sum only instrumented I/O. Parquet, Iceberg, and
-custom sinks without instrumentation contribute no bytes; a mixed-backend handle
-therefore reports measured traffic, not a complete total for every backend.
-Snapshotting does not reset counters.
+For Iceberg, configure the catalog's `OpenDalStorageFactory` with
+`storage.with_io_metrics(metrics.clone())`. Its FileIO belongs to the caller's
+catalog, so `WriteOptions.io_metrics` cannot replace that FileIO. The configured
+handle covers data, manifest, and metadata I/O, including catalog work and readback;
+use a separate catalog/storage observer when isolation is needed. Custom sinks
+that bypass instrumented Storage still contribute no bytes.
+
+Counters record bytes returned by successful reads and accepted by successful
+writes, including transfers before a later failure, cancellation, abort, or drop.
+Buffered writes contribute when OpenDAL accepts them; acceptance does not imply
+publication or a successful close. Streaming readers may fetch more bytes than a
+consumer ultimately uses. Metadata operations, server-side copies, HTTP framing,
+and internal retries are excluded. These are payload observations, not network
+totals or bytes inferred from Arrow batches. Install the layer outside retry layers;
+`Storage` does this when exporting an operator. Snapshots do not reset counters.
 
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
 Install one observation layer at the boundary you want to measure. Placing it outside
@@ -427,3 +443,32 @@ DownloadBlobLayer includes downloaded source bytes; placing it inside observes o
 the native sink's I/O. Nested observers receive backend measurements independently;
 reusing the same handle does not duplicate byte observations. Placing MetricsLayer
 inside or outside UnorderedWriteLayer still counts one successful session commit.
+
+## Upload buffering and concurrency
+
+`WriteOptions.upload: UploadConfig` groups session upload overrides. Its
+`part_size: Option<NonZeroUsize>` sets upload part size in bytes, and
+`concurrency: Option<NonZeroUsize>` bounds concurrent upload requests
+per writer. Parquet and Lance support these session overrides, including parallel
+writers and Lance native multipart uploads. Check `SinkCapability.supports_upload_options`.
+Iceberg rejects explicit overrides because its FileIO is supplied by the catalog;
+configure its `Storage` before constructing `OpenDalStorageFactory` instead.
+
+```rust
+use std::num::NonZeroUsize;
+use open_arrow_sink::{Ordering, UploadConfig, WriteOptions};
+
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_upload(
+        UploadConfig::default()
+            .with_part_size(NonZeroUsize::new(16 * 1024 * 1024).unwrap())
+            .with_concurrency(NonZeroUsize::new(4).unwrap()),
+    );
+```
+
+Unset fields retain the configured `Storage` value (otherwise 4 MiB and four concurrent
+requests per writer). Overrides affect only the current session. OpenDAL enforces
+backend part-size limits. These options differ from `target_file_size`, which
+controls file rolling, and from the shared aggregate HTTP request budget. Memory
+use grows with part size, upload concurrency, and the number of writers.

@@ -1,6 +1,7 @@
-//! Preserve OpenDAL object-store operations while configuring upload part sizes.
+//! OpenDAL object-store adapter using the same upload policy as byte writers.
 use std::{fmt, ops::Range, sync::Arc};
 
+use crate::Storage;
 use bytes::Bytes;
 use futures::{FutureExt, stream::BoxStream};
 use object_store::{
@@ -10,27 +11,21 @@ use object_store::{
 };
 use object_store_opendal::{IntoSendFuture, OpendalStore};
 use open_arrow_sink_core::async_trait;
-use open_arrow_sink_storage::opendal;
 use opendal::raw::percent_decode_path;
-use opendal::{Buffer, Operator, Writer, options::WriteOptions};
+use opendal::{Buffer, Writer, options::WriteOptions};
 use tokio::sync::{Mutex, oneshot};
 
-// Preserve the adapter's existing per-writer upload concurrency.
-const UPLOAD_CONCURRENCY: usize = 8;
-
 #[derive(Debug)]
-pub(super) struct UploadStore {
+pub(crate) struct UploadStore {
     inner: OpendalStore,
-    operator: Operator,
-    part_size: usize,
+    storage: Storage,
 }
 
 impl UploadStore {
-    pub(super) fn new(operator: Operator, part_size: usize) -> Self {
+    pub(crate) fn new(storage: Storage) -> Self {
         Self {
-            inner: OpendalStore::new(operator.clone()),
-            operator,
-            part_size,
+            inner: OpendalStore::new(storage.operator()),
+            storage,
         }
     }
 }
@@ -58,11 +53,7 @@ impl ObjectStore for UploadStore {
         location: &Path,
         opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
-        let mut options = WriteOptions {
-            chunk: Some(self.part_size),
-            concurrent: UPLOAD_CONCURRENCY,
-            ..Default::default()
-        };
+        let mut options = WriteOptions::default();
         // Match the upstream adapter's metadata handling; conditional single
         // puts still go through the unchanged adapter for Lance commits.
         for (key, value) in &opts.attributes {
@@ -84,8 +75,9 @@ impl ObjectStore for UploadStore {
         }
         let decoded = percent_decode_path(location.as_ref());
         let writer = self
-            .operator
-            .writer_options(&decoded, options)
+            .storage
+            .operator()
+            .writer_options(&decoded, self.storage.upload_options(options))
             .into_send()
             .await
             .map_err(|error| upload_error(error, location))?;

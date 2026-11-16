@@ -28,10 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let packed_source = source.url("packed.bin")?;
     let dedicated_source = source.url("dedicated.bin")?;
     source
-        .write(&packed_source, b"pack".to_vec().into())
+        .write(&source.resolve(&packed_source)?, b"pack".to_vec().into())
         .await?;
     source
-        .write(&dedicated_source, b"large".to_vec().into())
+        .write(
+            &source.resolve(&dedicated_source)?,
+            b"large".to_vec().into(),
+        )
         .await?;
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::UInt64, false),
@@ -103,19 +106,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Some(error) = failure {
-        // Stop all workers before deleting any session-owned resources.
-        for writer in writers {
-            let _ = writer.abort().await;
-        }
-        let _ = session.committer.abort().await;
         return Err(error.into());
     }
-    // Once publication begins, the committer owns ambiguous-failure cleanup.
+    // Only publish after all writers finish successfully.
     let committed = session.committer.commit(outputs).await;
     drop(writers);
     let summary = committed?;
-    source.delete(&packed_source).await?;
-    source.delete(&dedicated_source).await?;
+    source.delete(&source.resolve(&packed_source)?).await?;
+    source.delete(&source.resolve(&dedicated_source)?).await?;
 
     let dataset = Arc::new(sink.dataset_builder(url)?.load().await?);
     let rows = WRITERS * ROWS_PER_WRITER;

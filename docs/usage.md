@@ -77,15 +77,7 @@ async fn write_batches<S: Sink>(
 ) -> Result<WriteSummary> {
     let mut writer = sink.open(request, schema, options).await?;
     for batch in batches {
-        let result = match batch {
-            Ok(batch) => writer.write(batch).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            // Preserve the original error; production code can also record cleanup errors.
-            let _ = writer.abort().await;
-            return Err(error);
-        }
+        writer.write(batch?).await?;
     }
     writer.commit().await
 }
@@ -93,28 +85,21 @@ async fn write_batches<S: Sink>(
 
 `commit` and `abort` consume the writer. Successful `write` means accepted, not
 published. A cancelled write is terminal too: abort or drop the writer rather
-than continuing. Dropping a writer cannot await cleanup. `cleanup_on_error` is
-enabled by default, but does not guarantee rollback of already visible output.
+than continuing. Errors return directly without automatic abort, deletion, or
+rollback. Explicit abort stops writing and leaves persisted output in place.
 A commit error may have an uncertain outcome; reconcile with the backend before
 starting another attempt. A successful summary reports committed rows, not files
 or bytes.
 
 ## Recover from a failed commit
 
-`cleanup_on_error` defaults to `true` and requests **best-effort cleanup** of
-session-owned output. It does not guarantee rollback, removal of every orphan,
-or exactly-once delivery. Cleanup itself can fail; automatic cleanup before
-publication preserves the original commit error, so that error does not prove
-cleanup succeeded. Set the option to `false` to retain output for inspection.
-Dropping a writer, cancelling its commit future, or terminating the process
-cannot guarantee asynchronous cleanup.
+Write and commit failures return the error without deleting output, aborting
+writers, or retrying. Drop also performs no asynchronous cleanup. Partial files,
+fragments, and blobs can remain for application-managed maintenance.
 
-`commit(self)` consumes the writer even when it returns an error: there is no
-remaining writer on which to call `abort()`. Before commit, explicitly await
-`abort()` after an input/write error and record any cleanup error. During commit,
-a write/finish failure triggers best-effort abort of the data writers and session.
-Once the session committer takes ownership, publication-failure handling belongs
-to that backend; callers must not delete potentially committed files.
+`commit(self)` consumes the writer even on error. A write error or cancellation
+makes the writer terminal; drop it or explicitly abort to stop pending I/O.
+Publication may have succeeded despite a commit error.
 
 After a commit error or cancellation:
 
@@ -129,8 +114,8 @@ After a commit error or cancellation:
    that respects retained versions/snapshots and active writers. Do not delete
    a dataset/table prefix merely because `commit` returned an error.
 4. Open a fresh session only after reconciling the destination. Retrying an
-   Append without reconciliation can duplicate rows; Create can fail if a
-   reservation marker or orphan output still occupies the destination.
+   Append without reconciliation can duplicate rows; Create can fail if orphan
+   output still occupies the destination.
 
 ### What the next overwrite does
 
@@ -141,7 +126,7 @@ leftovers from earlier sessions. Exclude concurrent destination mutations.
 | Backend | Next Overwrite after a failed commit |
 | --- | --- |
 | Parquet | Unsupported; rejected before writing. |
-| Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's marker/fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
+| Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
 | Iceberg | Unsupported; rejected before writing. Reload/reconcile the table before opening another Append session. |
 
 ## Choose write options
@@ -156,7 +141,7 @@ let options = WriteOptions::default()
         global: Some(Compression::Zstd { level: Some(9) }),
         ..Default::default()
     })
-    .with_target_file_size(Some(256 * 1024 * 1024));
+    .with_target_file_size(256 * 1024 * 1024);
 ```
 
 With Parquet this needs `parquet-zstd`. Empty compression options preserve backend
@@ -211,7 +196,7 @@ Construct `LanceDatasetSink::default()` with a URL, or `new(storage)` for a shar
 operator. Select unordered writes and a supported mode. Add `IndexSpec` entries
 to `WriteOptions.indexes` for supported column types. Index construction runs
 after the data commit and can publish additional versions; `IndexCommitError`
-inside `Error::Backend` means data is already committed. Do not replay those rows
+in `Error::IndexCommit` means data is already committed. Do not replay those rows
 in response to an index error.
 
 Use `sink.dataset_builder(url)?.load().await?` to read with the same storage.

@@ -11,6 +11,8 @@ arrow-schema.workspace = true
 arrow-ord.workspace = true
 arrow-select.workspace = true
 open-arrow-sink-core.workspace = true
+open-arrow-sink-storage.workspace = true
+parquet = { workspace = true, features = ["arrow"] }
 axum.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "sync", "time"] }
