@@ -2,7 +2,6 @@
 
 mod blob;
 mod blob_input;
-mod blob_writer;
 mod committer;
 mod compression;
 mod error;

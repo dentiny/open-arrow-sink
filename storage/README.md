@@ -102,8 +102,8 @@ resolved storage.
 `ParquetDirectorySink::default().with_config(config)?` configures automatically
 resolved destinations. The same method also adds policies to explicit storage
 passed to `ParquetDirectorySink::new`.
-`BlobDownloader::with_config(config)` configures both HTTP downloads and lazily
-resolved non-HTTP sources; explicitly registered source stores keep their policies.
+Configure HTTP policies on `OpenDalDownloader`; configure URL-derived non-HTTP
+policies on the shared `StorageResolver`. Explicit source stores keep their own policies.
 
 ```rust
 use open_arrow_sink_storage::{RetryConfig, Storage, StorageConfig, TimeoutConfig, Url};
@@ -173,36 +173,38 @@ and `WriteOptions.upload.concurrency`; unset fields preserve the Storage setting
 ordinary object operations to `OpendalStore`, while multipart uploads use the same
 storage upload policy as `Storage::writer()`.
 
-## HTTP downloads
+## Blob downloads
 
-Every Lance sink has a `BlobDownloader`; logical blob URI writes use it without
-a layer or explicit download call. Configure one shared instance with
-`LanceDatasetSink::with_blob_downloader`. A `BlobDownloader` sends HTTP(S) downloads through a `Storage`, so they use the
-same retry, timeout, request-budget, and transport configuration as every other
-storage. Build it with `BlobDownloader::http_storage(config)`, adjust it with
-`with_http_concurrency_limit` or `with_http_transport`, and install it with
-`with_http_storage`. Each request goes to the complete source URL, including
-signed queries.
+Every Lance sink owns a `BlobDownloader`; blob URI inputs need no optional layer
+or explicit download call. It collects full payloads under shared admission and
+memory limits before handing them to the SDK for layout selection.
+
+`Downloader` is the pluggable I/O trait. Its single `open(source, DownloadContext)`
+method returns a stream of bounded byte chunks. `OpenDalDownloader` is the default
+implementation for HTTP, files, and enabled cloud services. Configure its retry,
+timeout, and HTTP transport policies before installing it:
 
 ```rust,ignore
-use open_arrow_sink_storage::{BlobDownloader, HttpConcurrencyLimitLayer, StorageConfig};
+use std::sync::Arc;
+use open_arrow_sink_storage::{BlobDownloader, OpenDalDownloader, StorageConfig};
 
-let shared_limit = HttpConcurrencyLimitLayer::new(32)?;
-let http = BlobDownloader::http_storage(StorageConfig::default())?
-    .with_http_concurrency_limit(shared_limit.clone())
+let io = OpenDalDownloader::new(StorageConfig::default())?
     .with_http_transport(transport);
-let pool = BlobDownloader::with_defaults()?.with_http_storage(http)?;
+let downloads = BlobDownloader::with_defaults()?.with_downloader(Arc::new(io));
+// Or provide Arc::new(MyDownloader) implementing Downloader.
 ```
 
-`Storage::with_http_transport` replaces the provider transport for shared
-authentication, instrumentation, or in-memory test fixtures without installing a
-process-global default. The current request budget and operator layers still apply.
-Returned full payloads retain their memory reservations, including clones and
-Arrow buffers sharing the bytes. `with_download_limits(payload_bytes, chunk_bytes)`
-sets the full-download and application copy caps. `download(url)` returns complete
-bytes; `download_all(&urls, metrics)` shares one payload limit across a group.
-The SDK, rather than the downloader, chooses inline, packed, or dedicated layout.
-See [memory and concurrency contracts](../docs/options.md#blob-downloader-and-memory-limits).
+The wrapper, rather than the trait implementation, owns admission, memory
+reservations, chunk validation, and full-payload collection. Returned bytes and
+shared Arrow buffers retain reservations through SDK consumption. Custom HTTP
+implementations use `context.http_requests().acquire().await` and retain the guard
+until response-body EOF/drop, or wrap their transport with that same limiter.
+The OpenDAL implementation does this automatically, and avoids reacquiring an
+identical budget already installed on a source store.
+
+`with_http_concurrency_limit` can share the request budget with destination stores.
+`with_download_limits(payload_bytes, chunk_bytes)` configures full-payload and
+chunk caps. See [resource contracts](../docs/options.md#blob-downloader-and-memory-limits).
 
 ## Shared source configuration
 
@@ -213,7 +215,7 @@ credentials, and the URL-derived cache across downloads and native Lance blob
 reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
 `with_source_resolver` replaces prior registrations; `with_source_storage`
 subsequently adds a store only for that consumer. HTTP(S) download policies can be
-configured independently with `BlobDownloader::with_http_config`.
+configured on `OpenDalDownloader` before attaching it with `with_downloader`.
 
 ## Related documentation
 

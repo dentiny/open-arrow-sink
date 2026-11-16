@@ -1,15 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
-use futures::{TryStreamExt, stream::BoxStream};
-use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Error, Result};
-use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, services::Http};
+use futures::TryStreamExt;
+use open_arrow_sink_core::{Error, Result};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::{HttpConcurrencyLimitLayer, Storage, StorageConfig, error, validation};
-
-// Placeholder namespace for HTTP storage; requests use each complete source URL.
-const HTTP_PLACEHOLDER: &str = "https://download.invalid/";
+use crate::{
+    DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer, OpenDalDownloader,
+    Storage, StorageConfig, error, validation,
+};
 
 // Default maximum number of active download streams in one pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -23,9 +21,10 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 /// Clones share admission and byte budgets. Full payloads keep reservations through
 /// their last owner, including Arrow buffers queued for SDK consumption.
 /// OpenDAL/HTTP/TLS and native encoding/output caches have separate limits.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BlobDownloader {
-    http: Storage,
+    backend: Arc<dyn Downloader>,
+    http_limit: HttpConcurrencyLimitLayer,
     sources: Arc<crate::StorageResolver>,
     primary: Option<Storage>,
     // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
@@ -41,8 +40,8 @@ pub struct BlobDownloader {
 impl BlobDownloader {
     /// Create independent stream and transfer-buffer budgets. Every call honors
     /// `concurrency`; no process-wide state or environment configuration is used.
-    /// HTTP(S) downloads use a default `http_storage` whose request budget
-    /// equals `concurrency`; replace it with `with_http_storage`.
+    /// The default OpenDAL provider uses the shared HTTP request budget.
+    /// Replace download I/O with `with_downloader`.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
         validation::validate_http_concurrency(concurrency.get())?;
         validation::validate_download_limit(max_buffered_bytes)?;
@@ -52,8 +51,8 @@ impl BlobDownloader {
         Ok(Self {
             download_bytes,
             chunk_bytes,
-            http: Self::http_storage(StorageConfig::default())?
-                .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(concurrency.get())?),
+            backend: Arc::new(OpenDalDownloader::new(StorageConfig::default())?),
+            http_limit: HttpConcurrencyLimitLayer::new(concurrency.get())?,
             sources: Arc::default(),
             primary: None,
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
@@ -64,42 +63,15 @@ impl BlobDownloader {
         })
     }
 
-    /// Build storage for HTTP(S) sources with the given retry/timeout policies.
-    /// Configure its request budget and transport like any other `Storage`.
-    pub fn http_storage(config: StorageConfig) -> Result<Storage> {
-        opendal::install_default();
-        let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
-        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(Error::backend)?;
-        Storage::new(operator, HTTP_PLACEHOLDER.parse().map_err(Error::backend)?)?
-            .with_config(config)
-    }
-
-    /// Compose policies for HTTP and URL-resolved sources. Explicitly registered
-    /// stores retain their own policies; other shared resolver consumers are unchanged.
-    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
-        self.sources = Arc::new(self.sources.as_ref().clone().with_config(config.clone())?);
-        self.http = self.http.with_config(config)?;
-        Ok(self)
-    }
-    /// Compose HTTP policies without changing transfer budgets or source stores.
-    pub fn with_http_config(mut self, config: StorageConfig) -> Result<Self> {
-        self.http = self.http.with_config(config)?;
-        Ok(self)
-    }
-    /// Replace the HTTP provider transport while retaining policies and budgets.
-    pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
-        self.http = self.http.with_http_transport(transport);
+    /// Replace download I/O without replacing scheduling or memory accounting.
+    pub fn with_downloader(mut self, backend: Arc<dyn Downloader>) -> Self {
+        self.backend = backend;
         self
     }
-
-    /// Route HTTP(S) downloads through `storage`, keeping its policies, request
-    /// budget, and transport. Build it with `http_storage`.
-    pub fn with_http_storage(mut self, storage: Storage) -> Result<Self> {
-        if storage.operator().info().scheme() != "http" {
-            return Err(error::http_storage_service());
-        }
-        self.http = storage;
-        Ok(self)
+    /// Share a request budget with other downloaders or destination stores.
+    pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
+        self.http_limit = limit;
+        self
     }
 
     /// Register a source store for non-HTTP downloads, including custom S3 credentials.
@@ -124,6 +96,12 @@ impl BlobDownloader {
 
     pub fn concurrency(&self) -> usize {
         self.concurrency.get()
+    }
+    /// Bound queued and active row metadata as well as payload allocations.
+    pub fn in_flight_limit(&self) -> usize {
+        self.concurrency()
+            .min(self.max_buffered_bytes() / (3 * self.download_bytes + self.chunk_bytes))
+            .max(1)
     }
     pub fn max_buffered_bytes(&self) -> usize {
         self.max_buffered_bytes.get()
@@ -224,85 +202,16 @@ impl BlobDownloader {
         })
     }
 
-    async fn reader(&self, source: &str) -> Result<opendal::Reader> {
-        let url = crate::Url::parse(source).map_err(Error::backend)?;
-        let (operator, path) = if matches!(url.scheme(), "http" | "https") {
-            let uri = validation::validate_download_url(source)?;
-            let operator = self.http.operator();
-            let context = operator.base_context();
-            let transport = HttpTransporter::new(UrlTransport {
-                uri,
-                inner: context.http_transport().clone(),
-            });
-            let context = context.with_http_transport(transport);
-            (operator.with_context(context), "blob".to_owned())
-        } else {
-            let storage = match self
-                .primary
-                .as_ref()
-                .filter(|storage| storage.resolve(&url).is_ok())
-            {
-                Some(storage) => storage.clone(),
-                None => self.sources.resolve(&url)?,
-            };
-            (
-                storage.operator(),
-                storage.resolve(&url)?.as_str().to_owned(),
-            )
-        };
-        // HTTP sources need not implement HEAD or range requests. Keep one
-        // streaming GET; chunk_bytes bounds the application-side copy below.
-        operator.reader(&path).await.map_err(Error::backend)
+    fn context(&self, chunk_bytes: usize) -> DownloadContext {
+        DownloadContext {
+            chunk_bytes,
+            http_limit: self.http_limit.clone(),
+            sources: self.sources.clone(),
+            primary: self.primary.clone(),
+        }
     }
-
-    /// Open a pull-based download. Dropping the stream cancels pending I/O and
-    /// releases its stream slot; already yielded chunks retain their reservations.
-    pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let stream_slot = self
-            .stream_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("pool is never closed");
-        let reader = self
-            .reader(source)
-            .await?
-            .into_stream(..)
-            .await
-            .map_err(Error::backend)?;
-        let buffers = self.buffers.clone();
-        let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
-        Ok(Box::pin(async_stream::try_stream! {
-            let _stream_slot = stream_slot;
-            let mut reader = reader;
-            let mut pending = Buffer::new();
-            loop {
-                let reservation = buffers.clone().acquire_many_owned(capacity as u32)
-                    .await.expect("pool is never closed");
-                if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(Error::backend)? else { break };
-                    pending = buffer;
-                }
-                // A bounded copy avoids retaining a larger OpenDAL backing allocation.
-                let size = capacity.min(pending.len());
-                yield BlobChunk::with_guard(pending.split_to(size).to_vec(), reservation);
-            }
-        }))
-    }
-}
-
-// The HTTP service encodes object paths. Replace its synthetic object URI with
-// the complete source URL so signed queries, escaped slashes, and redirects work.
-struct UrlTransport {
-    uri: Uri,
-    inner: HttpTransporter,
-}
-
-impl HttpTransport for UrlTransport {
-    async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
-        *request.uri_mut() = self.uri.clone();
-        let response = self.inner.fetch(request).await?;
-        Ok(error::download_response(response))
+    async fn open(&self, source: &str, chunk_bytes: usize) -> Result<DownloadStream> {
+        self.backend.open(source, self.context(chunk_bytes)).await
     }
 }
 
@@ -393,23 +302,36 @@ impl BlobDownload {
     ) -> Result<bytes::Bytes> {
         let mut reader = self
             .downloader
-            .reader(source)
-            .await?
-            .into_stream(..)
-            .await
-            .map_err(Error::backend)?;
+            .open(source, self.downloader.chunk_bytes)
+            .await?;
         let mut data = Vec::new();
-        while let Some(mut buffer) = reader.try_next().await.map_err(Error::backend)? {
-            while !buffer.is_empty() {
-                let size = self.downloader.chunk_bytes.min(buffer.len());
-                if let Some(metrics) = metrics {
-                    metrics.record_read(size as u64);
-                }
-                for part in buffer.split_to(size) {
-                    self.append(&mut data, &part)?;
-                }
+        while let Some(chunk) = reader.try_next().await? {
+            validate_chunk(&chunk, self.downloader.chunk_bytes)?;
+            if let Some(metrics) = metrics {
+                metrics.record_read(chunk.len() as u64);
             }
+            self.append(&mut data, &chunk)?;
         }
         Ok(self.finish(data))
+    }
+}
+
+fn validate_chunk(chunk: &[u8], limit: usize) -> Result<()> {
+    if chunk.len() > limit {
+        return Err(Error::InvalidInput(format!(
+            "downloader returned a {}-byte chunk exceeding the {limit}-byte limit",
+            chunk.len()
+        )));
+    }
+    Ok(())
+}
+impl std::fmt::Debug for BlobDownloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobDownloader")
+            .field("concurrency", &self.concurrency)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
+            .field("max_download_bytes", &self.download_bytes)
+            .field("chunk_bytes", &self.chunk_bytes)
+            .finish_non_exhaustive()
     }
 }

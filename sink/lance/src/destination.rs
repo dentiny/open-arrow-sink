@@ -4,8 +4,8 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, StorageResolver, Url};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and owned publication reservation.
@@ -16,7 +16,6 @@ pub(crate) struct LanceDestination {
     pub url: Url,
     pub path: ObjectPath,
     session: Arc<Session>,
-    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     new_destination: bool,
     pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
@@ -28,11 +27,7 @@ impl LanceDestination {
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
         let path = storage.resolve(&url)?.as_dir();
-        if path.is_root() {
-            return Err(Error::InvalidInput(
-                "destination must not be the storage root".into(),
-            ));
-        }
+        crate::validation::validate_destination_path(&path)?;
         // Lance's native API requires a URL at its boundary.
         let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
@@ -47,7 +42,6 @@ impl LanceDestination {
             url,
             path,
             session,
-            io_tracker,
             new_destination: false,
             encoding_buffer_size: None,
         })
@@ -56,29 +50,12 @@ impl LanceDestination {
         &mut self,
         schema: &SchemaRef,
         mode: WriteMode,
-        storage_version: Option<&str>,
+        storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<Option<lance::Dataset>> {
-        if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
-                self.dataset_builder(),
-                Some(schema),
-                storage_version,
-            )
-            .await
-            .map(Some);
-        }
-        if self.storage.inspect_directory(&self.path).await? != DirectoryState::Missing {
-            return match mode {
-                WriteMode::Create => Err(Error::DestinationExists),
-                _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
-                        .await
-                        .map(Some)
-                }
-            };
-        }
-        self.new_destination = true;
-        Ok(None)
+        let existing =
+            crate::validation::validate_destination(self, schema, mode, storage_version).await?;
+        self.new_destination = existing.is_none();
+        Ok(existing)
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.new_destination {

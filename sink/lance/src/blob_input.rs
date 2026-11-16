@@ -13,17 +13,9 @@ use open_arrow_sink_storage::{BlobDownload, BlobDownloader};
 
 use open_arrow_sink_core::Error;
 
-fn is_blob(field: &Field) -> bool {
-    field
-        .metadata()
-        .get("ARROW:extension:name")
-        .map(String::as_str)
-        == Some("lance.blob.v2")
-}
-
 pub(crate) fn has_blobs(schema: &SchemaRef) -> bool {
     fn contains(field: &Field) -> bool {
-        is_blob(field)
+        crate::blob::is_native_blob(field)
             || match field.data_type() {
                 DataType::Struct(fields) => fields.iter().any(|field| contains(field)),
                 DataType::List(field)
@@ -51,7 +43,7 @@ pub(crate) async fn send_rows(
     let mut active = FuturesOrdered::new();
     let mut ready = VecDeque::new();
     loop {
-        while active.len() + ready.len() < downloader.concurrency() {
+        while active.len() + ready.len() < downloader.in_flight_limit() {
             let Some(row) = rows.next() else {
                 break;
             };
@@ -190,10 +182,10 @@ fn materialize<'a>(
             return Ok(array.clone());
         };
         let values = array.as_any().downcast_ref::<StructArray>().unwrap();
-        if is_blob(field) && values.null_count() == values.len() {
+        if crate::blob::is_native_blob(field) && values.null_count() == values.len() {
             return Ok(array.clone());
         }
-        if is_blob(field) && values.column_by_name("kind").is_none() {
+        if crate::blob::is_native_blob(field) && values.column_by_name("kind").is_none() {
             let malformed = || {
                 Error::backend(std::io::Error::other(format!(
                     "invalid logical blob field {}",

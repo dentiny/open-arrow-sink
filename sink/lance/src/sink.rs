@@ -102,8 +102,16 @@ impl Sink for LanceDatasetSink {
             .with_ordering(Ordering::Unordered)
             .with_compression(
                 CompressionCapability::default()
-                    .with_global(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
-                    .with_per_column(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_global(&[
+                        CompressionCodec::Uncompressed,
+                        CompressionCodec::Zstd,
+                        CompressionCodec::Lz4Raw,
+                    ])
+                    .with_per_column(&[
+                        CompressionCodec::Uncompressed,
+                        CompressionCodec::Zstd,
+                        CompressionCodec::Lz4Raw,
+                    ])
                     .with_structural_encodings(&[
                         open_arrow_sink_core::StructuralEncoding::Miniblock,
                         open_arrow_sink_core::StructuralEncoding::Fullzip,
@@ -112,7 +120,7 @@ impl Sink for LanceDatasetSink {
             )
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(true)
-            .with_supports_blob_streaming(true)
+            .with_supports_blob_streaming(false)
             .with_supports_upload_options(true)
             .with_supports_storage_version(true)
             .with_supported_indexes(&[
@@ -129,29 +137,6 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        if crate::blob::requires_streaming_writer(&schema) {
-            validate_options(&schema, &options, self.capability())?;
-            let schemas = write_options::LanceSchemas::new(schema, &options)?;
-            let mut destination = self.resolve(url, &options)?;
-            let existing = destination
-                .prepare(
-                    &schemas.logical,
-                    options.mode,
-                    options.storage_version.as_deref(),
-                )
-                .await?;
-            if options.mode == WriteMode::Append
-                && !options.indexes.is_empty()
-                && let Some(dataset) = existing.as_ref()
-            {
-                crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
-            }
-            return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
-                schemas,
-                destination,
-                options,
-            )?));
-        }
         // Use the same fragment writing and publication path for every session.
         self.open_writer(url, schema, options).await
     }
@@ -167,38 +152,31 @@ impl ParallelSink for LanceDatasetSink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
-        validate_options(&schema, &options, self.capability())?;
+        let storage_version = validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_blob_schema(&schema)?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
+        let params = write_options::write_params(&options, storage_version);
         let mut destination = self.resolve(url, &options)?;
         let existing = destination
-            .prepare(
-                &schemas.logical,
-                options.mode,
-                options.storage_version.as_deref(),
-            )
+            .prepare(&schemas.logical, options.mode, storage_version)
             .await?;
-        if options.mode == WriteMode::Append
-            && !options.indexes.is_empty()
-            && let Some(dataset) = existing.as_ref()
-        {
-            crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
-        }
+        crate::validation::validate_index_requests(existing.as_ref(), &options).await?;
         let writers = (0..count.get())
             .map(|_| {
-                Ok(Box::new(crate::parallel::FragmentWriter::new(
+                Box::new(crate::parallel::FragmentWriter::new(
                     schemas.clone(),
                     destination.clone(),
+                    params.clone(),
                     &options,
-                )?)
-                    as Box<dyn DataWriter<Output = Self::Output>>)
+                )) as Box<dyn DataWriter<Output = Self::Output>>
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         Ok(WriteSession {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {
                 destination,
                 options,
+                storage_version,
             }),
         })
     }

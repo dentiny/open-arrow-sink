@@ -100,6 +100,10 @@ overrides do not reset codecs or their levels. Both policies apply recursively t
 nested descendants. Empty policies preserve existing schema metadata and backend
 defaults. `CompressionLayer` replaces all four fields together.
 
+Lance accepts `Compression::Lz4Raw` as its native `lz4` policy for global,
+per-column, and nested overrides. Native framing and codec selection still apply:
+Miniblock uses LZ4, while some Fullzip per-value paths in Lance 14 substitute Zstd.
+
 `CompressionCapability.structural_encodings` advertises supported layouts for
 both scopes. Lance supports both; Parquet and Iceberg reject nonempty structural
 policy before destination I/O. Lance rejects structural overrides on native blob
@@ -282,7 +286,8 @@ Three downloader limits work together:
 
 - Download concurrency bounds active groups. A row's selected blobs share one
   group and are read sequentially; rows download concurrently, preserving row
-  order at handoff. Ready plus active rows are bounded together. Pending
+  order at handoff. Ready plus active rows are bounded together by both
+  configured concurrency and the number of reservations the memory budget fits. Pending
   downloads continue being polled while the SDK's input channel is full, so
   sharing HTTP permits with destination uploads does not stall body consumption.
   All writers using the same downloader share admission.
@@ -313,22 +318,26 @@ physical writer. Divide an encoding budget by writer count for parallel writes;
 configure storage upload part size and HTTP concurrency for upload buffers.
 
 HTTP(S) downloads preserve escaped paths and signed queries, support redirects,
-and do not require HEAD or range support. `with_http_storage` installs storage
-built by `BlobDownloader::http_storage(config)` for retry, timeout, transport,
-and request-budget policies. No retry or timeout is enabled by default.
+and do not require HEAD or range support. Configure the default `OpenDalDownloader`
+with retry, timeout, and transport policies, then attach it with `with_downloader`.
+No retry or timeout is enabled by default.
 `LanceDatasetSink::with_source_storage` supplies independent source credentials
 to both the downloader and SDK. The destination's own namespace remains readable
 through its configured operator, taking precedence over overlapping source roots. Error bodies are discarded before diagnostics
 can collect them without a bound.
 
+Implement `storage::Downloader::open(source, DownloadContext)` to supply custom
+I/O as a stream of chunks. The shared `BlobDownloader` wrapper still applies
+admission, chunk-size checks, payload limits, and queued-memory ownership.
+Custom HTTP clients retain `context.http_requests().acquire().await` guards
+through response-body EOF/drop; provider-owned buffers remain their responsibility.
+
 The component also exposes `download(url)` and `download_all(&urls, metrics)` for
 independent consumers, plus `begin`/`buffer` for admitted in-memory payloads.
-Returned bytes and their clones retain the shared memory reservation. Its
-low-level `stream(url)` API still supports one budgeted chunk at a time for
-streaming consumers; ordinary blob ingestion uses complete payloads instead.
+Returned bytes and their clones retain the shared memory reservation. Downloads expose complete payloads; chunk streams belong to the `Downloader`
+implementation boundary.
 Dropping a pending write cancels its downloads and poisons the writer. Commit
-then aborts the native session rather than publishing partial data. The explicit
-legacy native streaming-handle API remains separate from logical ingestion.
+then aborts the native session rather than publishing partial data. Lance accepts logical blob inputs; its former streaming-handle API is unsupported.
 
 ## Observing sessions with MetricsLayer
 
@@ -351,13 +360,12 @@ Existing complete `WriteOptions` literals should add `io_metrics: None` or
 `..Default::default()`.
 
 Lance registers a fresh counter for each session, covering native reads, parallel
-fragment writes, manifest/index work, and successfully closed streamed blobs.
+fragment/blob writes and manifest/index work.
 Counters are visible while sessions are active and retained after commit, failure,
 cancellation, abort, or drop. Active sources are released after their I/O owners
 are dropped, retaining final totals. The standalone downloader can record each source chunk
 as it is consumed, including chunks consumed before a later error or cancellation.
-Failed I/O requests and unfinished streamed-blob writes are not counted as
-successful payload writes. These are measured logical payloads, not HTTP headers,
+Failed I/O requests are not counted as successful payload writes. These are measured logical payloads, not HTTP headers,
 network retries, process memory, or bytes inferred from Arrow batches.
 
 Byte counters start at zero and sum only instrumented I/O. Parquet, Iceberg, and

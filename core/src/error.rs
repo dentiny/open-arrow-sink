@@ -22,8 +22,9 @@ pub enum Error {
     Unsupported(String),
     #[error("batch schema does not match the write session schema")]
     SchemaMismatch,
-    #[error("destination exists")]
-    DestinationExists,
+    /// A destination or requested index already exists.
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
     /// A malformed URL, path, schema reference, or blob placement supplied by the caller.

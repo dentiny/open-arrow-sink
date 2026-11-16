@@ -1,14 +1,14 @@
 use arrow_array::cast::AsArray;
 use std::{num::NonZeroUsize, sync::Arc};
 
-use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
+use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{
     Dataset,
     blob::{BlobArrayBuilder, blob_field},
     datatypes::BlobHandling,
 };
-use open_arrow_sink_core::{BlobHandleConfig, IoMetrics, Sink};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_storage::BlobDownloader;
 mod testutil;
@@ -39,12 +39,20 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     let schema = Arc::new(Schema::new(vec![
         blob_field("blob", true),
         Field::new("id", DataType::Int32, false),
+        Field::new("bytes", DataType::LargeBinary, true)
+            .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into()),
     ]));
     let input = RecordBatch::try_new(
         schema.clone(),
         vec![
             values.finish().unwrap(),
             Arc::new(Int32Array::from(vec![0, 1, 2, 3])) as ArrayRef,
+            Arc::new(LargeBinaryArray::from(vec![
+                Some(b"mem".as_slice()),
+                None,
+                Some(b"mem2".as_slice()),
+                Some(b"".as_slice()),
+            ])) as ArrayRef,
         ],
     )
     .unwrap();
@@ -61,7 +69,7 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
             options()
                 .with_io_metrics(io.clone())
                 .with_blob_handle(BlobHandleConfig {
-                    inline_size_threshold: Some(0),
+                    inline_size_threshold: Some(16),
                     dedicated_size_threshold: NonZeroUsize::new(32 * 1024 * 1024),
                     ..Default::default()
                 }),
@@ -97,10 +105,18 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
         .await
         .unwrap();
     let values = actual.column(0).as_binary::<i64>();
+    let memory = actual.column(2).as_binary::<i64>();
     let ids = actual
         .column(1)
         .as_primitive::<arrow_array::types::Int32Type>();
     for row in 0..actual.num_rows() {
+        match ids.value(row) {
+            0 => assert_eq!(memory.value(row), b"mem"),
+            1 => assert!(memory.is_null(row)),
+            2 => assert_eq!(memory.value(row), b"mem2"),
+            3 => assert_eq!(memory.value(row), b""),
+            _ => unreachable!(),
+        }
         match ids.value(row) {
             0 | 2 => {
                 assert_eq!(values.value(row).len(), 17 * 1024 * 1024);

@@ -9,12 +9,12 @@ use lance_index::{
 };
 use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
-    Error, ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
+    ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
 };
 use std::sync::Arc;
 use tokio::{sync::OnceCell, task::JoinSet};
 
-use crate::error::{index_creation, index_refresh, index_task};
+use crate::error::index_creation;
 
 const TARGET_VECTOR_PARTITION_ROWS: usize = 8192;
 const MAX_VECTOR_PARTITIONS: usize = 4096;
@@ -41,7 +41,12 @@ pub(crate) async fn build_indexes(
         // Await before starting the next request. Attempt every request after
         // failures, and report the first failure in input order deterministically.
         let result = tasks.join_next().await.expect("one index task was started");
-        let result = result.unwrap_or_else(|error| Err(index_task(error, summary.clone())));
+        let result = result.unwrap_or_else(|error| {
+            Err(IndexCommitError::new(
+                format!("index construction task failed: {error}"),
+                summary.clone(),
+            ))
+        });
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -49,30 +54,17 @@ pub(crate) async fn build_indexes(
     // Each task commits through its own handle. Refresh the caller's snapshot
     // after all tasks finish, including when only some indexes succeeded.
     if let Err(error) = dataset.checkout_latest().await {
-        first_error.get_or_insert_with(|| index_refresh(error, summary.clone()));
+        first_error.get_or_insert_with(|| {
+            IndexCommitError::new(
+                format!("refreshing dataset after index construction: {error}"),
+                summary.clone(),
+            )
+        });
     }
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
     }
-}
-
-pub(crate) async fn validate_existing_indexes(
-    dataset: &Dataset,
-    indexes: &[IndexSpec],
-) -> open_arrow_sink_core::Result<()> {
-    let existing = dataset.load_indices().await.map_err(Error::backend)?;
-    for spec in indexes {
-        if spec.existing == ExistingIndexPolicy::Error
-            && existing.iter().any(|i| i.name == index_name(spec))
-        {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
-                "index {} already exists; select Keep or Rebuild",
-                index_name(spec)
-            )));
-        }
-    }
-    Ok(())
 }
 
 async fn create_index(
@@ -140,7 +132,7 @@ async fn create_index(
 }
 
 /// Native names reflect Lance's implementation of each logical index category.
-fn index_name(spec: &IndexSpec) -> String {
+pub(crate) fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
         IndexType::Scalar => "btree",
         IndexType::Vector => "ivf_flat",

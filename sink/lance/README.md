@@ -122,25 +122,14 @@ A runnable index construction example (destination must not exist):
 cargo run -p open-arrow-sink-lance --example write_indexed -- /tmp/indexed-lance
 ```
 
-## Streaming native blobs
+## Materialized blob inputs
 
-Blob-marked schemas require a single writer; blob bytes use the configured shared storage.
-Mark a `LargeBinary` field with `open-arrow-sink:blob = true`. For each streamed
-value, call `Writer::create_blob`, pass chunks to the returned `BlobWriter`, and
-finish it to obtain a session-owned `BlobHandle`. Attach handles with
-`Writer::write_with_blobs` and `BlobPlacement`; their cells must contain empty,
-non-null binary placeholders. Null cells remain null. Ordinary materialized
-binary values can still be written through `Writer::write`.
-
-Streams append through the common `StorageWriter`, and batches carry native
-Lance managed-blob descriptors. Streaming values use dedicated storage without
-buffering the full payload to select inline or packed storage. Materialized binary
-inputs remain supported through Lance's prepared-blob path. Handles from another
-session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a new dataset
-when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
-owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
-streamed blobs when appending to or overwriting an existing dataset.
+Use native logical blob fields (`BlobArrayBuilder::push_bytes` / `push_uri`), or
+mark a top-level `LargeBinary` field with `open-arrow-sink:blob = true`. Every
+blob goes through the built-in downloader's admission/memory budget, then the
+SDK selects its physical layout. Single and parallel writers use this same path.
+Nulls and empty blobs remain distinct. Prepared descriptors and the old
+`create_blob` / `write_with_blobs` streaming-handle API are unsupported by Lance.
 
 ## External blob ingestion
 
@@ -170,8 +159,7 @@ These options map through native `BlobFieldOptions` to top-level blob field meta
 Explicit values override existing field thresholds; `None` preserves field metadata
 or Lance defaults (64 KiB inline, 4 MiB dedicated). Values strictly above each
 threshold move to the next storage class. Dedicated selection takes precedence.
-They control native logical blob writes, including ingested URIs. Already prepared
-streaming handles retain their chosen dedicated storage layout.
+They control native logical blob writes, including ingested URIs.
 The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
 or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;
@@ -191,15 +179,15 @@ same mechanism for caller-configured S3 credentials and endpoints. In an ordinar
 pipeline, native logical blob batches can also be dispatched through
 `UnorderedWriteLayer`; actual writer utilization depends on available batches.
 
-Session-owned streamed handles remain single-writer inputs. Materialized
+Materialized
 blob-marked `LargeBinary` inputs also work with parallel writers: the adapter
 converts them to logical blobs and the SDK chooses their layout.
 
 ## Compression
 
-Supports global and per-column `Compression::Zstd { level }` and
-`Compression::Uncompressed`, directly in `WriteOptions.compression` or through
-`CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
+Supports global, per-column, and nested-column `Compression::Zstd { level }`,
+`Compression::Lz4Raw`, and `Compression::Uncompressed`, directly in
+`WriteOptions.compression` or through `CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
 Lance's codec default. Unsupported codecs and levels fail before destination
 creation. Empty compression options preserve existing field metadata and native
 defaults.
@@ -215,8 +203,8 @@ The adapter sets `lance-encoding:compression` and
 separate dictionary-value compression settings. `Uncompressed` disables native
 general-purpose compression. Structural encoding is independently controlled by
 `CompressionOptions.structural_encoding` and `.column_encodings`: `Miniblock`
-uses a block-oriented layout, while `Fullzip` uses a per-value layout. Neither
-setting changes the codec. Column overrides replace only the corresponding
+uses a block-oriented layout, while `Fullzip` uses a per-value layout.
+The requested codec is passed to Lance for either layout. Column overrides replace only the corresponding
 structural default, and both policies propagate to nested descendants.
 Unspecified structural settings preserve native/schema defaults. Native blob
 fields own their layout and reject explicit structural settings before I/O.
@@ -225,9 +213,11 @@ Append compares the effective metadata, so use the same policies as at creation.
 Batches reuse their existing value buffers with the internal schema, and readback
 includes the persisted encoding metadata. These settings survive file rolling.
 
-Snappy and Gzip are unsupported by Lance. `Lz4Raw` is not advertised: Lance's
-stable format can substitute Zstd for LZ4 on per-value paths, so it cannot honor
-that shared codec request consistently.
+`Lz4Raw` maps to Lance's native `lz4` policy. Native encoding determines the
+on-disk framing; this is not a Parquet-compatible raw LZ4 stream. Miniblock
+encoding uses LZ4, while some Fullzip per-value paths in Lance 14 substitute
+Zstd. The adapter preserves this native behavior and the requested `lz4` schema
+metadata. Snappy and Gzip are unsupported by Lance.
 
 ```rust
 use open_arrow_sink_core::{Compression, CompressionOptions, StructuralEncoding};
@@ -283,10 +273,8 @@ payloads and upload buffers; account for the writer count when budgeting memory.
 The sink always owns a `storage::BlobDownloader`. Logical blob URI inputs are
 downloaded automatically; materialized bytes use the same admission and memory
 budget. Configure it with `with_blob_downloader(Arc<BlobDownloader>)`. Complete
-payloads use SDK layout selection. The explicit streaming API
-above remains available for callers requiring it; it creates dedicated managed
-objects. A session chooses logical or prepared streaming input on its first
-write/create_blob call and cannot mix those representations.
+payloads use SDK layout selection. Install a custom `Downloader` implementation
+through `BlobDownloader::with_downloader` while keeping the framework budgets.
 
 ## Storage version
 
@@ -317,7 +305,7 @@ owns handles, placements, and cleanup.
 
 Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
 sink to control the native data-file and sidecar multipart upload buffers, as
-well as streamed blob uploads through the shared storage writer. For example, select a 16 MiB part
+well as SDK-managed blob uploads. For example, select a 16 MiB part
 size to tune buffering for your workload. Uploads default to 4 MiB parts and four
 concurrent requests per writer; use `Storage::with_upload_concurrency` to increase
 parallelism within your memory budget. This shared default replaces the native
@@ -370,14 +358,15 @@ let sink = LanceDatasetSink::default().with_source_resolver(sources)
 `with_source_resolver` replaces prior source registrations. Calling
 `with_source_storage` afterwards adds a store only to that consumer's resolver;
 configure all shared stores before wrapping the resolver in `Arc`.
-HTTP(S) downloads continue to use `BlobDownloader::with_http_storage`.
+HTTP policy and transport configuration live on `OpenDalDownloader`, or a custom
+implementation of the `Downloader` trait.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
 sink or constructing a dataset builder; Lance snapshots the available schemes.
 
 `BlobDownloader::with_source_storage` configures non-HTTP download sources.
-HTTP downloads use `BlobDownloader::http_storage` and preserve signed query
+The default `OpenDalDownloader` preserves signed query
 strings. Configure shared downloader limits on the sink; it downloads URI inputs and
 passes complete payloads to the SDK automatically. No download layer is required. See the
 [download contracts](../../docs/options.md#blob-downloader-and-memory-limits).

@@ -4302,6 +4302,7 @@ dependencies = [
  "object_store 0.14.2",
  "object_store_opendal",
  "open-arrow-sink-core",
+ "open-arrow-sink-test-support",
  "opendal",
  "percent-encoding",
  "rstest",
@@ -4321,6 +4322,8 @@ dependencies = [
  "axum",
  "futures",
  "open-arrow-sink-core",
+ "open-arrow-sink-storage",
+ "parquet",
  "tokio",
 ]
 

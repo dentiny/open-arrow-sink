@@ -10,3 +10,8 @@ mod payload;
 pub use batch::{concat_sorted, int64_batch, int64_schema, sort_batch};
 pub use options::unordered_options;
 pub use payload::seeded_bytes;
+
+mod parquet_fixture;
+mod storage_fixture;
+pub use parquet_fixture::read_parquet_dir;
+pub use storage_fixture::memory_storage;

@@ -8,6 +8,7 @@ use crate::{LanceFragments, destination::LanceDestination, index::build_indexes}
 pub(crate) struct LanceCommitter {
     pub destination: LanceDestination,
     pub options: WriteOptions,
+    pub storage_version: Option<lance_file::version::LanceFileVersion>,
 }
 
 #[async_trait]
@@ -34,9 +35,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut builder = self.destination.commit_builder();
-        if let Some(version) =
-            crate::validation::parse_storage_version(self.options.storage_version.as_deref())?
-        {
+        if let Some(version) = self.storage_version {
             // Fragment writes and manifest publication must use the same format.
             // Lance preserves the existing manifest default for append operations.
             builder = builder.with_storage_format(version);

@@ -55,7 +55,7 @@ writer stays abortable until publication begins.
 
 `WriteSession::into_writer()` adapts exactly one data writer to `Writer`, sharing
 failure and cancellation handling. All bundled ordinary non-blob writes use this
-path. Lance native blob writes use a specialized single writer.
+path. Lance blob writes use the same fragment publication path.
 
 ## Layers and execution
 

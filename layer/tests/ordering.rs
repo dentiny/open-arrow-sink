@@ -2,7 +2,7 @@
 mod parallel_sink;
 use open_arrow_sink_core::{Ordering, ParallelSink, SinkExt};
 use open_arrow_sink_test_support::unordered_options as options;
-use parallel_sink::{Config, Operation, State, TestSink};
+use parallel_sink::{Config, Event, State, TestSink};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -42,7 +42,7 @@ async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
         "capability={capability_ordering:?}, requested={requested:?}"
     );
     assert_eq!(
-        state.lock().unwrap().count(Operation::Open),
+        state.lock().unwrap().count(|e| matches!(e, Event::Open(_))),
         usize::from(supported)
     );
     if let Ok(session) = result {

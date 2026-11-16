@@ -198,6 +198,10 @@ impl Storage {
     }
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
+    pub fn http_concurrency_limit(&self) -> HttpConcurrencyLimitLayer {
+        self.http_limit.clone()
+    }
+
     pub fn operator(&self) -> Operator {
         // Keep the stored operator free of our limiter. Both HTTP setters update
         // independent inputs; every exposed operator wraps the provider once.
