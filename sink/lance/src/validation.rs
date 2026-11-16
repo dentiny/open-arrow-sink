@@ -38,6 +38,23 @@ fn validate_compression(options: &CompressionOptions) -> Result<()> {
 }
 
 fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    // Native blob descriptors are opaque to Lance users. Keep this backend rule
+    // here rather than teaching core's Arrow path resolver about Lance metadata.
+    for path in options.nested_columns.keys() {
+        if (1..path.len()).any(|end| {
+            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2")
+            })
+        }) {
+            return Err(Error::Unsupported(format!(
+                "nested compression inside native blob column: {path:?}"
+            )));
+        }
+    }
     for field in schema.fields() {
         let encoding = options
             .column_encodings
