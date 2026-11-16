@@ -144,7 +144,16 @@ otherwise ignored. The bound is in batches, not bytes. Each backend also retains
 its own encoding buffers.
 
 The layer spawns no tasks: it polls data-writer futures during `write`, `commit`,
-or `abort`. Backends may use their native workers (Lance uses bounded channels). A successful `write` means accepted; an asynchronous error may surface
+or `abort`. Parquet and Iceberg encoding/compression consequently runs in the
+caller task, so multiple writers overlap I/O but do not add CPU encoding threads.
+A multithreaded runtime does not change this unless the application or backend
+schedules separate tasks. More writers also multiply backend encoding buffers;
+tune concurrency against the actual CPU or upload bottleneck. Lance schedules
+its native writes separately and uses bounded channels. For application-managed
+CPU scheduling and its writer ownership requirements, see
+[concurrent writes](../layer/README.md#concurrent-writes).
+
+A successful `write` means accepted; an asynchronous error may surface
 in a later call. An error or cancellation of `write` makes the session terminal;
 abort or drop it. Commit drains accepted writes, finishes every data writer,
 then calls the session committer once with all outputs. A finish failure aborts

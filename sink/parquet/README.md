@@ -68,6 +68,10 @@ For concurrent files, wrap the sink in
 `ParallelSink::open_writers` to reserve the directory once and pre-open four
 files. Each writer rolls independently using disjoint indices (writer 0 owns
 0, 4, 8, ...; writer 1 owns 1, 5, 9, ...). The target size applies to each file.
+This overlaps file I/O; Parquet encoding and compression still run in the layer
+caller's task. Extra writers do not provide CPU parallelism and each retains its
+own encoding buffers. See the [layer guide](../../layer/README.md#concurrent-writes)
+for using `ParallelSink` directly with application-managed worker tasks.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
