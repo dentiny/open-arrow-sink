@@ -14,12 +14,11 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
+    LanceFragments,
     compression::writer_batch,
     destination::LanceDestination,
     error::{aborted, worker_stopped},
 };
-
-type Output = (u64, Transaction);
 
 pub(crate) enum Message {
     Batch(RecordBatch),
@@ -106,7 +105,7 @@ impl FragmentWriter {
 
 #[async_trait]
 impl DataWriter for FragmentWriter {
-    type Output = Output;
+    type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -125,7 +124,7 @@ impl DataWriter for FragmentWriter {
         self.state.complete();
         Ok(())
     }
-    async fn finish(&mut self) -> Result<Output> {
+    async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
         let sender = self
             .sender
@@ -140,7 +139,10 @@ impl DataWriter for FragmentWriter {
             .await
             .map_err(Error::backend)?
             .map_err(Error::backend)?;
-        Ok((self.rows, transaction))
+        Ok(LanceFragments {
+            rows_written: self.rows,
+            transaction,
+        })
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         drop(self.sender.take());
