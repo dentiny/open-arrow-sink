@@ -12,7 +12,6 @@ mod io_metrics;
 mod parallel;
 mod provider;
 mod sink;
-mod upload;
 mod validation;
 mod write_options;
 

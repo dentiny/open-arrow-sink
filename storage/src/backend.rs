@@ -23,6 +23,7 @@ pub struct Storage {
     // Validated once at construction; shared cheaply by storage clones.
     base_path: Arc<str>,
     upload_part_size: Option<NonZeroUsize>,
+    upload_concurrency: NonZeroUsize,
 }
 
 impl Storage {
@@ -45,6 +46,7 @@ impl Storage {
             base_url,
             base_path,
             upload_part_size: None,
+            upload_concurrency: NonZeroUsize::new(1).unwrap(),
         })
     }
 
@@ -114,6 +116,29 @@ impl Storage {
 
     pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
         self.upload_part_size
+    }
+
+    /// Bound concurrent multipart requests per writer, including native adapters.
+    /// Defaults to one; increase this together with the upload-buffer budget.
+    pub fn with_upload_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.upload_concurrency = concurrency;
+        self
+    }
+
+    pub fn upload_concurrency(&self) -> NonZeroUsize {
+        self.upload_concurrency
+    }
+
+    pub(crate) fn upload_options(
+        &self,
+        mut options: opendal::options::WriteOptions,
+    ) -> opendal::options::WriteOptions {
+        options.chunk = Some(
+            self.upload_part_size
+                .map_or(5 * 1024 * 1024, NonZeroUsize::get),
+        );
+        options.concurrent = self.upload_concurrency.get();
+        options
     }
 
     pub fn base_url(&self) -> &Url {
@@ -217,13 +242,8 @@ impl Storage {
     pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
         let path = self.nonroot_path(url)?;
         let operator = self.operator();
-        let part_size = self
-            .upload_part_size
-            .map_or(5 * 1024 * 1024, NonZeroUsize::get);
         let writer = operator
-            .writer_with(&path)
-            .chunk(part_size)
-            .concurrent(1)
+            .writer_options(&path, self.upload_options(Default::default()))
             .await
             .map_err(|error| map_error("open", &path, error))?;
         Ok(StorageWriter {

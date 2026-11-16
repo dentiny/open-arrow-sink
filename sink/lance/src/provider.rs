@@ -1,7 +1,6 @@
 use crate::error::native_storage as native;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, providers::ObjectStoreProvider};
 use object_store::path::Path;
-use object_store_opendal::OpendalStore;
 use open_arrow_sink_core::{Result, async_trait};
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
@@ -51,13 +50,7 @@ impl ObjectStoreProvider for Provider {
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
         let storage = self.resolve(&base_path).map_err(native)?;
-        let object_store: Arc<dyn object_store::ObjectStore> = match storage.upload_part_size() {
-            Some(size) => Arc::new(crate::upload::UploadStore::new(
-                storage.operator(),
-                size.get(),
-            )),
-            None => Arc::new(OpendalStore::new(storage.operator())),
-        };
+        let object_store = storage.object_store();
         use lance_io::object_store::WrappingObjectStore;
         let object_store = self
             .io_tracker
