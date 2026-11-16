@@ -33,3 +33,16 @@ pub struct SinkCapability {
     /// Compression scopes, codecs, and structural encodings accepted by this sink.
     pub compression: CompressionCapability,
 }
+
+impl Default for SinkCapability {
+    /// Advertise no write modes or optional features, and no input-order guarantee.
+    /// Sinks must explicitly opt into the modes and features they implement.
+    fn default() -> Self {
+        Self {
+            supports_blob_streaming: false,
+            supported_modes: &[],
+            ordering: Ordering::Unordered,
+            compression: CompressionCapability::default(),
+        }
+    }
+}

@@ -72,10 +72,8 @@ impl Sink for TestSink {
     type Request = Behavior;
     fn capability(&self) -> SinkCapability {
         SinkCapability {
-            supports_blob_streaming: false,
             supported_modes: &[WriteMode::Create],
-            ordering: Ordering::Unordered,
-            compression: Default::default(),
+            ..Default::default()
         }
     }
     async fn open(
