@@ -293,33 +293,20 @@ the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 
 ### Independent blob sources
 
-Storage selection and byte transfer have separate responsibilities:
+Use `LanceDatasetSink::with_source_storage(storage)` for native blob sources
+requiring custom credentials, endpoints, or operators. The destination store
+always takes precedence inside its own namespace; sources use the most specific
+configured root. Destination credentials are never reused for unrelated sources.
+Unregistered sources use URL-configured storage cached by `StorageResolver`.
+The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
+adapts the selected storage to Lance.
 
-- `Storage` binds one URL namespace to an OpenDAL operator, including its endpoint,
-  credentials, and policies. It validates URLs and derives operator-relative paths.
-- `StorageResolver` selects source storage: explicit namespaces (most specific root
-  first), then cached URL-configured stores, then a new URL-configured store.
-  Clones share this cache while retaining independent explicit registrations.
-- The internal Lance `StorageRouter` gives the destination precedence within its
-  namespace and delegates other URLs to the source resolver. `Provider` adapts
-  the selected storage to Lance's ObjectStore, path, and store-prefix interfaces.
+URL-based resolution supports enabled OpenDAL services. Enable the corresponding
+service or register a builder with `opendal::OperatorRegistry` before opening the
+sink or constructing a dataset builder; Lance snapshots the available schemes.
 
-Native URI ingestion uses this routing policy to read sources before Lance copies
-bytes into destination-owned storage. The downloader also uses `StorageResolver`
-for file and enabled cloud URLs; HTTP(S) keeps its complete-URL transport.
-Use `LanceDatasetSink::with_source_storage(storage)` for each source requiring a
-custom endpoint, credentials, or operator. The destination store takes precedence
-inside its own namespace; source stores use the most specific configured root.
-Credentials are never copied from the destination to an unrelated bucket/host.
-Signed HTTP URLs should use `DownloadBlobLayer`, which preserves their query.
-
-`DownloadPool::with_source_storage` also configures non-HTTP source stores.
-Its `stream` method accepts file and enabled cloud URLs in addition to HTTP(S),
-with the same transfer-buffer budget and active-stream limit. Policies on
-explicit source stores are retained; `with_layer` configures the HTTP downloader.
-
-Provider schemes are discovered from OpenDAL's operator registry and explicitly
-configured source/destination namespaces. To extend URL-based resolution, enable
-an OpenDAL service or register a builder with `opendal::OperatorRegistry` before
-opening the sink or constructing a dataset builder. Lance sessions snapshot that
-registry; no backend list needs to be changed in the Lance adapter.
+`DownloadPool::with_source_storage` configures non-HTTP source stores. File and
+enabled cloud downloads share the same transfer-buffer budget and active-stream
+limit as HTTP(S). Explicit stores retain their policies; `with_layer` configures
+HTTP downloads. Signed HTTP URLs should use `DownloadBlobLayer`, which preserves
+their complete URL, including the query.

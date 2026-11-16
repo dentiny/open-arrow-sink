@@ -44,10 +44,6 @@ impl StorageResolver {
         if let Some(storage) = matching_storage(&self.configured, url) {
             return Ok(storage);
         }
-        self.resolve_url_storage(url)
-    }
-
-    fn resolve_url_storage(&self, url: &Url) -> Result<Storage> {
         let mut cached = self
             .cached
             .lock()
