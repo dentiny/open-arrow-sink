@@ -55,7 +55,9 @@ impl BlobSession {
     pub fn ensure_idle(&self) -> Result<()> {
         self.check()?;
         if self.active.load(Ordering::Acquire) != 0 {
-            return Err(crate::error::unfinished_blobs());
+            return Err(Error::backend(std::io::Error::other(
+                "writer failed or has unfinished blobs; session aborted",
+            )));
         }
         Ok(())
     }

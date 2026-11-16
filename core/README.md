@@ -25,8 +25,8 @@ one exact top-level name; dots are literal and duplicate names are ambiguous.
 `WriteSummary.rows_written` is the successful session's committed row count.
 `Error::Unsupported` covers unavailable capabilities; `InvalidConfig` covers
 malformed options and `InvalidInput` covers malformed URLs, paths, and blob
-placements. `DestinationExists` reports a destination conflict, `NotFound`
-reports a missing destination detected by validation, and `SchemaMismatch`
+placements. `AlreadyExists` reports a destination or index conflict with context.
+`NotFound` reports a missing destination detected by validation, and `SchemaMismatch`
 covers batch schemas. Native I/O failures remain in `Backend`, which retains
 the original source chain and backend context.
 

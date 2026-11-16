@@ -85,11 +85,22 @@ async fn shared_operator_commit_indexes_and_read_back() {
             .len(),
         1
     );
-    assert!(
-        sink.open(url, batch().schema(), write_options())
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        sink.open(url.clone(), batch().schema(), write_options()).await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(location)) if location == url.as_str()
+    ));
+    assert!(matches!(
+        sink.open(
+            url,
+            batch().schema(),
+            write_options()
+                .with_mode(open_arrow_sink_core::WriteMode::Append)
+                .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
+        )
+        .await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(message))
+            if message.contains("index oas_btree_")
+    ));
 }
 
 #[rstest::rstest]
