@@ -19,4 +19,5 @@ mod io_metrics;
 mod parallel;
 
 mod storage;
+mod storage_router;
 pub use open_arrow_sink_storage::{Storage, Url};

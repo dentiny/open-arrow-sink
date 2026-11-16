@@ -293,8 +293,20 @@ the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 
 ### Independent blob sources
 
-Native URI ingestion resolves source stores independently of the destination.
-URL-configured file, HTTP(S), and enabled cloud sources are cached for the session.
+Storage selection and byte transfer have separate responsibilities:
+
+- `Storage` binds one URL namespace to an OpenDAL operator, including its endpoint,
+  credentials, and policies. It validates URLs and derives operator-relative paths.
+- `StorageResolver` selects source storage: explicit namespaces (most specific root
+  first), then cached URL-configured stores, then a new URL-configured store.
+  Clones share this cache while retaining independent explicit registrations.
+- The internal Lance `StorageRouter` gives the destination precedence within its
+  namespace and delegates other URLs to the source resolver. `Provider` adapts
+  the selected storage to Lance's ObjectStore, path, and store-prefix interfaces.
+
+Native URI ingestion uses this routing policy to read sources before Lance copies
+bytes into destination-owned storage. The downloader also uses `StorageResolver`
+for file and enabled cloud URLs; HTTP(S) keeps its complete-URL transport.
 Use `LanceDatasetSink::with_source_storage(storage)` for each source requiring a
 custom endpoint, credentials, or operator. The destination store takes precedence
 inside its own namespace; source stores use the most specific configured root.
@@ -305,3 +317,9 @@ Signed HTTP URLs should use `DownloadBlobLayer`, which preserves their query.
 Its `stream` method accepts file and enabled cloud URLs in addition to HTTP(S),
 with the same transfer-buffer budget and active-stream limit. Policies on
 explicit source stores are retained; `with_layer` configures the HTTP downloader.
+
+Provider schemes are discovered from OpenDAL's operator registry and explicitly
+configured source/destination namespaces. To extend URL-based resolution, enable
+an OpenDAL service or register a builder with `opendal::OperatorRegistry` before
+opening the sink or constructing a dataset builder. Lance sessions snapshot that
+registry; no backend list needs to be changed in the Lance adapter.
