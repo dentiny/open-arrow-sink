@@ -8,16 +8,17 @@ mod http_limit;
 mod io_metrics;
 mod object_path;
 mod resolver;
+mod url;
 mod validation;
 pub use resolver::StorageResolver;
 
+pub use ::url::Url;
 pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
 pub use http_limit::{HttpConcurrencyLimitLayer, HttpRequestPermit};
 pub use io_metrics::IoMetricsLayer;
 pub use object_path::ObjectPath;
 pub use opendal;
-pub use url::Url;
 
 mod object_store;
 

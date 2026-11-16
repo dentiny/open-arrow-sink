@@ -91,17 +91,7 @@ impl Downloader for OpenDalDownloader {
             let ctx = operator.base_context().with_http_transport(transport);
             (operator.with_context(ctx), "blob".to_owned())
         } else {
-            // S3 content links (e.g. PMC) may carry MD5 metadata, not part of the key.
-            if url.scheme() == "s3"
-                && url
-                    .query()
-                    .and_then(|query| query.strip_prefix("md5="))
-                    .is_some_and(|md5| {
-                        md5.len() == 32 && md5.bytes().all(|b| b.is_ascii_hexdigit())
-                    })
-            {
-                url.set_query(None);
-            }
+            crate::url::sanitize_download_url(&mut url);
             let (storage, path) = context.resolve_source(&url)?;
             let operator = storage.operator();
             let operator = if storage
