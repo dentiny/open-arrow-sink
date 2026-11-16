@@ -1,5 +1,3 @@
-#![cfg(feature = "http")]
-
 use std::{sync::Arc, time::Duration};
 
 use futures::{TryStreamExt, poll, stream};

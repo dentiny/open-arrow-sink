@@ -15,7 +15,5 @@ pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
 pub use url::Url;
 
-#[cfg(feature = "http")]
 mod download_pool;
-#[cfg(feature = "http")]
 pub use download_pool::DownloadPool;
