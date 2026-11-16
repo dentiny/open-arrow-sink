@@ -11,14 +11,14 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
 hex = "0.4"
-lance-encoding = { version = "14.0.1", default-features = false }
+lance-encoding = { version = "14.0.3", default-features = false }
 open-arrow-sink-test-support = { path = "test-support" }
 async-stream = "0.3"
 bytes = "1"
@@ -40,10 +40,10 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 parquet = { version = "58.4", default-features = false }
 tokio = "1"
 thiserror = "2"
-open-arrow-sink-storage = { path = "storage", version = "0.1.0" }
-open-arrow-sink-core = { path = "core", version = "0.1.0" }
-open-arrow-sink-layer = { path = "layer", version = "0.1.0" }
-open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
+open-arrow-sink-storage = { path = "storage", version = "0.1.1" }
+open-arrow-sink-core = { path = "core", version = "0.1.1" }
+open-arrow-sink-layer = { path = "layer", version = "0.1.1" }
+open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.1" }
 
 [package]
 name = "open-arrow-sink"
@@ -73,10 +73,10 @@ parquet-lz4 = ["sink-parquet", "open-arrow-sink-parquet/lz4"]
 open-arrow-sink-core.workspace = true
 open-arrow-sink-layer.workspace = true
 open-arrow-sink-storage.workspace = true
-open-arrow-sink-iceberg = { path = "sink/iceberg", version = "0.1.0", optional = true }
+open-arrow-sink-iceberg = { path = "sink/iceberg", version = "0.1.1", optional = true }
 open-arrow-sink-parquet = { workspace = true, optional = true }
 
 [dependencies.open-arrow-sink-lance]
 path = "sink/lance"
-version = "0.1.0"
+version = "0.1.1"
 optional = true
