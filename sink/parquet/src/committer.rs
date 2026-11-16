@@ -30,7 +30,7 @@ impl SessionCommitter<u64> for ParquetCommitter {
         if let Destination::Owned(directory) = self.destination.as_ref()
             && let Err(error) = directory
                 .storage
-                .remove_empty_directory(&directory.url)
+                .remove_empty_directory(&directory.path)
                 .await
         {
             result = Err(error);

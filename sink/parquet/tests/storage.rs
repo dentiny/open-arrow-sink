@@ -19,11 +19,11 @@ fn batch() -> RecordBatch {
 fn options() -> WriteOptions {
     WriteOptions::default()
         .with_ordering(Ordering::Unordered)
-        .with_target_file_size(Some(1))
+        .with_target_file_size(1)
         .with_upload(
             UploadConfig::default()
-                .with_part_size(NonZeroUsize::new(16))
-                .with_concurrency(NonZeroUsize::new(2)),
+                .with_part_size(NonZeroUsize::new(16).unwrap())
+                .with_concurrency(NonZeroUsize::new(2).unwrap()),
         )
 }
 
@@ -46,7 +46,11 @@ async fn shared_storage_abort_and_keep_policy(#[case] cleanup_on_error: bool) {
     writer.write(batch()).await.unwrap();
     writer.abort().await.unwrap();
     assert_eq!(
-        storage.list(&directory).await.unwrap().is_empty(),
+        storage
+            .list(&storage.resolve(&directory).unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
         cleanup_on_error
     );
 }
@@ -62,20 +66,29 @@ async fn rolling_collision_is_preserved() {
         .unwrap();
     writer.write(batch()).await.unwrap();
     let collision = directory.join("part-0-00001.parquet").unwrap();
-    storage.create(&collision, "keep".into()).await.unwrap();
+    storage
+        .create(&storage.resolve(&collision).unwrap(), "keep".into())
+        .await
+        .unwrap();
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
-    assert_eq!(storage.read(&collision).await.unwrap(), "keep");
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&collision).unwrap())
+            .await
+            .unwrap(),
+        "keep"
+    );
 }
 
 async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> usize {
     let mut rows = 0;
     for file in storage
-        .list(directory)
+        .list(&storage.resolve(directory).unwrap())
         .await
         .unwrap()
         .into_iter()
-        .filter(|url| url.path().ends_with(".parquet"))
+        .filter(|url| url.as_str().ends_with(".parquet"))
     {
         for batch in ParquetRecordBatchReaderBuilder::try_new(storage.read(&file).await.unwrap())
             .unwrap()

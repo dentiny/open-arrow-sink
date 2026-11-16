@@ -59,7 +59,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
 
 #[rstest::rstest]
 #[case::preserve_input(options().with_ordering(Ordering::PreserveInput))]
-#[case::zero_target(options().with_target_file_size(Some(0)))]
+#[case::zero_target(options().with_target_file_size(0))]
 #[tokio::test]
 async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: WriteOptions) {
     let state = Arc::new(Mutex::new(State::default()));

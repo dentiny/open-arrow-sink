@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, Url};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Mutex;
 
@@ -14,10 +14,10 @@ pub(crate) enum Destination {
 
 pub(crate) struct Directory {
     pub(crate) storage: Storage,
-    pub(crate) url: Url,
+    pub(crate) path: ObjectPath,
     prefix: String,
     // Record claims before opening uploads so failed opens are cleaned up too.
-    files: Mutex<Vec<Url>>,
+    files: Mutex<Vec<ObjectPath>>,
 }
 
 impl Destination {
@@ -27,7 +27,12 @@ impl Destination {
         schema: &SchemaRef,
         mode: WriteMode,
     ) -> Result<Self> {
-        let directory = storage.directory_url(&directory)?;
+        let directory = storage.resolve(&directory)?.as_dir();
+        if directory.is_root() {
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
+        }
         let prefix = match mode {
             WriteMode::Create => {
                 if storage.inspect_directory(&directory).await? != DirectoryState::Missing {
@@ -47,7 +52,7 @@ impl Destination {
         };
         let directory = Directory {
             storage,
-            url: directory,
+            path: directory,
             prefix,
             files: Mutex::new(Vec::new()),
         };
@@ -64,7 +69,7 @@ impl Destination {
         }
     }
 
-    pub(crate) fn claimed_files(&self) -> Vec<Url> {
+    pub(crate) fn claimed_files(&self) -> Vec<ObjectPath> {
         std::mem::take(&mut *self.directory().files.lock().unwrap())
     }
 
@@ -77,7 +82,7 @@ impl Destination {
     ) -> Result<AsyncArrowWriter<FileWriter>> {
         let directory = self.directory();
         let path = directory
-            .url
+            .path
             .join(&format!(
                 "{}{writer}-{sequence:05}.parquet",
                 directory.prefix

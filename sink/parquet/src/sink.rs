@@ -72,10 +72,7 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        self.open_writers(directory, schema, options, NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(directory, schema, options).await
     }
 }
 

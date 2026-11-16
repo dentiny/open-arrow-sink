@@ -30,11 +30,13 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
+    let mut write_options = options();
+    write_options.target_file_size = target_file_size;
     let mut writer = ParquetDirectorySink::default()
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            options().with_target_file_size(target_file_size),
+            write_options,
         )
         .await
         .unwrap();
@@ -135,7 +137,7 @@ async fn abort_removes_output_and_preserves_sibling_files() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();
@@ -165,7 +167,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();
