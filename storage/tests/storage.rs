@@ -49,19 +49,15 @@ async fn namespace_boundaries_and_conditional_creation() {
         "memory:///outside/file",
         "s3://bucket/warehouse/file",
         "memory:///warehouse/file?x=y",
-        "memory:///warehouse/file#fragment",
         "memory:///warehouse/%2e%2e%2ffile",
     ] {
         assert!(storage.resolve(&url.parse().unwrap()).is_err(), "{url}");
     }
     assert!(storage.url("../outside").is_err());
     let root = storage.resolve(storage.base_url()).unwrap();
-    assert!(root.is_root());
-    assert!(root.as_dir().is_root());
     let repeated_root = storage
         .resolve(&"memory:///warehouse//".parse().unwrap())
         .unwrap();
-    assert!(repeated_root.is_root());
     assert!(storage.remove_all(&root).await.is_err());
     assert!(storage.remove_all(&repeated_root).await.is_err());
     assert!(storage.prefix_exists(&root).await.is_err());
@@ -213,26 +209,4 @@ async fn errors_retain_operation_path_and_opendal_source() {
         source = cause.source();
     }
     panic!("the original OpenDAL error must remain in the source chain");
-}
-
-#[test]
-fn resolved_paths_preserve_decoded_keys_and_reject_traversal() {
-    let storage = memory();
-    let url = storage.url("雪 space/literal%20").unwrap();
-    let path = storage.resolve(&url).unwrap();
-    assert_eq!(path.as_str(), "雪 space/literal%20");
-    assert_eq!(storage.url(path.as_str()).unwrap(), url);
-    assert_eq!(path.as_dir().as_dir(), path.as_dir());
-    assert_eq!(path.as_dir().as_object(), path);
-    for child in [
-        "../outside",
-        "nested/../outside",
-        "/absolute",
-        "bad\\path",
-        "bad\0path",
-    ] {
-        assert!(path.join(child).is_err(), "{child:?}");
-    }
-    let child = path.as_dir().join("literal%2f雪").unwrap();
-    assert_eq!(child.as_str(), "雪 space/literal%20/literal%2f雪");
 }

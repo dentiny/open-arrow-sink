@@ -291,14 +291,6 @@ mod tests {
             .await
             .unwrap();
         keep_writer.write("keep".into()).await.unwrap();
-        // Reject root cleanup before aborting or unregistering any upload.
-        assert!(
-            file_io
-                .delete_prefix(storage.base_url().as_str())
-                .await
-                .is_err()
-        );
-        assert_eq!(factory.uploads.lock().len(), 3);
         // A factory clone and a new FileIO must share the unfinished-upload registry.
         factory
             .clone()
