@@ -1,9 +1,8 @@
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
-use lance::dataset::{InsertBuilder, transaction::Transaction};
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{
-    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
-    validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -24,8 +23,8 @@ impl FragmentWriter {
     pub(crate) fn new(
         schemas: crate::write_options::LanceSchemas,
         destination: LanceDestination,
-        options: &WriteOptions,
-    ) -> Result<Self> {
+        params: WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         // Closing the channel ends fragment input; publication belongs to the committer.
         let batches = stream::unfold(receiver, |mut receiver| async move {
@@ -35,7 +34,7 @@ impl FragmentWriter {
             schemas.encoded.clone(),
             batches,
         )) as SendableRecordBatchStream;
-        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
+        let params = destination.bind_write_params(params);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -43,13 +42,13 @@ impl FragmentWriter {
                 .execute_uncommitted_stream(stream)
                 .await
         });
-        Ok(Self {
+        Self {
             schemas,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
             state: Poison::default(),
-        })
+        }
     }
 }
 

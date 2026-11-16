@@ -9,7 +9,7 @@ use lance_index::{
 };
 use lance_linalg::distance::MetricType;
 use open_arrow_sink_core::{
-    Error, ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
+    ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType, WriteSummary,
 };
 use std::sync::Arc;
 use tokio::{sync::OnceCell, task::JoinSet};
@@ -65,24 +65,6 @@ pub(crate) async fn build_indexes(
         Some(error) => Err(error),
         None => Ok(()),
     }
-}
-
-pub(crate) async fn validate_existing_indexes(
-    dataset: &Dataset,
-    indexes: &[IndexSpec],
-) -> open_arrow_sink_core::Result<()> {
-    let existing = dataset.load_indices().await.map_err(Error::backend)?;
-    for spec in indexes {
-        if spec.existing == ExistingIndexPolicy::Error
-            && existing.iter().any(|i| i.name == index_name(spec))
-        {
-            return Err(Error::AlreadyExists(format!(
-                "index {} already exists; select Keep or Rebuild",
-                index_name(spec)
-            )));
-        }
-    }
-    Ok(())
 }
 
 async fn create_index(
@@ -150,7 +132,7 @@ async fn create_index(
 }
 
 /// Native names reflect Lance's implementation of each logical index category.
-fn index_name(spec: &IndexSpec) -> String {
+pub(crate) fn index_name(spec: &IndexSpec) -> String {
     let kind = match spec.index_type {
         IndexType::Scalar => "btree",
         IndexType::Vector => "ivf_flat",

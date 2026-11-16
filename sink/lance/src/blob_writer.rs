@@ -2,7 +2,7 @@ use std::sync::{Arc, atomic::Ordering};
 
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
-use lance::dataset::{InsertBuilder, transaction::Transaction};
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, SessionCommitter,
     WriteOptions, WriteSummary, Writer, async_trait, validation,
@@ -22,6 +22,7 @@ pub(crate) struct BlobDatasetWriter {
     state: Poison,
     destination: LanceDestination,
     options: WriteOptions,
+    storage_version: Option<lance_file::version::LanceFileVersion>,
 }
 
 #[async_trait]
@@ -87,6 +88,7 @@ impl Writer for BlobDatasetWriter {
         Box::new(LanceCommitter {
             destination: self.destination,
             options: self.options,
+            storage_version: self.storage_version,
         })
         .commit(vec![LanceFragments {
             rows_written: self.rows,
@@ -114,7 +116,8 @@ impl BlobDatasetWriter {
         schemas: crate::write_options::LanceSchemas,
         destination: LanceDestination,
         options: WriteOptions,
-    ) -> Result<Self> {
+        params: WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let batches = stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
@@ -123,7 +126,8 @@ impl BlobDatasetWriter {
             schemas.encoded.clone(),
             batches,
         )) as SendableRecordBatchStream;
-        let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
+        let storage_version = params.data_storage_version;
+        let params = destination.bind_write_params(params);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -131,7 +135,7 @@ impl BlobDatasetWriter {
                 .execute_uncommitted_stream(stream)
                 .await
         });
-        Ok(Self {
+        Self {
             schemas,
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
@@ -144,6 +148,7 @@ impl BlobDatasetWriter {
             state: Poison::default(),
             destination,
             options,
-        })
+            storage_version,
+        }
     }
 }
