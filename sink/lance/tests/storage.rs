@@ -60,7 +60,7 @@ async fn shared_operator_unordered_commit_preserves_rows() {
     assert_eq!(
         open_arrow_sink_test_support::concat_sorted(
             &actual.schema(),
-            &[actual.clone()],
+            std::slice::from_ref(&actual),
             &["value"]
         )
         .unwrap(),
