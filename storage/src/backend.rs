@@ -13,7 +13,7 @@ use crate::{
     validation,
 };
 
-const DEFAULT_UPLOAD_PART_SIZE: usize = 5 * 1024 * 1024;
+const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
 
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.

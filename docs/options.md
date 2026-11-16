@@ -435,7 +435,7 @@ let options = WriteOptions::default()
     );
 ```
 
-Unset fields retain the configured `Storage` value (otherwise 5 MiB and one
+Unset fields retain the configured `Storage` value (otherwise 4 MiB and one
 request per writer). Overrides affect only the current session. OpenDAL enforces
 backend part-size limits. These options differ from `target_file_size`, which
 controls file rolling, and from the shared aggregate HTTP request budget. Memory
