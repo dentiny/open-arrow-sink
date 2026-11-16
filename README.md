@@ -65,8 +65,8 @@ options.
 
 Lance Overwrite creates a new dataset when the destination is missing, empty,
 or contains only uncommitted files in Lance-managed namespaces (`data`, `_blobs`,
-`_transactions`, `_indices`). Recognized data/blob/transaction file extensions are
-required; an empty `_versions` directory is also allowed. Existing orphan files
+`_transactions`, `_indices`, `_index_staging`). Recognized data/blob/transaction
+and staging manifest file extensions are required; an empty `_versions` directory is also allowed. Existing orphan files
 are retained. Unrecognized contents, unreadable datasets, and invalid version
 metadata still fail; Create and Append keep their existing behavior.
 

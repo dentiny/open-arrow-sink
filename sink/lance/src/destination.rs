@@ -101,8 +101,10 @@ impl LanceDestination {
             }
             let (namespace, name) = relative.split_once('/').unwrap_or((relative, ""));
             let managed = if entry.metadata().is_dir() {
-                matches!(namespace, "data" | "_blobs" | "_transactions" | "_indices")
-                    || relative == "_versions/"
+                matches!(
+                    namespace,
+                    "data" | "_blobs" | "_transactions" | "_indices" | "_index_staging"
+                ) || relative == "_versions/"
             } else {
                 match namespace {
                     "data" => {
@@ -112,6 +114,7 @@ impl LanceDestination {
                     }
                     "_blobs" => name.ends_with(".blob"),
                     "_transactions" => name.ends_with(".txn"),
+                    "_index_staging" => name.ends_with(".manifest"),
                     // Index implementations own the files inside this namespace.
                     "_indices" => !name.is_empty(),
                     _ => false,

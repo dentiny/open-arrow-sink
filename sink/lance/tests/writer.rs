@@ -133,7 +133,7 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
 #[rstest::rstest]
 #[case::empty(vec![])]
 #[case::empty_lance_directories(vec!["data/", "_versions/", "_blobs/"])]
-#[case::orphans(vec!["data/uncommitted.lance", "data/partial.lance-stage", "data/part/0.blob", "_blobs/uncommitted.blob", "_transactions/0-uncommitted.txn", "_indices/uncommitted/index.idx"])]
+#[case::orphans(vec!["data/uncommitted.lance", "data/partial.lance-stage", "data/part/0.blob", "_blobs/uncommitted.blob", "_transactions/0-uncommitted.txn", "_indices/uncommitted/index.idx", "_index_staging/uncommitted.manifest"])]
 #[tokio::test]
 async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
     let temp = tempfile::tempdir().unwrap();
@@ -180,6 +180,7 @@ async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
 #[case::exact_file("")]
 #[case::unrelated("notes.txt")]
 #[case::nested_unrelated("data/notes.txt")]
+#[case::unrelated_staging_file("_index_staging/notes.txt")]
 #[case::unrelated_directory("unrelated/")]
 #[case::corrupt_manifest("_versions/1.manifest")]
 #[case::unrecognized_version_metadata("_versions/unknown")]
