@@ -70,7 +70,9 @@ impl DownloadPool {
     /// budget, and transport. Build it with `http_storage`.
     pub fn with_http_storage(mut self, storage: Storage) -> Result<Self> {
         if storage.operator().info().scheme() != "http" {
-            return Err(error::http_storage_service());
+            return Err(Error::InvalidConfig(
+                "HTTP download storage must use the OpenDAL http service".into(),
+            ));
         }
         self.http = storage;
         Ok(self)
@@ -101,7 +103,8 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let url = crate::Url::parse(source).map_err(Error::backend)?;
+        let url = crate::Url::parse(source)
+            .map_err(|error| Error::InvalidInput(format!("invalid blob URL: {error}")))?;
         let stream_slot = self
             .stream_slots
             .clone()

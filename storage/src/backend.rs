@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, ops::Range, sync::Arc};
 
 use bytes::Bytes;
 use futures::TryStreamExt;
-use open_arrow_sink_core::Result;
+use open_arrow_sink_core::{Error, Result};
 use opendal::{HttpTransporter, Operator};
 use url::Url;
 
@@ -192,7 +192,7 @@ impl Storage {
         {
             let mut segments = url
                 .path_segments_mut()
-                .map_err(|_| error::url_without_paths())?;
+                .map_err(|_| Error::InvalidInput("URL cannot contain paths".into()))?;
             segments.pop_if_empty();
             for segment in path
                 .trim_end_matches('/')
@@ -366,7 +366,7 @@ impl StorageWriter {
         self.state.begin()?;
         self.inner
             .as_mut()
-            .ok_or_else(error::writer_closed)?
+            .ok_or(Error::Poisoned)?
             .write(bytes.clone())
             .await
             .map_err(|error| map_error("write", &self.path, error))?;
@@ -378,7 +378,7 @@ impl StorageWriter {
         self.state.begin()?;
         self.inner
             .as_mut()
-            .ok_or_else(error::writer_closed)?
+            .ok_or(Error::Poisoned)?
             .close()
             .await
             .map_err(|error| map_error("close", &self.path, error))?;

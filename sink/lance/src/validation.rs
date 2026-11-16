@@ -31,7 +31,10 @@ fn validate_compression(options: &CompressionOptions) -> Result<()> {
             && *level != 0
             && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(level)
         {
-            return Err(error::invalid_compression_level(*level));
+            return Err(Error::InvalidConfig(format!(
+                "Lance Zstd compression level must be between 0 and {}: {level}",
+                ZSTD_COMPRESSION_LEVEL_RANGE.end()
+            )));
         }
     }
     Ok(())
@@ -73,7 +76,7 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
                     .map(String::as_str)
                     == Some("lance.blob.v2"))
         {
-            return Err(open_arrow_sink_core::Error::Unsupported(format!(
+            return Err(Error::Unsupported(format!(
                 "structural encoding on blob column {}",
                 field.name()
             )));
@@ -82,15 +85,13 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
     Ok(())
 }
 
-use crate::error::{missing_index_column, unsupported_index};
-
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
     use DataType::*;
     validation::validate_indexes(schema, indexes)?;
     for index in indexes {
-        let field = schema
-            .field_with_name(&index.column)
-            .map_err(|_| missing_index_column(&index.column))?;
+        let field = schema.field_with_name(&index.column).map_err(|_| {
+            Error::InvalidConfig(format!("index column not found: {}", index.column))
+        })?;
         let supported = match index.index_type {
             IndexType::Scalar => matches!(
                 field.data_type(),
@@ -143,7 +144,12 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
             ),
         };
         if !supported {
-            return Err(unsupported_index(index, field.data_type()));
+            return Err(Error::Unsupported(format!(
+                "cannot create {:?} index on column {} with type {}",
+                index.index_type,
+                index.column,
+                field.data_type()
+            )));
         }
     }
     Ok(())
@@ -167,10 +173,10 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(requested) = parse_storage_version(storage_version)?
         && requested.resolve() != dataset.manifest().data_storage_format.version
     {
-        return Err(error::storage_version_mismatch(
-            requested,
-            dataset.manifest().data_storage_format.version,
-        ));
+        return Err(Error::InvalidConfig(format!(
+            "Lance append storage version {requested} does not match existing dataset version {}",
+            dataset.manifest().data_storage_format.version
+        )));
     }
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
@@ -186,14 +192,18 @@ pub(crate) fn validate_transaction_compatibility(
 ) -> Result<()> {
     use lance::dataset::transaction::Operation;
     if target.read_version != incoming.read_version {
-        return Err(error::different_dataset_versions());
+        return Err(Error::InvalidInput(
+            "Lance writers observed different dataset versions".into(),
+        ));
     }
     if !matches!(
         (&target.operation, &incoming.operation),
         (Operation::Overwrite { .. }, Operation::Overwrite { .. })
             | (Operation::Append { .. }, Operation::Append { .. })
     ) {
-        return Err(error::invalid_create_fragments());
+        return Err(Error::InvalidInput(
+            "expected compatible uncommitted Lance write fragments".into(),
+        ));
     }
     Ok(())
 }
@@ -204,14 +214,16 @@ pub(crate) fn write_fragments(
     match operation {
         lance::dataset::transaction::Operation::Overwrite { fragments, .. }
         | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
-        _ => Err(error::invalid_create_fragments()),
+        _ => Err(Error::InvalidInput(
+            "expected compatible uncommitted Lance write fragments".into(),
+        )),
     }
 }
 
 pub(crate) fn validate_session_transaction(
     transaction: Option<lance::dataset::transaction::Transaction>,
 ) -> Result<lance::dataset::transaction::Transaction> {
-    transaction.ok_or_else(error::empty_writer_session)
+    transaction.ok_or_else(|| Error::InvalidInput("empty Lance writer session".into()))
 }
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
@@ -237,7 +249,9 @@ pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
             .map(String::as_str)
             == Some("true")
     }) {
-        return Err(error::parallel_blobs());
+        return Err(Error::Unsupported(
+            "parallel sessions do not support blob-marked columns".into(),
+        ));
     }
     Ok(())
 }
@@ -247,7 +261,7 @@ pub(crate) fn validate_blob_state(
 ) -> Result<()> {
     state.check()?;
     if session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(open_arrow_sink_core::Error::Poisoned);
+        return Err(Error::Poisoned);
     }
     Ok(())
 }
@@ -275,11 +289,13 @@ pub(crate) fn validate_blob_placements(
             .schema_ref()
             .fields()
             .get(blob.column)
-            .ok_or_else(error::blob_column_out_of_bounds)?;
+            .ok_or_else(|| Error::InvalidInput("blob column out of bounds".into()))?;
         if blob.row >= batch.num_rows()
             || field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true")
         {
-            return Err(error::blob_cell());
+            return Err(Error::InvalidInput(
+                "blob placement must target a blob-marked cell".into(),
+            ));
         }
         let array = batch
             .column(blob.column)
@@ -287,20 +303,24 @@ pub(crate) fn validate_blob_placements(
             .downcast_ref::<LargeBinaryArray>()
             .ok_or_else(|| error::invalid_blob_column(field.name()))?;
         if array.is_null(blob.row) || !array.value(blob.row).is_empty() {
-            return Err(error::blob_placeholder());
+            return Err(Error::InvalidInput(
+                "blob placement must replace an empty non-null payload".into(),
+            ));
         }
         let native = blob
             .blob
             .downcast_ref::<NativeBlob>()
-            .ok_or_else(error::foreign_blob)?;
+            .ok_or_else(|| Error::InvalidInput("foreign blob handle".into()))?;
         if !std::sync::Arc::ptr_eq(&native.session, session) {
-            return Err(error::blob_owner());
+            return Err(Error::InvalidInput(
+                "blob handle belongs to another session".into(),
+            ));
         }
         if placements
             .insert((blob.column, blob.row), blob.blob)
             .is_some()
         {
-            return Err(error::duplicate_blob_placement());
+            return Err(Error::InvalidInput("duplicate blob placement".into()));
         }
     }
     Ok(placements)

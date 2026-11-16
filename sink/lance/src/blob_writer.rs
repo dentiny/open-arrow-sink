@@ -93,9 +93,7 @@ impl Writer for BlobDatasetWriter {
         let summary = WriteSummary {
             rows_written: self.rows,
         };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
+        build_indexes(&mut dataset, &self.options.indexes, &summary).await?;
         Ok(summary)
     }
 

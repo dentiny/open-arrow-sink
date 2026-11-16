@@ -33,7 +33,11 @@ impl Destination {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
                 (format!("part-{}-", uuid::Uuid::new_v4()), false)
             }
-            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
+            WriteMode::Overwrite => {
+                return Err(Error::Unsupported(
+                    "Parquet directory sink does not support Overwrite".into(),
+                ));
+            }
         };
         let destination = Self {
             storage,
