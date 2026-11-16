@@ -13,15 +13,6 @@ libraries have no compile-time dependency; any compatible Arrow producer works.
 Sources → open-arrow-access → Arrow batches → your processing → open-arrow-sink → datasets
 ```
 
-## Installation
-
-```toml
-[dependencies]
-open-arrow-sink = { version = "0.1.0", features = ["sink-parquet"] }
-```
-
-See [Releasing](docs/releasing.md) for package checks and the crates.io release process.
-
 ## Architecture
 
 ```mermaid

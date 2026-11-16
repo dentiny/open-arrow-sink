@@ -15,7 +15,6 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
-readme = "README.md"
 
 [workspace.dependencies]
 hex = "0.4"
@@ -52,7 +51,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-readme.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"
 
 [features]
