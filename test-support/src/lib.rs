@@ -2,6 +2,7 @@
 //! Backend-specific setup and deliberate malformed-HTTP fault injection stay in
 //! their owning tests; the HTTP helper serves valid protocol responses.
 mod batch;
+pub mod conformance;
 pub mod http;
 mod options;
 mod payload;

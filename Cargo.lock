@@ -4205,6 +4205,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4218,6 +4219,7 @@ dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-layer",
  "open-arrow-sink-storage",
+ "open-arrow-sink-test-support",
  "parquet",
  "rstest",
  "serde",

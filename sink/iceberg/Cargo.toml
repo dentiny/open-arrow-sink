@@ -22,3 +22,4 @@ open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 arrow-array.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+open-arrow-sink-test-support.workspace = true

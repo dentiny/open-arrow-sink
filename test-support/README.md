@@ -22,3 +22,13 @@ to break ties when tied rows have different values. Backend scan setup remains
 in the backend tests; this crate does not depend on Lance or another sink.
 `seeded_bytes(seed, len)` generates reproducible payloads for rolling/compression
 fixtures without duplicating a PRNG loop.
+
+`conformance::SinkFixture` lets a backend supply an isolated destination factory,
+its sink/request/options, a representative batch, a published-data reader, and an
+abort-state assertion. `assert_conforms::<Fixture>()` runs each shared contract on
+a fresh fixture: multi-batch round trip, readable empty commit, explicit abort,
+and schema-error termination. Iceberg can supply Append while file backends use
+Create. Keep backend-specific checks (snapshot identity, row-group layout,
+partitions, indexes, compression metadata, cleanup of existing data) beside the
+backend. These checks complement the core adapter's direct failure/cancellation
+and publication-boundary tests.
