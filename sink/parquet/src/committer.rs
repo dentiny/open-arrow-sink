@@ -12,7 +12,7 @@ pub(crate) struct ParquetCommitter {
 impl SessionCommitter<u64> for ParquetCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
         let rows_written = outputs.into_iter().sum();
-        // Idle workers never open a file. A newly created/replaced empty dataset
+        // Idle workers never open a file. A newly created empty dataset
         // still needs one footer to make its schema readable; empty Append does not.
         if rows_written == 0
             && self.destination.needs_empty_file()
@@ -26,7 +26,6 @@ impl SessionCommitter<u64> for ParquetCommitter {
         }
         self.destination.complete_reservation().await?;
         // Parquet has no metadata transaction; data writers already closed footers.
-        self.destination.publish().await?;
         Ok(WriteSummary { rows_written })
     }
     async fn abort(self: Box<Self>) -> Result<()> {

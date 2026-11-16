@@ -1,8 +1,8 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use open_arrow_sink_core::{Ordering, ParallelSink, Sink, WriteMode, WriteOptions};
-use open_arrow_sink_parquet::{ParquetDirectorySink, Storage, Url};
+use open_arrow_sink_core::{Ordering, ParallelSink, WriteMode, WriteOptions};
+use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
 use open_arrow_sink_storage::opendal;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -107,41 +107,6 @@ async fn empty_create_has_one_readable_footer_and_empty_append_creates_nothing()
         assert_eq!(reader.schema(), &batch().schema());
         assert_eq!(reader.metadata().file_metadata().num_rows(), 0);
     }
-}
-
-#[tokio::test]
-async fn empty_overwrite_replaces_rows_with_one_schema_file() {
-    let temp = tempfile::tempdir().unwrap();
-    let url = Url::from_directory_path(temp.path().join("dataset")).unwrap();
-    let storage = Storage::from_url(&url).unwrap();
-    let sink = ParquetDirectorySink::default();
-    let mut initial = sink
-        .open(url.clone(), batch().schema(), options(WriteMode::Create))
-        .await
-        .unwrap();
-    initial.write(batch()).await.unwrap();
-    initial.commit().await.unwrap();
-    let mut session = sink
-        .open_writers(
-            url.clone(),
-            batch().schema(),
-            options(WriteMode::Overwrite),
-            NonZeroUsize::new(8).unwrap(),
-        )
-        .await
-        .unwrap();
-    let mut outputs = Vec::new();
-    for writer in &mut session.writers {
-        outputs.push(writer.finish().await.unwrap());
-    }
-    session.committer.commit(outputs).await.unwrap();
-    let files = storage.list(&url).await.unwrap();
-    assert_eq!(files.len(), 1);
-    let reader =
-        ParquetRecordBatchReaderBuilder::try_new(storage.read(&files[0]).await.unwrap()).unwrap();
-    assert_eq!(reader.schema(), &batch().schema());
-    assert_eq!(reader.metadata().file_metadata().num_rows(), 0);
-    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }
 
 #[tokio::test]

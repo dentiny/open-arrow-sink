@@ -41,14 +41,6 @@ pub(crate) fn schema_mismatch() -> Error {
     Error::SchemaMismatch
 }
 
-pub(crate) fn failed_write() -> Error {
-    Error::Unsupported("abort or drop the failed writer".into())
-}
-
-pub(crate) fn failed_commit() -> Error {
-    Error::Unsupported("cannot commit a failed writer".into())
-}
-
 pub(crate) fn partition_writer_closed() -> iceberg::Error {
     iceberg::Error::new(iceberg::ErrorKind::Unexpected, "partition writer is closed")
 }
