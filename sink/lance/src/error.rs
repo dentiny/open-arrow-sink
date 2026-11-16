@@ -153,3 +153,7 @@ pub(crate) fn index_exists(name: &str) -> Error {
         "index {name} already exists; select Keep or Rebuild"
     ))
 }
+
+pub(crate) fn invalid_destination_root() -> Error {
+    Error::InvalidInput("destination must not be the storage root".into())
+}

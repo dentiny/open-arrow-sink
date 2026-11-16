@@ -128,7 +128,7 @@ pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
     storage_version: Option<LanceFileVersion>,
-) -> Result<()> {
+) -> Result<lance::Dataset> {
     let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
@@ -152,7 +152,7 @@ pub(crate) async fn validate_existing_dataset(
     {
         return Err(error::schema_mismatch());
     }
-    Ok(())
+    Ok(dataset)
 }
 
 pub(crate) fn validate_transaction_compatibility(
@@ -365,45 +365,57 @@ pub(crate) async fn validate_existing_indexes(
     Ok(())
 }
 
+pub(crate) fn validate_destination_path(path: &open_arrow_sink_storage::ObjectPath) -> Result<()> {
+    if path.is_root() {
+        return Err(error::invalid_destination_root());
+    }
+    Ok(())
+}
+
+/// Validate and return an existing dataset for reuse by subsequent checks.
+/// None means this session will create a new destination.
 pub(crate) async fn validate_destination(
     destination: &crate::destination::LanceDestination,
     schema: &open_arrow_sink_core::SchemaRef,
     mode: open_arrow_sink_core::WriteMode,
     storage_version: Option<LanceFileVersion>,
-) -> Result<bool> {
+) -> Result<Option<lance::Dataset>> {
     use open_arrow_sink_core::WriteMode;
     use open_arrow_sink_storage::DirectoryState;
     if mode == WriteMode::Append {
-        validate_existing_dataset(destination.dataset_builder(), Some(schema), storage_version)
-            .await?;
-        return Ok(false);
+        return validate_existing_dataset(
+            destination.dataset_builder(),
+            Some(schema),
+            storage_version,
+        )
+        .await
+        .map(Some);
     }
     if destination
         .storage
-        .inspect_directory(&destination.url)
+        .inspect_directory(&destination.path)
         .await?
         == DirectoryState::Missing
     {
-        return Ok(true);
+        return Ok(None);
     }
     if mode == WriteMode::Create {
         return Err(error::destination_exists());
     }
-    validate_existing_dataset(destination.dataset_builder(), None, None).await?;
-    Ok(false)
+    validate_existing_dataset(destination.dataset_builder(), None, None)
+        .await
+        .map(Some)
 }
 
 pub(crate) async fn validate_index_requests(
-    destination: &crate::destination::LanceDestination,
+    existing: Option<&lance::Dataset>,
     options: &WriteOptions,
 ) -> Result<()> {
-    if options.mode == open_arrow_sink_core::WriteMode::Append && !options.indexes.is_empty() {
-        let dataset = destination
-            .dataset_builder()
-            .load()
-            .await
-            .map_err(Error::backend)?;
-        validate_existing_indexes(&dataset, &options.indexes).await?;
+    if options.mode == open_arrow_sink_core::WriteMode::Append
+        && !options.indexes.is_empty()
+        && let Some(dataset) = existing
+    {
+        validate_existing_indexes(dataset, &options.indexes).await?;
     }
     Ok(())
 }

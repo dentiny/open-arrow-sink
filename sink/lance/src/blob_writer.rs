@@ -14,8 +14,7 @@ use crate::{
 };
 
 pub(crate) struct BlobDatasetWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: JoinHandle<lance::Result<Transaction>>,
@@ -29,7 +28,7 @@ pub(crate) struct BlobDatasetWriter {
 #[async_trait]
 impl Writer for BlobDatasetWriter {
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
@@ -40,7 +39,7 @@ impl Writer for BlobDatasetWriter {
         crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
         self.state.poison();
         let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+            crate::blob::create_blob(&self.destination.path, self.blob_session.clone()).await?;
         self.state.complete();
         Ok(blob)
     }
@@ -52,10 +51,10 @@ impl Writer for BlobDatasetWriter {
     ) -> Result<()> {
         crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
         self.state.poison();
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch =
-            crate::blob::storage_batch(batch, &self.encoding_schema, blobs, &self.blob_session)?;
+            crate::blob::storage_batch(batch, &self.schemas.encoded, blobs, &self.blob_session)?;
         self.sender
             .as_ref()
             .unwrap()
@@ -114,8 +113,7 @@ impl Writer for BlobDatasetWriter {
 
 impl BlobDatasetWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        encoding_schema: SchemaRef,
+        schemas: crate::write_options::LanceSchemas,
         destination: LanceDestination,
         options: WriteOptions,
         params: WriteParams,
@@ -125,7 +123,7 @@ impl BlobDatasetWriter {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
         });
         let stream = Box::pin(RecordBatchStreamAdapter::new(
-            encoding_schema.clone(),
+            schemas.encoded.clone(),
             batches,
         )) as SendableRecordBatchStream;
         let storage_version = params.data_storage_version;
@@ -138,11 +136,10 @@ impl BlobDatasetWriter {
                 .await
         });
         Self {
-            schema,
-            encoding_schema,
+            schemas,
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
-                &destination.url,
+                &destination.path,
                 destination.io_tracker.clone(),
             )),
             sender: Some(sender),

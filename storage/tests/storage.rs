@@ -17,32 +17,32 @@ fn memory() -> Storage {
 #[tokio::test]
 async fn streaming_close_abort_and_shared_namespace() {
     let storage = memory();
-    let url = storage.url("雪 space/file").unwrap();
-    let mut writer = storage.writer(&url).await.unwrap();
+    let path = storage
+        .resolve(&storage.url("雪 space/file").unwrap())
+        .unwrap();
+    let root = storage.resolve(storage.base_url()).unwrap();
+    let mut writer = storage.writer(&path).await.unwrap();
     writer.write("hello ".into()).await.unwrap();
     writer.write("world".into()).await.unwrap();
     assert_eq!(writer.close().await.unwrap(), 11);
     assert!(writer.write("late".into()).await.is_err());
-    assert_eq!(storage.clone().read(&url).await.unwrap(), "hello world");
-    assert_eq!(storage.read_range(&url, 6..11).await.unwrap(), "world");
-    let metadata = storage.stat(&url).await.unwrap().unwrap();
+    assert_eq!(storage.clone().read(&path).await.unwrap(), "hello world");
+    assert_eq!(storage.read_range(&path, 6..11).await.unwrap(), "world");
+    let metadata = storage.stat(&path).await.unwrap().unwrap();
     assert!(metadata.is_file());
     assert_eq!(metadata.content_length(), 11);
-    assert_eq!(
-        storage.list(storage.base_url()).await.unwrap(),
-        vec![url.clone()]
-    );
-    assert!(storage.create(&url, "replace".into()).await.is_err());
-    assert_eq!(storage.read(&url).await.unwrap(), "hello world");
-    let aborted = storage.url("aborted").unwrap();
+    assert_eq!(storage.list(&root).await.unwrap(), vec![path.clone()]);
+    assert!(storage.create(&path, "replace".into()).await.is_err());
+    assert_eq!(storage.read(&path).await.unwrap(), "hello world");
+    let aborted = root.join("aborted").unwrap();
     let mut writer = storage.writer(&aborted).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
     assert!(storage.stat(&aborted).await.unwrap().is_none());
-    storage.delete(&url).await.unwrap();
-    assert!(storage.stat(&url).await.unwrap().is_none());
-    storage.delete(&url).await.unwrap();
-    assert!(storage.list(storage.base_url()).await.unwrap().is_empty());
+    storage.delete(&path).await.unwrap();
+    assert!(storage.stat(&path).await.unwrap().is_none());
+    storage.delete(&path).await.unwrap();
+    assert!(storage.list(&root).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -57,50 +57,36 @@ async fn namespace_boundaries_and_conditional_creation() {
     ] {
         assert!(
             matches!(
-                storage.path(&url.parse().unwrap()),
+                storage.resolve(&url.parse().unwrap()),
                 Err(Error::InvalidInput(_))
             ),
             "{url}"
         );
-        assert!(matches!(
-            storage.stat(&url.parse().unwrap()).await,
-            Err(Error::InvalidInput(_))
-        ));
     }
-    assert!(
-        storage
-            .read_range(&"memory:///outside/file".parse().unwrap(), 0..0)
-            .await
-            .is_err()
-    );
     assert!(matches!(
         storage.url("../outside"),
         Err(Error::InvalidInput(_))
     ));
-    assert!(storage.remove_all(storage.base_url()).await.is_err());
-    assert!(storage.directory_url(storage.base_url()).is_err());
-    assert!(
-        storage
-            .directory_url(&"memory:///warehouse//".parse().unwrap())
-            .is_err()
-    );
-    let prefix = storage.url("claim").unwrap();
-    assert_eq!(
-        storage.directory_url(&prefix).unwrap().path(),
-        "/warehouse/claim/"
-    );
+    let root = storage.resolve(storage.base_url()).unwrap();
+    let repeated_root = storage
+        .resolve(&"memory:///warehouse//".parse().unwrap())
+        .unwrap();
+    assert!(storage.remove_all(&root).await.is_err());
+    assert!(storage.remove_all(&repeated_root).await.is_err());
+    assert!(storage.inspect_directory(&root).await.is_err());
+    let prefix = root.join("claim").unwrap();
+    assert_eq!(prefix.as_dir().as_str(), "claim/");
     assert_eq!(
         storage.inspect_directory(&prefix).await.unwrap(),
         DirectoryState::Missing
     );
-    let url = storage.url("claim").unwrap();
     let (a, b) = tokio::join!(
-        storage.create(&url, "a".into()),
-        storage.create(&url, "b".into())
+        storage.create(&prefix, "a".into()),
+        storage.create(&prefix, "b".into())
     );
     assert_ne!(a.is_ok(), b.is_ok());
     assert_eq!(
-        storage.inspect_directory(&url).await.unwrap(),
+        storage.inspect_directory(&prefix).await.unwrap(),
         DirectoryState::File
     );
 }
@@ -112,20 +98,60 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     let storage = Storage::from_url(&root).unwrap();
     let output = root.join("new/").unwrap();
     let file = output.join("part%20%E9%9B%AA").unwrap();
-    storage.create(&file, "data".into()).await.unwrap();
-    assert_eq!(storage.read(&file).await.unwrap(), "data");
-    assert!(storage.stat(&output).await.unwrap().unwrap().is_dir());
+    storage
+        .create(&storage.resolve(&file).unwrap(), "data".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&file).unwrap())
+            .await
+            .unwrap(),
+        "data"
+    );
+    assert!(
+        storage
+            .stat(&storage.resolve(&output).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_dir()
+    );
     let aborted = root.join("aborted").unwrap();
-    let mut writer = storage.writer(&aborted).await.unwrap();
+    let mut writer = storage
+        .writer(&storage.resolve(&aborted).unwrap())
+        .await
+        .unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
     // Non-staged files can be visible before close; the owner removes them.
-    storage.delete(&aborted).await.unwrap();
+    storage
+        .delete(&storage.resolve(&aborted).unwrap())
+        .await
+        .unwrap();
     let sibling = root.join("keep").unwrap();
-    storage.create(&sibling, "keep".into()).await.unwrap();
-    storage.remove_all(&output).await.unwrap();
-    assert!(storage.stat(&file).await.unwrap().is_none());
-    assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
+    storage
+        .create(&storage.resolve(&sibling).unwrap(), "keep".into())
+        .await
+        .unwrap();
+    storage
+        .remove_all(&storage.resolve(&output).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        storage
+            .stat(&storage.resolve(&file).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&sibling).unwrap())
+            .await
+            .unwrap(),
+        "keep"
+    );
 }
 
 #[test]
@@ -173,13 +199,14 @@ async fn filesystem_conditional_creation_has_one_winner() {
     let temp = tempfile::tempdir().unwrap();
     let url = Url::from_file_path(temp.path().join("claim")).unwrap();
     let storage = Storage::from_url(&url).unwrap();
+    let path = storage.resolve(&url).unwrap();
     let (first, second) = tokio::join!(
-        storage.create(&url, "first".into()),
-        storage.create(&url, "second".into())
+        storage.create(&path, "first".into()),
+        storage.create(&path, "second".into())
     );
     assert_ne!(first.is_ok(), second.is_ok());
     assert_eq!(
-        storage.read(&url).await.unwrap(),
+        storage.read(&storage.resolve(&url).unwrap()).await.unwrap(),
         if first.is_ok() { "first" } else { "second" }
     );
 }
@@ -189,7 +216,7 @@ async fn errors_retain_operation_path_and_opendal_source() {
     use std::error::Error as _;
     let storage = memory();
     let error = storage
-        .read(&storage.url("missing").unwrap())
+        .read(&storage.resolve(&storage.url("missing").unwrap()).unwrap())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("read object \"missing\""));

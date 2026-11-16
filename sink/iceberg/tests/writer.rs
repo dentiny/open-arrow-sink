@@ -304,12 +304,10 @@ async fn target_file_size_rolls_files_without_losing_rows(
     let (catalog, identifier, schema) =
         table_with_properties(None, PrimitiveType::Long, properties).await;
     let batch = batch(schema.clone());
+    let mut write_options = options();
+    write_options.target_file_size = target_file_size;
     let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            options().with_target_file_size(target_file_size),
-        )
+        .open(identifier.clone(), schema, write_options)
         .await
         .unwrap();
     for _ in 0..3 {
@@ -348,7 +346,7 @@ fn identity_spec(composite: bool) -> UnboundPartitionSpec {
 }
 
 fn partition_options() -> WriteOptions {
-    options().with_partition(Some(PartitionOptions::default()))
+    options().with_partition(PartitionOptions::default())
 }
 
 #[rstest::rstest]
@@ -473,8 +471,8 @@ async fn partitioned_empty_sessions_and_file_rolling(
             identifier.clone(),
             schema,
             options()
-                .with_target_file_size(Some(1))
-                .with_partition(Some(PartitionOptions { partition_type })),
+                .with_target_file_size(1)
+                .with_partition(PartitionOptions { partition_type }),
         )
         .await
         .unwrap();
@@ -561,7 +559,7 @@ async fn temporal_partitions_round_trip_and_record_metadata(
         .open(
             identifier.clone(),
             schema,
-            options().with_partition(Some(PartitionOptions { partition_type })),
+            options().with_partition(PartitionOptions { partition_type }),
         )
         .await
         .unwrap();
@@ -715,7 +713,7 @@ async fn assert_numeric_partition_round_trip(
         .open(
             identifier.clone(),
             schema,
-            options().with_partition(Some(PartitionOptions { partition_type })),
+            options().with_partition(PartitionOptions { partition_type }),
         )
         .await
         .unwrap();
