@@ -57,8 +57,7 @@ async fn compression_survives_rolling_and_round_trips(
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
+            open_arrow_sink_test_support::unordered_options()
                 .with_target_file_size(1)
                 .with_compression(CompressionOptions {
                     global: None,

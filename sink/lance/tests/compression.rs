@@ -2,12 +2,16 @@ use arrow_array::cast::AsArray;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
+use arrow_schema::DataType;
+use more_asserts::assert_gt;
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Ordering, Sink, SinkExt, StructuralEncoding, WriteMode,
-    WriteOptions,
+    Compression, CompressionOptions, Sink, SinkExt, StructuralEncoding, WriteMode,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_layer::CompressionLayer;
+use open_arrow_sink_test_support::{
+    concat_sorted, seeded_bytes, sort_batch, unordered_options as options,
+};
 
 fn batch(count: usize) -> RecordBatch {
     let text = Arc::new(StringArray::from_iter_values(
@@ -67,8 +71,7 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
         .open(
             url.clone(),
             input.schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
+            open_arrow_sink_test_support::unordered_options()
                 .with_storage_version("2.2".into())
                 .with_target_file_size(1),
         )
@@ -167,8 +170,7 @@ async fn append_compares_effective_structural_encoding_schema() {
             .open(
                 url.clone(),
                 input.schema(),
-                WriteOptions::default()
-                    .with_ordering(Ordering::Unordered)
+                open_arrow_sink_test_support::unordered_options()
                     .with_compression(policy())
                     .with_mode(mode),
             )
@@ -183,8 +185,7 @@ async fn append_compares_effective_structural_encoding_schema() {
         sink.open(
             url,
             input.schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
+            open_arrow_sink_test_support::unordered_options()
                 .with_compression(changed)
                 .with_mode(WriteMode::Append)
         )
@@ -200,9 +201,8 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
     let input = batch(64);
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let options = WriteOptions::default()
-        .with_ordering(Ordering::Unordered)
-        .with_compression(CompressionOptions {
+    let options =
+        open_arrow_sink_test_support::unordered_options().with_compression(CompressionOptions {
             global: Some(Compression::Zstd { level: Some(3) }),
             nested_columns: [(
                 vec!["nested".into(), "text".into()],
@@ -243,4 +243,149 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
     let nested = actual.column(1).as_struct();
     let expected = input.column(1).as_struct();
     assert_eq!(nested.column(0), expected.column(0));
+}
+
+async fn compressed_dataset() -> (tempfile::TempDir, lance::Dataset, RecordBatch) {
+    use std::collections::HashMap;
+
+    use arrow_array::{FixedSizeBinaryArray, StringArray, StructArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use open_arrow_sink_core::{Compression, CompressionOptions, SinkExt};
+    use open_arrow_sink_layer::CompressionLayer;
+
+    let count = 10 * 1024;
+    let text = StringArray::from_iter_values(
+        (0..count).map(|id| format!("{id:08}:{}", "compressible payload ".repeat(100))),
+    );
+    let raw =
+        FixedSizeBinaryArray::try_from_iter((0..count).map(|id| seeded_bytes(id as u64 + 1, 1024)))
+            .unwrap();
+    let text_field = Arc::new(Field::new("text", DataType::Utf8, false).with_metadata(
+        HashMap::from([
+            ("custom".into(), "preserved".into()),
+            ("lance-encoding:compression".into(), "none".into()),
+            ("lance-encoding:compression-level".into(), "17".into()),
+        ]),
+    ));
+    let nested = StructArray::new(vec![text_field].into(), vec![Arc::new(text.clone())], None);
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from_iter_values(0..count as i64)),
+        Arc::new(nested),
+        Arc::new(raw.clone()),
+    ];
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", columns[0].data_type().clone(), false),
+            Field::new("nested", columns[1].data_type().clone(), false),
+            Field::new("raw_payload", columns[2].data_type().clone(), false),
+        ],
+        HashMap::from([("application".into(), "preserved".into())]),
+    ));
+    let expected = RecordBatch::try_new(schema.clone(), columns).unwrap();
+    let sink = LanceDatasetSink::default().layer(CompressionLayer::new(CompressionOptions {
+        global: Some(Compression::Zstd { level: Some(9) }),
+        columns: [
+            ("nested".into(), Compression::Zstd { level: Some(3) }),
+            ("raw_payload".into(), Compression::Uncompressed),
+        ]
+        .into(),
+        ..Default::default()
+    }));
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let mut writer = sink
+        .open(
+            Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
+            schema.clone(),
+            options().with_target_file_size(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(writer.schema(), &schema);
+    writer.write(expected.clone()).await.unwrap();
+    writer.write(expected.clone()).await.unwrap();
+    assert_eq!(
+        writer.commit().await.unwrap().rows_written,
+        2 * count as u64
+    );
+
+    let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_gt!(dataset.get_fragments().len(), 1);
+    (temp, dataset, expected)
+}
+
+#[tokio::test]
+async fn compression_overrides_nested_and_column_metadata() {
+    let (_temp, dataset, expected) = compressed_dataset().await;
+    let schema = expected.schema();
+    let actual = dataset.scan().try_into_batch().await.unwrap();
+    let stored_schema = actual.schema();
+    assert_eq!(stored_schema.metadata(), schema.metadata());
+    assert_eq!(
+        stored_schema.field(0).metadata()["lance-encoding:compression"],
+        "zstd"
+    );
+    assert_eq!(
+        stored_schema.field(0).metadata()["lance-encoding:compression-level"],
+        "9"
+    );
+    let DataType::Struct(children) = stored_schema.field(1).data_type() else {
+        panic!("expected nested struct");
+    };
+    assert_eq!(children[0].metadata()["custom"], "preserved");
+    assert_eq!(children[0].metadata()["lance-encoding:compression"], "zstd");
+    assert_eq!(
+        children[0].metadata()["lance-encoding:compression-level"],
+        "3"
+    );
+    assert_eq!(
+        stored_schema.field(2).metadata()["lance-encoding:compression"],
+        "none"
+    );
+    assert!(
+        !stored_schema
+            .field(2)
+            .metadata()
+            .contains_key("lance-encoding:compression-level")
+    );
+}
+
+#[tokio::test]
+async fn compression_preserves_the_callers_schema_metadata() {
+    let (_temp, _dataset, expected) = compressed_dataset().await;
+    let schema = expected.schema();
+    // The original schema and its existing metadata are still the caller's contract.
+    let DataType::Struct(children) = schema.field(1).data_type() else {
+        panic!("expected nested struct");
+    };
+    assert_eq!(children[0].metadata()["lance-encoding:compression"], "none");
+    assert_eq!(
+        children[0].metadata()["lance-encoding:compression-level"],
+        "17"
+    );
+}
+
+#[tokio::test]
+async fn compression_survives_rolling_and_round_trips() {
+    let (_temp, dataset, expected) = compressed_dataset().await;
+    let actual = dataset.scan().try_into_batch().await.unwrap();
+    // Encoding metadata intentionally differs. Compare every value separately
+    // from the metadata assertions above, retaining both copies of every row.
+    fn values(batch: &RecordBatch) -> RecordBatch {
+        RecordBatch::try_from_iter([
+            ("id", batch.column(0).clone()),
+            ("text", batch.column(1).as_struct().column(0).clone()),
+            ("raw_payload", batch.column(2).clone()),
+        ])
+        .unwrap()
+    }
+    let actual_values = sort_batch(&values(&actual), &["id"]).unwrap();
+    let expected_values = values(&expected);
+    let expected_values = concat_sorted(
+        &expected_values.schema(),
+        &[expected_values.clone(), expected_values],
+        &["id"],
+    )
+    .unwrap();
+    assert_eq!(actual_values, expected_values);
 }

@@ -12,18 +12,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Operation {
-    Open,
-    WriteStarted,
-    WriteCompleted,
-    Finish,
-    Abort,
-    CommitAttempt,
-    Commit,
-    SessionAbort,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Open(usize),
@@ -36,22 +24,6 @@ pub enum Event {
     Commit { rows: u64 },
     SessionAbort,
 }
-impl Event {
-    fn operation(&self) -> Option<Operation> {
-        Some(match self {
-            Self::Open(_) => Operation::Open,
-            Self::WriteStarted(_) => Operation::WriteStarted,
-            Self::WriteCompleted(_) => Operation::WriteCompleted,
-            Self::Finish(_) => Operation::Finish,
-            Self::Abort(_) => Operation::Abort,
-            Self::CommitAttempt => Operation::CommitAttempt,
-            Self::Commit { .. } => Operation::Commit,
-            Self::SessionAbort => Operation::SessionAbort,
-            Self::RequestedOrdering(_) => return None,
-        })
-    }
-}
-
 /// Failure injection is separate from observations; multiple failures can coexist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Failure {
@@ -74,6 +46,10 @@ pub struct Config {
     pub defect: SessionDefect,
     pub ordering: Ordering,
     pub supports_blobs: bool,
+    pub gated: bool,
+    pub record_io: bool,
+    pub write_bytes: u64,
+    pub commit_read_bytes: u64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -82,6 +58,10 @@ impl Default for Config {
             defect: SessionDefect::None,
             ordering: Ordering::PreserveInput,
             supports_blobs: false,
+            gated: true,
+            record_io: true,
+            write_bytes: 0,
+            commit_read_bytes: 0,
         }
     }
 }
@@ -90,6 +70,7 @@ pub struct State {
     pub config: Config,
     pub events: Vec<Event>,
     pub gates: Vec<oneshot::Sender<()>>,
+    pub schemas: Vec<SchemaRef>,
 }
 impl State {
     pub fn failing(operations: impl IntoIterator<Item = Failure>) -> Self {
@@ -101,11 +82,8 @@ impl State {
             ..Default::default()
         }
     }
-    pub fn count(&self, operation: Operation) -> usize {
-        self.events
-            .iter()
-            .filter(|event| event.operation() == Some(operation))
-            .count()
+    pub fn count(&self, predicate: impl Fn(&Event) -> bool) -> usize {
+        self.events.iter().filter(|event| predicate(event)).count()
     }
     pub fn requested_ordering(&self) -> Option<Ordering> {
         self.events.iter().find_map(|event| {
@@ -134,6 +112,7 @@ struct TestWriter {
     schema: SchemaRef,
     gate: Option<oneshot::Receiver<()>>,
     rows: u64,
+    io: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn failure() -> Error {
     Error::Unsupported("injected failure".into())
@@ -147,12 +126,8 @@ impl Sink for TestSink {
         SinkCapability::default()
             .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
             .with_ordering(state.config.ordering)
-            .with_compression(Default::default())
-            .with_supported_partitions(vec![])
             .with_supports_blob_handle(state.config.supports_blobs)
             .with_supports_blob_streaming(state.config.supports_blobs)
-            .with_supports_storage_version(false)
-            .with_supported_indexes(&[])
     }
     async fn open(
         &self,
@@ -178,6 +153,8 @@ impl ParallelSink for TestSink {
         state
             .events
             .push(Event::RequestedOrdering(options.ordering));
+        state.schemas.push(schema.clone());
+        let io = options.io_metrics.filter(|_| state.config.record_io);
         let count = if matches!(state.config.defect, SessionDefect::WrongCount) {
             0
         } else {
@@ -187,7 +164,12 @@ impl ParallelSink for TestSink {
         for id in 0..count {
             let (sender, receiver) = oneshot::channel();
             state.events.push(Event::Open(id));
-            state.gates.push(sender);
+            let gate = if state.config.gated {
+                state.gates.push(sender);
+                Some(receiver)
+            } else {
+                None
+            };
             result.push(Box::new(TestWriter {
                 id,
                 state: self.0.clone(),
@@ -196,13 +178,14 @@ impl ParallelSink for TestSink {
                 } else {
                     schema.clone()
                 },
-                gate: Some(receiver),
+                gate,
                 rows: 0,
+                io: io.clone(),
             }) as Box<dyn DataWriter<Output = u64>>);
         }
         Ok(WriteSession {
             writers: result,
-            committer: Box::new(TestCommitter(self.0.clone())),
+            committer: Box::new(TestCommitter(self.0.clone(), io)),
         })
     }
 }
@@ -213,6 +196,10 @@ impl DataWriter for TestWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        open_arrow_sink_core::validation::validate_batch(&self.schema, &batch)?;
+        if let Some(io) = &self.io {
+            io.record_write(self.state.lock().unwrap().config.write_bytes);
+        }
         self.state
             .lock()
             .unwrap()
@@ -233,7 +220,7 @@ impl DataWriter for TestWriter {
         let mut state = self.state.lock().unwrap();
         state.events.push(Event::Finish(self.id));
         if state.config.failures.contains(&Failure::FirstFinish)
-            && state.count(Operation::Finish) == 1
+            && state.count(|e| matches!(e, Event::Finish(_))) == 1
         {
             return Err(failure());
         }
@@ -248,13 +235,19 @@ impl DataWriter for TestWriter {
         Ok(())
     }
 }
-struct TestCommitter(SharedState);
+struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoMetrics>);
 #[async_trait]
 impl SessionCommitter<u64> for TestCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
         let mut state = self.0.lock().unwrap();
-        assert_eq!(state.count(Operation::Finish), state.count(Operation::Open));
+        assert_eq!(
+            state.count(|e| matches!(e, Event::Finish(_))),
+            state.count(|e| matches!(e, Event::Open(_)))
+        );
         state.events.push(Event::CommitAttempt);
+        if let Some(io) = &self.1 {
+            io.record_read(state.config.commit_read_bytes);
+        }
         if state.config.failures.contains(&Failure::Commit) {
             return Err(failure());
         }

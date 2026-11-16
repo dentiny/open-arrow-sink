@@ -5,9 +5,9 @@ use std::sync::{
 };
 
 use open_arrow_sink_core::{
-    CompressionCapability, DataWriter, Error, Ordering, ParallelSink, RecordBatch, Result,
-    SchemaRef, SessionCommitter, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession,
-    WriteSummary, Writer, async_trait, validation,
+    DataWriter, Error, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter, Sink,
+    SinkCapability, WriteMode, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
+    validation,
 };
 
 /// The request is a per-session counter, not a durable destination. Use a fresh
@@ -19,15 +19,7 @@ impl Sink for CountingSink {
     type Request = Arc<AtomicU64>;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability::default()
-            .with_supports_blob_handle(false)
-            .with_supports_blob_streaming(false)
-            .with_supported_modes(&[WriteMode::Create])
-            .with_ordering(Ordering::Unordered)
-            .with_compression(CompressionCapability::default())
-            .with_supported_partitions(vec![])
-            .with_supports_storage_version(false)
-            .with_supported_indexes(&[])
+        SinkCapability::default().with_supported_modes(&[WriteMode::Create])
     }
 
     async fn open(

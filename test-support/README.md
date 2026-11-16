@@ -5,11 +5,12 @@ Production crates must not depend on it.
 
 - `int64_schema`, `int64_batch`, and `unordered_options` build common Arrow inputs
   and portable write options. Tests keep their backend-specific setup locally.
-- `http::serve` accepts a request-aware callback over the original URI and attempt
-  number, so tests can route paths, inspect signed queries, and inject retries.
-- `Reply` controls HTTP status, header delay, body gates, bytes, or a generated
+- `http::serve` accepts a request-aware callback over the original URI,
+  so tests can route paths, inspect signed queries, and inject retries.
+- `Reply` controls HTTP status, body gates, bytes, or a generated
   constant-byte body. Generated bodies use at most 64 KiB per chunk.
-- `Server` owns the listening task and stops it on drop.
+- `Server` owns the listening task, stops it on drop, and exposes the received
+  request count through `requests()`.
 
 Deliberately malformed HTTP framing remains in the owning failure tests: an axum
 response cannot represent a truncated chunk header or a false Content-Length.
@@ -32,3 +33,7 @@ Create. Keep backend-specific checks (snapshot identity, row-group layout,
 partitions, indexes, compression metadata, cleanup of existing data) beside the
 backend. These checks complement the core adapter's direct failure/cancellation
 and publication-boundary tests.
+
+`memory_storage(base)` constructs an isolated memory operator rooted at an
+explicit namespace. `read_parquet_dir(storage, directory)` reads all Parquet
+files in path order through shared storage, for memory and filesystem fixtures.

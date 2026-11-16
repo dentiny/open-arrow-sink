@@ -91,29 +91,16 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         options()
     }
     async fn read(&self) -> Vec<RecordBatch> {
-        let mut entries = tokio::fs::read_dir(&self.path).await.unwrap();
-        let mut batches = Vec::new();
-        let mut files = 0;
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            if entry.path().extension().is_some_and(|ext| ext == "parquet") {
-                files += 1;
-                let file = tokio::fs::File::open(entry.path()).await.unwrap();
-                let reader = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
-                assert_eq!(reader.schema(), &batch().schema());
-                batches.extend(
-                    reader
-                        .build()
-                        .unwrap()
-                        .try_collect::<Vec<_>>()
-                        .await
-                        .unwrap(),
-                );
-            }
-        }
+        let directory = Url::from_directory_path(&self.path).unwrap();
+        let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
+        let batches = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
         assert!(
-            files > 0,
+            !batches.is_empty(),
             "even an empty commit must contain readable Parquet"
         );
+        for actual in &batches {
+            assert_eq!(actual.schema(), batch().schema());
+        }
         batches
     }
     async fn assert_aborted(&self) {
@@ -177,46 +164,33 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     }
     writer.write(expected.slice(0, 0)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
-    let mut entries = tokio::fs::read_dir(&directory).await.unwrap();
-    let mut paths = Vec::new();
-    while let Some(entry) = entries.next_entry().await.unwrap() {
-        paths.push(entry.path());
-    }
-    paths.sort();
-    assert_eq!(paths.len(), 3);
-    let mut offset = 0;
-    for path in paths {
-        let file = tokio::fs::File::open(path).await.unwrap();
-        let mut reader = ParquetRecordBatchStreamBuilder::new(file)
+    let directory = Url::from_directory_path(&directory).unwrap();
+    let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
+    assert_eq!(
+        storage
+            .list(&storage.resolve(&directory).unwrap())
             .await
             .unwrap()
-            .build()
-            .unwrap();
-        while let Some(actual) = reader.try_next().await.unwrap() {
-            assert_eq!(actual, expected.slice(offset, actual.num_rows()));
-            offset += actual.num_rows();
-        }
+            .len(),
+        3
+    );
+    let batches = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
+    let mut offset = 0;
+    for actual in batches {
+        assert_eq!(actual, expected.slice(offset, actual.num_rows()));
+        offset += actual.num_rows();
     }
     assert_eq!(offset, 9);
 }
 
 async fn row_count(directory: &std::path::Path) -> usize {
-    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
-    let mut rows = 0;
-    while let Some(entry) = entries.next_entry().await.unwrap() {
-        if entry.path().extension().is_some_and(|ext| ext == "parquet") {
-            let file = tokio::fs::File::open(entry.path()).await.unwrap();
-            let mut reader = ParquetRecordBatchStreamBuilder::new(file)
-                .await
-                .unwrap()
-                .build()
-                .unwrap();
-            while let Some(batch) = reader.try_next().await.unwrap() {
-                rows += batch.num_rows();
-            }
-        }
-    }
-    rows
+    let directory = Url::from_directory_path(directory).unwrap();
+    let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
+    open_arrow_sink_test_support::read_parquet_dir(&storage, &directory)
+        .await
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum()
 }
 
 #[tokio::test]
