@@ -4233,7 +4233,6 @@ dependencies = [
  "futures",
  "http",
  "more-asserts",
- "once_cell",
  "open-arrow-sink-core",
  "opendal",
  "percent-encoding",

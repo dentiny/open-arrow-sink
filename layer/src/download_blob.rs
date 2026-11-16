@@ -86,7 +86,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let pool = match &self.config.download_pool {
             Some(pool) => pool.clone(),
-            None => DownloadPool::global()?,
+            None => Arc::new(DownloadPool::with_defaults()?),
         };
         let io_metrics = options.io_metrics.clone();
         let inner = self
