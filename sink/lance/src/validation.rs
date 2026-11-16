@@ -241,26 +241,6 @@ pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_blob_state(
-    state: &open_arrow_sink_core::Poison,
-    session: &crate::blob::BlobSession,
-) -> Result<()> {
-    state.check()?;
-    if session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(open_arrow_sink_core::Error::Poisoned);
-    }
-    Ok(())
-}
-pub(crate) fn validate_blob_commit(
-    state: &open_arrow_sink_core::Poison,
-    session: &crate::blob::BlobSession,
-) -> Result<()> {
-    validate_blob_state(state, session)?;
-    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
-        return Err(error::unfinished_blobs());
-    }
-    Ok(())
-}
 pub(crate) fn validate_blob_placements(
     batch: &open_arrow_sink_core::RecordBatch,
     blobs: Vec<open_arrow_sink_core::BlobPlacement>,

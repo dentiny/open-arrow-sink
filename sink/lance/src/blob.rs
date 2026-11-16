@@ -6,7 +6,6 @@ use std::{
     },
 };
 
-use crate::validation;
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
@@ -17,9 +16,9 @@ use open_arrow_sink_core::{
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
 pub(crate) struct BlobSession {
-    pub failed: AtomicBool,
+    failed: AtomicBool,
     io_tracker: Arc<crate::io_metrics::TrackedIo>,
-    pub active: AtomicUsize,
+    active: AtomicUsize,
     storage: Storage,
     relative_prefix: String,
     directory: Url,
@@ -43,6 +42,54 @@ impl BlobSession {
             unattached: Mutex::default(),
         }
     }
+    pub fn check(&self) -> Result<()> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(Error::Poisoned);
+        }
+        Ok(())
+    }
+
+    pub fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+    }
+
+    pub fn ensure_idle(&self) -> Result<()> {
+        self.check()?;
+        if self.active.load(Ordering::Acquire) != 0 {
+            return Err(crate::error::unfinished_blobs());
+        }
+        Ok(())
+    }
+
+    pub async fn create_blob(self: &Arc<Self>, directory: &Url) -> Result<Box<dyn BlobWriter>> {
+        self.check()?;
+        let relative = format!("{}{}.blob", self.relative_prefix, uuid::Uuid::new_v4());
+        let url = directory.join(&relative).unwrap();
+        // Retain ownership before opening: cancellation can leave an object behind.
+        self.unattached.lock().unwrap().insert(url.clone());
+        let inner = self.storage.writer(&url).await?;
+        self.active.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(NativeBlobWriter {
+            inner,
+            session: self.clone(),
+            url,
+            relative,
+            finished: false,
+            state: Poison::default(),
+        }))
+    }
+
+    fn attach(&self, blob: &NativeBlob) {
+        self.unattached.lock().unwrap().remove(&blob.url);
+    }
+
+    fn release_writer(&self, finished: bool) {
+        if !finished {
+            self.fail();
+        }
+        self.active.fetch_sub(1, Ordering::Release);
+    }
+
     /// All native streams in this namespace belong to this session, including
     /// handles already attached to batches that were never committed.
     pub async fn abort(&self) -> Result<()> {
@@ -73,26 +120,25 @@ struct NativeBlobWriter {
 }
 impl Drop for NativeBlobWriter {
     fn drop(&mut self) {
-        if !self.finished {
-            self.session.failed.store(true, Ordering::Release);
-        }
-        self.session.active.fetch_sub(1, Ordering::Release);
+        self.session.release_writer(self.finished);
     }
 }
 #[async_trait]
 impl BlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        validation::validate_blob_state(&self.state, &self.session)?;
+        self.state.check()?;
+        self.session.check()?;
         self.state.poison();
         if let Err(error) = self.inner.write(chunk.bytes().clone()).await {
-            self.session.failed.store(true, Ordering::Release);
+            self.session.fail();
             return Err(error);
         }
         self.state.complete();
         Ok(())
     }
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
-        validation::validate_blob_state(&self.state, &self.session)?;
+        self.state.check()?;
+        self.session.check()?;
         let size = self.inner.close().await?;
         self.session.io_tracker.record_write(
             "streamed_blob",
@@ -116,26 +162,6 @@ impl BlobWriter for NativeBlobWriter {
         let file = self.session.storage.delete(&self.url).await;
         upload.and(file)
     }
-}
-
-pub(crate) async fn create_blob(
-    directory: &Url,
-    session: Arc<BlobSession>,
-) -> Result<Box<dyn BlobWriter>> {
-    let relative = format!("{}{}.blob", session.relative_prefix, uuid::Uuid::new_v4());
-    let url = directory.join(&relative).unwrap();
-    // Retain ownership before opening: cancellation can leave an object behind.
-    session.unattached.lock().unwrap().insert(url.clone());
-    let inner = session.storage.writer(&url).await?;
-    session.active.fetch_add(1, Ordering::Relaxed);
-    Ok(Box::new(NativeBlobWriter {
-        inner,
-        session,
-        url,
-        relative,
-        finished: false,
-        state: Poison::default(),
-    }))
 }
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
@@ -216,7 +242,7 @@ pub(crate) fn storage_batch(
         .map_err(Error::backend)?;
     for handle in placements.values() {
         let native = handle.downcast_ref::<NativeBlob>().unwrap();
-        session.unattached.lock().unwrap().remove(&native.url);
+        session.attach(native);
     }
     Ok(output)
 }
