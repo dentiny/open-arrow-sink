@@ -405,3 +405,27 @@ async fn io_metrics_are_isolated_per_session() {
     // Identical output shapes should have comparable counters, not accumulate.
     assert!(totals[1] < totals[0] * 3 / 2);
 }
+
+#[tokio::test]
+async fn empty_fragment_workers_create_no_files() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url(&ObjectPath::parse("empty/").unwrap()).unwrap();
+    let path = storage.path(&url).unwrap();
+    let session = sink
+        .open_writers(
+            url,
+            batch().schema(),
+            write_options(),
+            NonZeroUsize::new(3).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(storage.list(&path).await.unwrap().is_empty());
+    for mut writer in session.writers {
+        writer.finish().await.unwrap();
+        assert!(storage.list(&path).await.unwrap().is_empty());
+    }
+    session.committer.abort().await.unwrap();
+    assert!(storage.list(&path).await.unwrap().is_empty());
+}
