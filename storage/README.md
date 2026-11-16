@@ -29,7 +29,7 @@ rejects query strings, fragments, embedded credentials, and path traversal.
 Root-destructive operations are rejected. `create` uses OpenDAL's atomic
 `if_not_exists` operation; unsupported backends fail instead of overwriting.
 
-`StorageWriter` streams with a 5 MiB chunk and one ongoing upload per writer.
+`StorageWriter` streams with a 4 MiB chunk and up to four concurrent upload parts per writer.
 Call `close` to publish bytes or `abort` to cancel an active upload. Failed or
 cancelled writes are terminal; explicit abort retains access to the upload.
 Drop performs no async cleanup. Cleanup of already published objects and the
@@ -102,14 +102,22 @@ clones, operators, or sinks. This transport budget also does not set a
 `BlobDownloader`'s stream concurrency or buffered-byte quota; those are separate
 admission limits.
 
-## Upload part size
+## Multipart uploads
 
 `Storage::with_upload_part_size(NonZeroUsize)` sets the streaming upload buffer
 size in bytes for shared storage writers and Lance's native multipart uploads.
 For example, use `NonZeroUsize::new(16 * 1024 * 1024).unwrap()` for 16 MiB parts.
-OpenDAL enforces service-specific part-size limits. Without an explicit setting,
-shared storage writers retain their 5 MiB buffer and native Lance retains its
-adapter defaults. All clones of the configured storage carry the setting.
+OpenDAL enforces service-specific part-size limits. All upload paths now default
+to 4 MiB parts and four concurrent requests per writer. Use
+`Storage::with_upload_concurrency(NonZeroUsize)` to raise that limit deliberately;
+buffering grows with part size and concurrency. This replaces the native Lance
+adapter's previous implicit concurrency of eight. Clones carry both settings.
+Parquet and Lance sessions can override them using `WriteOptions.upload.part_size`
+and `WriteOptions.upload.concurrency`; unset fields preserve the Storage settings.
+
+`Storage::object_store()` is always available for native SDKs. The adapter delegates
+ordinary object operations to `OpendalStore`, while multipart uploads use the same
+storage upload policy as `Storage::writer()`.
 
 ## HTTP downloads
 

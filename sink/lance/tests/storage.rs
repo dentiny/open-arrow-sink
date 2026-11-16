@@ -7,7 +7,7 @@ use lance::{
 };
 use more_asserts::assert_gt;
 use open_arrow_sink_core::{
-    BlobHandleConfig, IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions,
+    BlobHandleConfig, IndexSpec, IndexType, Ordering, Sink, SinkExt, UploadConfig, WriteOptions,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
@@ -29,7 +29,13 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 fn write_options() -> WriteOptions {
-    WriteOptions::default().with_ordering(Ordering::Unordered)
+    WriteOptions::default()
+        .with_ordering(Ordering::Unordered)
+        .with_upload(
+            UploadConfig::default()
+                .with_part_size(NonZeroUsize::new(16 * 1024))
+                .with_concurrency(NonZeroUsize::new(2)),
+        )
 }
 
 #[tokio::test]

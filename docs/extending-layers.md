@@ -60,12 +60,17 @@ write, including empty batches.
 | `commit(self: Box<Self>)` | Abort a poisoned inner session; otherwise consume and delegate commit exactly once |
 | `abort(self: Box<Self>)` | Consume and delegate abort, releasing layer-owned resources |
 
-Set a failure flag before fallible or awaited work, and clear it only after the
-entire operation succeeds. Returning a validation error without poisoning the
-wrapper would let a caller accidentally commit an incomplete pipeline. A drop or
-cancelled write cannot invoke async cleanup; retain enough ownership for a later
-explicit abort. Do not turn errors into successful empty batches or retry a
-potentially committed session.
+Return `Box::new(GuardedWriter::new(Box::new(your_writer)))` from `open`.
+The core guard owns terminal-state transitions around the entire decorator,
+including validation/transform errors before the inner writer is called. It
+rejects writes after an error or cancellation and aborts a poisoned session on
+commit. The decorator itself only implements its policy and cleanup delegation;
+it does not need its own `Poison` field. See the batch-limit example above.
+
+A cancelled write cannot invoke async cleanup; retain enough ownership for a
+later explicit abort. Do not turn errors into successful empty batches or retry
+a potentially committed session. Resource `Option`s may still be needed to move
+ownership into finishing or cleanup; they are not a second usability flag.
 
 If the layer creates tasks, buffers, or streams, document bounds and ensure abort
 stops and awaits owned work. A batch-count bound is not a byte-count bound. Never
@@ -84,6 +89,9 @@ forwarding `open_writers`. See [OrderingLayer](../layer/src/ordering.rs) and
 
 A per-batch transformation must also wrap every returned `DataWriter` if it
 exposes `ParallelSink`; merely forwarding `open_writers` would bypass that policy.
+Wrap each transformed writer with `GuardedDataWriter::new` to enforce terminal
+writes and one-shot finish while retaining abort ownership. Give independent
+parallel writers independent guards; finishing one must not disable the others.
 Preserve the requested writer count, schemas, output ownership, and single
 committer. [SchemaEvolutionLayer](../layer/src/schema_evolution.rs) provides a
 schema-transform reference that wraps both single and parallel writers.

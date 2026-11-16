@@ -13,6 +13,8 @@ gcp = ["opendal/services-gcs"]
 azure = ["opendal/services-azblob"]
 
 [dependencies]
+object_store = { version = "0.14.2", default-features = false }
+object_store_opendal = { version = "0.60.2", default-features = false }
 async-stream.workspace = true
 bytes = "1"
 futures.workspace = true

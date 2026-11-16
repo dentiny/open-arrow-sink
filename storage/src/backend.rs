@@ -13,6 +13,9 @@ use crate::{
     validation,
 };
 
+const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
 #[derive(Clone, Debug)]
@@ -25,6 +28,7 @@ pub struct Storage {
     // Validated once at construction; shared cheaply by storage clones.
     base_path: Arc<str>,
     upload_part_size: Option<NonZeroUsize>,
+    upload_concurrency: NonZeroUsize,
 }
 
 impl Storage {
@@ -49,6 +53,7 @@ impl Storage {
             base_url,
             base_path,
             upload_part_size: None,
+            upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
         })
     }
 
@@ -127,8 +132,44 @@ impl Storage {
         self
     }
 
+    /// Apply session upload overrides, preserving storage defaults for unset fields.
+    /// Other sink write options do not affect storage. Configure a clone to keep
+    /// the original storage and other sessions unchanged.
+    pub fn with_write_options(mut self, options: &open_arrow_sink_core::WriteOptions) -> Self {
+        if let Some(size) = options.upload.part_size {
+            self.upload_part_size = Some(size);
+        }
+        if let Some(concurrency) = options.upload.concurrency {
+            self.upload_concurrency = concurrency;
+        }
+        self
+    }
+
     pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
         self.upload_part_size
+    }
+
+    /// Bound concurrent multipart requests per writer, including native adapters.
+    /// Defaults to four; increase this together with the upload-buffer budget.
+    pub fn with_upload_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.upload_concurrency = concurrency;
+        self
+    }
+
+    pub fn upload_concurrency(&self) -> NonZeroUsize {
+        self.upload_concurrency
+    }
+
+    pub(crate) fn upload_options(
+        &self,
+        mut options: opendal::options::WriteOptions,
+    ) -> opendal::options::WriteOptions {
+        options.chunk = Some(
+            self.upload_part_size
+                .map_or(DEFAULT_UPLOAD_PART_SIZE, NonZeroUsize::get),
+        );
+        options.concurrent = self.upload_concurrency.get();
+        options
     }
 
     pub fn base_url(&self) -> &Url {
@@ -232,13 +273,8 @@ impl Storage {
     pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
         let path = self.nonroot_path(url)?;
         let operator = self.operator();
-        let part_size = self
-            .upload_part_size
-            .map_or(5 * 1024 * 1024, NonZeroUsize::get);
         let writer = operator
-            .writer_with(&path)
-            .chunk(part_size)
-            .concurrent(1)
+            .writer_options(&path, self.upload_options(Default::default()))
             .await
             .map_err(|error| map_error("open", &path, error))?;
         Ok(StorageWriter {

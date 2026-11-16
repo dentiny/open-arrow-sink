@@ -1,8 +1,9 @@
 use open_arrow_sink_core::{
-    Layer, ParallelSink, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession,
-    Writer, async_trait,
+    Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
 };
-use std::{num::NonZeroUsize, sync::Arc};
+use std::sync::Arc;
+
+use crate::decorate::{Decorator, impl_sink};
 
 type Policy = dyn Fn(&mut WriteOptions, SinkCapability) -> Result<()> + Send + Sync;
 
@@ -46,39 +47,25 @@ impl<S: Sink> Layer<S> for OptionsLayer {
     }
 }
 
-#[async_trait]
-impl<S: Sink> Sink for OptionsSink<S> {
-    type Request = S::Request;
+impl_sink!(OptionsSink);
 
-    fn capability(&self) -> SinkCapability {
-        self.inner.capability()
+impl<S: Sink> Decorator for OptionsSink<S> {
+    type Inner = S;
+    type Context = ();
+
+    fn inner(&self) -> &S {
+        &self.inner
     }
 
-    async fn open(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-    ) -> Result<Box<dyn Writer>> {
-        (self.policy)(&mut options, self.inner.capability())?;
-        self.inner.open(request, schema, options).await
+    fn prepare(&self, _schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<()> {
+        (self.policy)(options, self.inner.capability())
     }
-}
 
-#[async_trait]
-impl<S: ParallelSink> ParallelSink for OptionsSink<S> {
-    type Output = S::Output;
+    fn wrap_writer(&self, (): (), writer: Box<dyn Writer>) -> Box<dyn Writer> {
+        writer
+    }
 
-    async fn open_writers(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        mut options: WriteOptions,
-        writers: NonZeroUsize,
-    ) -> Result<WriteSession<Self::Output>> {
-        (self.policy)(&mut options, self.inner.capability())?;
-        self.inner
-            .open_writers(request, schema, options, writers)
-            .await
+    fn wrap_session<T: Send + 'static>(&self, (): (), session: WriteSession<T>) -> WriteSession<T> {
+        session
     }
 }

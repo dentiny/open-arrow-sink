@@ -51,6 +51,7 @@ impl Sink for ParquetDirectorySink {
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(false)
             .with_supports_blob_streaming(false)
+            .with_supports_upload_options(true)
             .with_supports_storage_version(false)
             .with_supported_indexes(&[])
     }
@@ -105,7 +106,8 @@ impl ParquetDirectorySink {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&directory)?,
-        };
+        }
+        .with_write_options(&options);
         let destination = Arc::new(
             Destination::open(
                 storage,

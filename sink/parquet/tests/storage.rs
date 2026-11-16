@@ -1,5 +1,5 @@
 use arrow_array::RecordBatch;
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
 use open_arrow_sink_storage::opendal;
@@ -20,6 +20,11 @@ fn options() -> WriteOptions {
     WriteOptions::default()
         .with_ordering(Ordering::Unordered)
         .with_target_file_size(Some(1))
+        .with_upload(
+            UploadConfig::default()
+                .with_part_size(NonZeroUsize::new(16))
+                .with_concurrency(NonZeroUsize::new(2)),
+        )
 }
 
 #[rstest::rstest]

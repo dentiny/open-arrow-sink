@@ -19,6 +19,7 @@ restrictions below. Cargo features are additive.
 | Compression, per-column | Same enabled codecs as global | Unsupported | Uncompressed, Zstd |
 | Structural encoding | Unsupported | Unsupported | Miniblock, Fullzip; global and per-column |
 | Explicit Zstd level | 1–22 | 1–22 | 0–22 |
+| Session upload part size / concurrency | Supported | Unsupported; configure catalog Storage | Supported |
 | Target file size | Soft target; rolls between batches, default one file per writer | SDK soft target; table default otherwise | Native soft target; SDK default otherwise |
 | Index requests | Unsupported | Unsupported | Scalar/BTree, Vector/IVF_FLAT L2, Text/Inverted, BloomFilter |
 | Native streaming blobs | Unsupported | Unsupported | Single-writer blob schema only |
