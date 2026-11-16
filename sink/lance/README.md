@@ -333,6 +333,32 @@ Unregistered sources use URL-configured storage cached by `StorageResolver`.
 The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
 adapts the selected storage to Lance.
 
+Configure sources once and pass the same `Arc<StorageResolver>` to the download
+pool and native Lance sink. Both paths then use the same source operators,
+credentials, and URL-derived cache:
+
+```rust
+use std::sync::Arc;
+use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_storage::{DownloadPool, Storage, StorageResolver, opendal};
+
+let source = Storage::new(
+    opendal::Operator::new(opendal::services::Memory::default())?,
+    "memory://sources/".parse()?,
+)?;
+let sources = Arc::new(StorageResolver::default().with_storage(source));
+let pool = Arc::new(DownloadPool::with_defaults()?.with_source_resolver(sources.clone()));
+let sink = LanceDatasetSink::default().with_source_resolver(sources);
+// Pass pool to DownloadBlobLayer::with_download_pool when composing the sink.
+# let _ = (pool, sink);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`with_source_resolver` replaces prior source registrations. Calling
+`with_source_storage` afterwards adds a store only to that consumer's resolver;
+configure all shared stores before wrapping the resolver in `Arc`.
+HTTP(S) downloads continue to use `DownloadPool::with_http_storage`.
+
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the
 sink or constructing a dataset builder; Lance snapshots the available schemes.

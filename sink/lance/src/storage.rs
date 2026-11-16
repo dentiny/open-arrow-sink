@@ -21,7 +21,7 @@ impl NativeStorage {
     pub fn new(
         storage: Storage,
         url: Url,
-        sources: StorageResolver,
+        sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
         let url = storage.directory_url(&url)?;
@@ -121,7 +121,7 @@ mod tests {
     #[tokio::test]
     async fn session_routes_opendal_registered_service_without_explicit_source() {
         opendal::OperatorRegistry::get().register::<opendal::services::Memory>("lance-custom");
-        let sources = StorageResolver::default();
+        let sources = Arc::new(StorageResolver::default());
         let source_url: Url = "lance-custom://source/blob".parse().unwrap();
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();
