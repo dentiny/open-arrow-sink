@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use lance::dataset::transaction::Transaction;
 use open_arrow_sink_core::{Error, IndexSpec, Result, SessionCommitter, async_trait};
 
-use crate::{LanceFragments, destination::LanceDestination, index::build_indexes};
+use crate::{LanceFragments, destination::LanceDestination, indexed_commit::IndexedCommitHandler};
 
 pub(crate) struct LanceCommitter {
     pub destination: LanceDestination,
@@ -32,8 +34,18 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
             // Lance preserves the existing manifest default for append operations.
             builder = builder.with_storage_format(version);
         }
-        let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
-        build_indexes(&mut dataset, &self.indexes).await?;
+        if !self.indexes.is_empty() {
+            // Lance caches the operation's original index list after commit.
+            // Keep that bookkeeping cache out of subsequent reader sessions:
+            // the published manifest also contains indexes built by the handler.
+            builder = builder
+                .with_session(self.destination.isolated_session())
+                .with_commit_handler(Arc::new(IndexedCommitHandler {
+                    destination: self.destination.clone(),
+                    indexes: self.indexes,
+                }));
+        }
+        builder.execute(transaction).await.map_err(Error::backend)?;
         Ok(())
     }
     async fn abort(self: Box<Self>) -> Result<()> {

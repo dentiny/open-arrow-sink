@@ -55,7 +55,7 @@ committer. Arrow layers control writes; OpenDAL layers control byte I/O.
 | --- | --- | --- | --- | --- |
 | Parquet directory | `sink-parquet` | Create, Append | Files may be visible before commit; no directory transaction | [write_directory.rs](sink/parquet/examples/write_directory.rs) |
 | Iceberg table | `sink-iceberg` | Append to an existing table | One native fast-append transaction | [append.rs](sink/iceberg/examples/append.rs) |
-| Lance dataset | `sink-lance` | Create, Append, Overwrite | Data manifest, then optional index commits | [write_lance.rs](sink/lance/examples/write_lance.rs) |
+| Lance dataset | `sink-lance` | Create, Append, Overwrite | One atomic manifest for data and requested indexes | [write_lance.rs](sink/lance/examples/write_lance.rs) |
 
 Facade features default to empty. Enable the backend you need; see
 [Cargo.toml](Cargo.toml) for cloud and codec features. Options default to Create

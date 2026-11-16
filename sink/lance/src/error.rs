@@ -9,8 +9,8 @@ pub(crate) fn worker_stopped() -> Error {
 pub(crate) fn index_creation(
     spec: &open_arrow_sink_core::IndexSpec,
     error: impl std::fmt::Display,
-) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError::new(format!(
+) -> lance::Error {
+    lance::Error::index(format!(
         "creating {:?} index on '{}': {error}",
         spec.index_type, spec.column
     ))
