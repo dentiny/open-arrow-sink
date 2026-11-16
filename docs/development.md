@@ -1,7 +1,12 @@
 # Development and release documentation
 
-Use a Rust toolchain supporting edition 2024 and the resolved dependencies in
-`Cargo.lock`. No toolchain or minimum Rust version is pinned in this workspace.
+The workspace minimum supported Rust version (MSRV) is **1.95**. Each package
+inherits `rust-version` from the workspace so Cargo rejects older toolchains
+before compiling. This floor includes the optional backends: the locked
+Iceberg 0.11 dependencies require Rust 1.95 and Lance 14 requires Rust 1.94.
+Use the committed `Cargo.lock` when checking this minimum; dependency updates
+may require an explicit MSRV change. The MSRV workflow checks all workspace
+targets and features on Rust 1.95.0.
 Lance's dependencies require `protoc` (`protobuf-compiler` on Ubuntu).
 Install Taplo with `cargo install taplo-cli --version 0.10.0 --locked`.
 
@@ -14,6 +19,7 @@ cargo fmt --all --check
 taplo fmt --check
 taplo lint --no-schema
 cargo metadata --no-deps --locked --format-version 1 > /dev/null
+cargo +1.95.0 check --workspace --all-targets --all-features --locked
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo doc --workspace --all-features --no-deps --locked

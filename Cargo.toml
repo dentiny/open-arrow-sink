@@ -12,6 +12,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
@@ -42,6 +43,7 @@ open-arrow-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
 name = "open-arrow-sink"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"

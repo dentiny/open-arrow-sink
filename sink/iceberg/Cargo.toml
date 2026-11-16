@@ -2,6 +2,7 @@
 name = "open-arrow-sink-iceberg"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Minimal append-only Iceberg table sink"
