@@ -215,7 +215,7 @@ mod tests {
     use open_arrow_sink_storage::opendal;
 
     #[tokio::test]
-    async fn unfinished_handles_survive_sdk_drop_and_are_released_by_cleanup() {
+    async fn prefix_cleanup_aborts_unfinished_writers_without_touching_other_sessions() {
         let storage = Storage::new(
             opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
             "memory:///warehouse/".parse().unwrap(),
@@ -223,14 +223,16 @@ mod tests {
         .unwrap();
         let factory = OpenDalStorageFactory::new(storage.clone());
         let file_io = factory.file_io();
-        let url = storage.url("session/part").unwrap();
-        let mut file_writer = file_io
-            .new_output(url.as_str())
+        let abandoned = storage.url("session-a/abandoned").unwrap();
+        let active = storage.url("session-a/active").unwrap();
+        let keep = storage.url("session-ab/keep").unwrap();
+        let mut abandoned_writer = file_io
+            .new_output(abandoned.as_str())
             .unwrap()
             .writer()
             .await
             .unwrap();
-        file_writer.write("partial".into()).await.unwrap();
+        abandoned_writer.write("abandoned".into()).await.unwrap();
         let native_writer = factory
             .uploads
             .lock()
@@ -239,13 +241,30 @@ mod tests {
             .unwrap()
             .writer
             .clone();
-        drop(file_writer);
-        // Keep a native observer so this verifies an explicit abort, rather
-        // than merely dropping the SDK writer or deleting a completed object.
-        file_io
-            .delete_prefix(storage.url("session/").unwrap().as_str())
+        // The native SDK drops FileWrite before calling delete_prefix on abort.
+        drop(abandoned_writer);
+        let mut active_writer = file_io
+            .new_output(active.as_str())
+            .unwrap()
+            .writer()
             .await
             .unwrap();
+        active_writer.write("active".into()).await.unwrap();
+        let mut keep_writer = file_io
+            .new_output(keep.as_str())
+            .unwrap()
+            .writer()
+            .await
+            .unwrap();
+        keep_writer.write("keep".into()).await.unwrap();
+        // A factory clone and a new FileIO must share the unfinished-upload registry.
+        factory
+            .clone()
+            .file_io()
+            .delete_prefix(storage.url("session-a/").unwrap().as_str())
+            .await
+            .unwrap();
+        // Observe the dropped writer's native handle to prove explicit abort.
         assert!(
             native_writer
                 .lock()
@@ -254,10 +273,18 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert_eq!(factory.uploads.lock().len(), 1);
+        assert!(active_writer.write("more".into()).await.is_err());
+        assert!(active_writer.close().await.is_err());
+        assert!(!storage.exists(&abandoned).await.unwrap());
+        assert!(!storage.exists(&active).await.unwrap());
+        keep_writer.write(" more".into()).await.unwrap();
+        keep_writer.close().await.unwrap();
         assert!(factory.uploads.lock().is_empty());
-
+        assert_eq!(storage.read(&keep).await.unwrap(), "keep more");
+        // Successful close also removes a new upload from the registry.
         let mut completed = file_io
-            .new_output(url.as_str())
+            .new_output(abandoned.as_str())
             .unwrap()
             .writer()
             .await
@@ -265,5 +292,16 @@ mod tests {
         completed.write("complete".into()).await.unwrap();
         completed.close().await.unwrap();
         assert!(factory.uploads.lock().is_empty());
+        // Clean up the completed object, then repeat cleanup on the empty prefix.
+        file_io
+            .delete_prefix(storage.url("session-a/").unwrap().as_str())
+            .await
+            .unwrap();
+        assert!(!storage.exists(&abandoned).await.unwrap());
+        // Repeated abort cleanup is harmless.
+        file_io
+            .delete_prefix(storage.url("session-a/").unwrap().as_str())
+            .await
+            .unwrap();
     }
 }
