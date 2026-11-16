@@ -174,10 +174,11 @@ mod tests {
             .prepare(&batch.schema(), WriteMode::Append, None)
             .await
             .unwrap();
-        let options = WriteOptions {
-            mode: WriteMode::Append,
-            ordering: Ordering::Unordered,
-            ..Default::default()
+        let options = {
+            let mut review_options = Default::default();
+            review_options.mode = WriteMode::Append;
+            review_options.ordering = Ordering::Unordered;
+            review_options
         };
         let mut first = FragmentWriter::new(
             batch.schema(),
