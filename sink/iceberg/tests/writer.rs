@@ -227,6 +227,20 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
     writer.write(batch.slice(0, 1)).await.unwrap();
     writer.write(batch.slice(1, 2)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    let table = catalog.load_table(&identifier).await.unwrap();
+    let data_prefix = format!(
+        "{}/data/",
+        table.metadata().location().trim_end_matches('/')
+    );
+    let tasks = files(&table).await;
+    assert!(!tasks.is_empty());
+    for task in tasks {
+        let name = task.data_file_path().strip_prefix(&data_prefix).unwrap();
+        assert!(
+            !name.contains('/'),
+            "expected a file directly under data/: {name}"
+        );
+    }
     assert_rows(catalog.as_ref(), &identifier, std::slice::from_ref(&batch)).await;
 
     let mut writer = sink

@@ -4,7 +4,7 @@ use iceberg::spec::TableProperties;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
-    DefaultFileNameGenerator, DefaultLocationGenerator, LocationGenerator,
+    DefaultFileNameGenerator, DefaultLocationGenerator,
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
@@ -124,48 +124,35 @@ impl ParallelSink for IcebergTableSink {
         let location = DefaultLocationGenerator::new(metadata).map_err(Error::backend)?;
         let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
         for _ in 0..count.get() {
-            let writer = async {
-                // A private prefix lets abort remove only this writer's files.
-                let id = uuid::Uuid::new_v4().to_string();
-                let prefix = format!(
-                    "{}/",
-                    location.generate_location(None, &format!("open-arrow-sink-{id}"))
-                );
-                let rolling = RollingFileWriterBuilder::new(
-                    parquet.clone(),
-                    target_file_size,
-                    table.file_io().clone(),
-                    DefaultLocationGenerator::with_data_location(
-                        prefix.trim_end_matches('/').to_owned(),
-                    ),
-                    DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
-                );
-                let builder = DataFileWriterBuilder::new(rolling);
-                let inner: Box<dyn IcebergWriter> = match &kind {
-                    WriterKind::Fanout(spec) => Box::new(
-                        PartitionWriterAdapter::try_new(
-                            builder,
-                            metadata.current_schema().clone(),
-                            spec.clone(),
-                        )
+            let rolling = RollingFileWriterBuilder::new(
+                parquet.clone(),
+                target_file_size,
+                table.file_io().clone(),
+                location.clone(),
+                DefaultFileNameGenerator::new(
+                    uuid::Uuid::new_v4().to_string(),
+                    None,
+                    iceberg::spec::DataFileFormat::Parquet,
+                ),
+            );
+            let builder = DataFileWriterBuilder::new(rolling);
+            let inner: Box<dyn IcebergWriter> = match &kind {
+                WriterKind::Fanout(spec) => Box::new(
+                    PartitionWriterAdapter::try_new(
+                        builder,
+                        metadata.current_schema().clone(),
+                        spec.clone(),
+                    )
+                    .map_err(Error::backend)?,
+                ),
+                WriterKind::Fixed(key) => Box::new(
+                    builder
+                        .build(Some(key.clone()))
+                        .await
                         .map_err(Error::backend)?,
-                    ),
-                    WriterKind::Fixed(key) => Box::new(
-                        builder
-                            .build(Some(key.clone()))
-                            .await
-                            .map_err(Error::backend)?,
-                    ),
-                };
-                Ok::<_, Error>(Box::new(IcebergTableWriter::new(schema.clone(), inner)))
-            }
-            .await;
-            match writer {
-                Ok(writer) => writers.push(writer),
-                Err(error) => {
-                    return Err(error);
-                }
-            }
+                ),
+            };
+            writers.push(Box::new(IcebergTableWriter::new(schema.clone(), inner)));
         }
         Ok(WriteSession {
             writers,

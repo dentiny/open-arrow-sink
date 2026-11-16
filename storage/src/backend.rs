@@ -13,7 +13,7 @@ use crate::{
     validation,
 };
 
-const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_UPLOAD_PART_SIZE: NonZeroUsize = NonZeroUsize::new(4 * 1024 * 1024).unwrap();
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 /// The contents of a destination, including virtual object-store directories.
@@ -37,7 +37,7 @@ pub struct Storage {
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
     base_path: Arc<str>,
-    upload_part_size: Option<NonZeroUsize>,
+    upload_part_size: NonZeroUsize,
     upload_concurrency: NonZeroUsize,
 }
 
@@ -57,7 +57,7 @@ impl Storage {
             http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
-            upload_part_size: None,
+            upload_part_size: DEFAULT_UPLOAD_PART_SIZE,
             upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
         })
     }
@@ -151,7 +151,7 @@ impl Storage {
     /// Configure buffering for streaming uploads. OpenDAL applies the backend's
     /// part-size limits; clones and sink adapters retain this setting.
     pub fn with_upload_part_size(mut self, size: NonZeroUsize) -> Self {
-        self.upload_part_size = Some(size);
+        self.upload_part_size = size;
         self
     }
 
@@ -159,7 +159,7 @@ impl Storage {
     /// Configure a clone to keep the original storage and other sessions unchanged.
     pub fn with_write_options(mut self, options: &open_arrow_sink_core::WriteOptions) -> Self {
         if let Some(size) = options.upload.part_size {
-            self.upload_part_size = Some(size);
+            self.upload_part_size = size;
         }
         if let Some(concurrency) = options.upload.concurrency {
             self.upload_concurrency = concurrency;
@@ -185,10 +185,6 @@ impl Storage {
         self
     }
 
-    pub fn upload_part_size(&self) -> Option<NonZeroUsize> {
-        self.upload_part_size
-    }
-
     /// Bound concurrent multipart requests per writer, including native adapters.
     /// Defaults to four; increase this together with the upload-buffer budget.
     pub fn with_upload_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
@@ -196,18 +192,11 @@ impl Storage {
         self
     }
 
-    pub fn upload_concurrency(&self) -> NonZeroUsize {
-        self.upload_concurrency
-    }
-
     pub(crate) fn upload_options(
         &self,
         mut options: opendal::options::WriteOptions,
     ) -> opendal::options::WriteOptions {
-        options.chunk = Some(
-            self.upload_part_size
-                .map_or(DEFAULT_UPLOAD_PART_SIZE, NonZeroUsize::get),
-        );
+        options.chunk = Some(self.upload_part_size.get());
         options.concurrent = self.upload_concurrency.get();
         options
     }
@@ -363,19 +352,6 @@ impl Storage {
             .recursive(true)
             .await
             .map_err(|error| map_error("delete_prefix", path, error))
-    }
-    /// Delete a directory only when it is empty. Never recursively remove its contents.
-    pub async fn remove_empty_directory(&self, path: &ObjectPath) -> Result<()> {
-        path.require_nonroot()?;
-        if self.inspect_directory(path).await? != DirectoryState::Empty {
-            return Ok(());
-        }
-        let directory = path.as_dir();
-        let path = directory.as_str();
-        self.operator()
-            .delete(path)
-            .await
-            .map_err(|error| map_error("delete", path, error))
     }
     async fn lister(&self, path: &ObjectPath) -> Result<opendal::Lister> {
         let path = path.as_str();

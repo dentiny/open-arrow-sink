@@ -299,8 +299,8 @@ schema for dataset validation, and the encoded schema for native writes.
 Compression is applied first; logical blob fields and encoded descriptors are then
 derived together with the same metadata and explicit layout overrides.
 `LanceDestination` binds
-the resulting parameters to its session and commit handler; blob runtime code
-owns handles, placements, and cleanup.
+the resulting parameters to its session and commit handler; blob input conversion
+and materialization happen before native fragment writes.
 
 ## Upload buffering
 
