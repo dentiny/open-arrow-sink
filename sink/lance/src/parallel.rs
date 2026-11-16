@@ -10,6 +10,9 @@ use crate::{
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
     schemas: crate::write_options::LanceSchemas,
+    // Background worker that receives RecordBatches from a bounded channel and
+    // writes them to uncommitted fragment files. No input batches means no
+    // fragment files are created; manifest publication belongs to the committer.
     worker: FragmentTask,
     state: Poison,
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
