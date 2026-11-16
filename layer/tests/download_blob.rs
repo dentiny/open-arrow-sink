@@ -4,16 +4,15 @@ use std::{
     time::Duration,
 };
 
-use arrow_array::{
-    Array, ArrayRef, Int32Array, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray,
-};
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef, Int32Array, LargeStringArray, StringArray, StringViewArray};
 use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Ordering, RecordBatch,
     Result, SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer,
     async_trait, validation,
 };
-use open_arrow_sink_layer::DownloadBlobLayer;
+use open_arrow_sink_layer::{DownloadBlobLayer, DownloadPool};
 use open_arrow_sink_test_support::http::{HttpStatus, Reply, Server, serve};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,14 +21,22 @@ use tokio::{
 };
 
 // A 4 MiB buffer budget admits two of the common downloader's 2 MiB chunks.
-fn download_layer(columns: std::collections::HashSet<String>) -> DownloadBlobLayer {
-    DownloadBlobLayer::new(columns).with_download_pool(Arc::new(
-        open_arrow_sink_layer::DownloadPool::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-        )
-        .unwrap(),
-    ))
+fn download_pool() -> DownloadPool {
+    DownloadPool::new(
+        NonZeroUsize::new(2).unwrap(),
+        NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
+    )
+    .unwrap()
+}
+fn download_layer<'a>(columns: impl IntoIterator<Item = &'a str>) -> DownloadBlobLayer {
+    layer_with_pool(columns, Arc::new(download_pool()))
+}
+fn layer_with_pool<'a>(
+    columns: impl IntoIterator<Item = &'a str>,
+    pool: Arc<DownloadPool>,
+) -> DownloadBlobLayer {
+    DownloadBlobLayer::new(columns.into_iter().map(str::to_owned).collect())
+        .with_download_pool(pool)
 }
 
 #[derive(Default)]
@@ -41,6 +48,29 @@ struct State {
 }
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<State>>);
+impl Capture {
+    async fn writer(&self, layer: DownloadBlobLayer, schema: SchemaRef) -> Result<Box<dyn Writer>> {
+        self.clone()
+            .layer(layer)
+            .open((), schema, WriteOptions::default())
+            .await
+    }
+    fn binary(&self, column: usize) -> Vec<Option<Vec<u8>>> {
+        self.0
+            .lock()
+            .unwrap()
+            .batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(column)
+                    .as_binary::<i64>()
+                    .iter()
+                    .map(|value| value.map(Vec::from))
+            })
+            .collect()
+    }
+}
 struct CaptureWriter {
     state: Capture,
     schema: SchemaRef,
@@ -51,19 +81,9 @@ impl Sink for Capture {
     fn capability(&self) -> SinkCapability {
         SinkCapability::default()
             .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
-            .with_compression(
-                open_arrow_sink_core::CompressionCapability::default()
-                    .with_global(&[])
-                    .with_per_column(&[])
-                    .with_structural_encodings(&[])
-                    .with_nested_columns(false),
-            )
             .with_ordering(Ordering::PreserveInput)
-            .with_supported_partitions(vec![])
             .with_supports_blob_handle(true)
             .with_supports_blob_streaming(true)
-            .with_supports_storage_version(false)
-            .with_supported_indexes(&[])
     }
     async fn open(
         &self,
@@ -97,7 +117,7 @@ impl Writer for CaptureWriter {
             if !blobs.iter().any(|blob| blob.column == column) {
                 continue;
             }
-            let array = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            let array = array.as_binary::<i64>();
             let mut builder = arrow_array::builder::LargeBinaryBuilder::new();
             for row in 0..array.len() {
                 if let Some(blob) = blobs
@@ -159,7 +179,7 @@ impl Drop for RawServer {
         self.task.abort();
     }
 }
-async fn fault_server(response: &[u8], delay: Duration) -> RawServer {
+async fn fault_server(response: &[u8]) -> RawServer {
     let response = response.to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -168,7 +188,6 @@ async fn fault_server(response: &[u8], delay: Duration) -> RawServer {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
             let _ = socket.read(&mut request).await;
-            tokio::time::sleep(delay).await;
             let _ = socket.write_all(&response).await;
         }
     });
@@ -180,7 +199,7 @@ fn batch(urls: Vec<Option<&str>>) -> RecordBatch {
 
 #[tokio::test]
 async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
-    let server = serve(|_, _| Reply::bytes(b"\x00\xffx".as_slice())).await;
+    let server = serve(|_| Reply::bytes(b"\x00\xffx".as_slice())).await;
     let urls = vec![Some(server.url.as_str()), None, Some(server.url.as_str())];
     let batch = RecordBatch::try_from_iter([
         (
@@ -208,14 +227,8 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
     ));
     let batch = RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).unwrap();
     let capture = Capture::default();
-    let sink = capture.clone().layer(download_layer(
-        ["utf8", "large", "view"]
-            .map(str::to_owned)
-            .into_iter()
-            .collect(),
-    ));
-    let mut writer = sink
-        .open((), schema.clone(), WriteOptions::default())
+    let mut writer = capture
+        .writer(download_layer(["utf8", "large", "view"]), schema.clone())
         .await
         .unwrap();
     assert_eq!(writer.schema(), &schema);
@@ -223,39 +236,28 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
     writer.write(batch).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);
     let state = capture.0.lock().unwrap();
+    let schema = state.schema.clone().unwrap();
+    let batches = state.batches.clone();
+    drop(state);
     assert_eq!(
-        state
-            .batches
+        batches
             .iter()
             .map(RecordBatch::num_rows)
             .collect::<Vec<_>>(),
         [0, 3]
     );
-    let schema = state.schema.as_ref().unwrap();
     assert_eq!(schema.metadata()["source"], "test");
     assert_eq!(schema.field(0).metadata()["description"], "photo");
     for i in 0..3 {
         assert_eq!(schema.field(i).data_type(), &DataType::LargeBinary);
         assert_eq!(schema.field(i).metadata()[BLOB_METADATA_KEY], "true");
-        let values = state
-            .batches
-            .iter()
-            .flat_map(|b| {
-                b.column(i)
-                    .as_any()
-                    .downcast_ref::<LargeBinaryArray>()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.map(Vec::from))
-            })
-            .collect::<Vec<_>>();
+        let values = capture.binary(i);
         assert_eq!(
             values,
             vec![Some(vec![0, 255, b'x']), None, Some(vec![0, 255, b'x'])]
         );
     }
-    let ids = state
-        .batches
+    let ids = batches
         .iter()
         .flat_map(|b| {
             b.column(3)
@@ -271,28 +273,16 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
 
 #[tokio::test]
 async fn empty_payload_is_distinct_from_null() {
-    let server = serve(|_, _| Reply::bytes(b"".as_slice())).await;
+    let server = serve(|_| Reply::bytes(b"".as_slice())).await;
     let batch = batch(vec![Some(&server.url), None]);
     let capture = Capture::default();
     let mut writer = capture
-        .clone()
-        .layer(download_layer(
-            ["url"].map(str::to_owned).into_iter().collect(),
-        ))
-        .open((), batch.schema(), WriteOptions::default())
+        .writer(download_layer(["url"]), batch.schema())
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    let state = capture.0.lock().unwrap();
-    let array = state.batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
-    assert!(!array.is_null(0));
-    assert_eq!(array.value(0), b"");
-    assert!(array.is_null(1));
+    assert_eq!(capture.binary(0), vec![Some(vec![]), None]);
 }
 
 #[rstest::rstest]
@@ -305,15 +295,11 @@ async fn empty_payload_is_distinct_from_null() {
 async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
     #[case] response: &[u8],
 ) {
-    let server = fault_server(response, Duration::ZERO).await;
+    let server = fault_server(response).await;
     let batch = batch(vec![None, Some(&server.url)]);
     let capture = Capture::default();
     let mut writer = capture
-        .clone()
-        .layer(download_layer(
-            ["url"].map(str::to_owned).into_iter().collect(),
-        ))
-        .open((), batch.schema(), WriteOptions::default())
+        .writer(download_layer(["url"]), batch.schema())
         .await
         .unwrap();
     writer.write(batch.slice(0, 1)).await.unwrap();
@@ -336,11 +322,7 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
         let capture = Capture::default();
         assert!(
             capture
-                .clone()
-                .layer(download_layer(
-                    columns.into_iter().map(str::to_owned).collect()
-                ))
-                .open((), schema.clone(), WriteOptions::default())
+                .writer(download_layer(columns), schema.clone())
                 .await
                 .is_err()
         );
@@ -353,9 +335,7 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
     let capture = Capture::default();
     assert!(
         capture
-            .clone()
-            .layer(download_layer(["url".to_owned()].into_iter().collect()))
-            .open((), ambiguous, WriteOptions::default())
+            .writer(download_layer(["url"]), ambiguous)
             .await
             .is_err()
     );
@@ -364,11 +344,7 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
         let capture = Capture::default();
         let batch = batch(vec![Some(url)]);
         let mut writer = capture
-            .clone()
-            .layer(download_layer(
-                ["url"].map(str::to_owned).into_iter().collect(),
-            ))
-            .open((), batch.schema(), WriteOptions::default())
+            .writer(download_layer(["url"]), batch.schema())
             .await
             .unwrap();
         assert!(writer.write(batch).await.is_err());
@@ -384,7 +360,7 @@ async fn gated_server() -> (
     tokio::sync::mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
 ) {
     let (events, received) = tokio::sync::mpsc::unbounded_channel();
-    let server = serve(move |uri, _| {
+    let server = serve(move |uri| {
         let (release, ready) = tokio::sync::oneshot::channel();
         let _ = events.send(release);
         Reply::bytes(uri.path_and_query().unwrap().as_str().as_bytes().to_vec()).gated(ready)
@@ -404,28 +380,15 @@ async fn next_request(
 
 #[tokio::test]
 async fn shared_pool_bounds_active_bodies_and_preserves_order() {
-    use open_arrow_sink_layer::DownloadPool;
-
     let (server, mut events) = gated_server().await;
-    let pool = Arc::new(
-        DownloadPool::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-        )
-        .unwrap(),
-    );
+    let pool = Arc::new(download_pool());
     let captures = [Capture::default(), Capture::default()];
     let mut writes = tokio::task::JoinSet::new();
     for (capture, paths) in captures.iter().zip([["/a", "/b"], ["/c", "/d"]]) {
         let urls = paths.map(|path| format!("{}{path}", server.url));
         let batch = batch(urls.iter().map(|url| Some(url.as_str())).collect());
         let mut writer = capture
-            .clone()
-            .layer(
-                download_layer(["url".to_owned()].into_iter().collect())
-                    .with_download_pool(pool.clone()),
-            )
-            .open((), batch.schema(), WriteOptions::default())
+            .writer(layer_with_pool(["url"], pool.clone()), batch.schema())
             .await
             .unwrap();
         writes.spawn(async move {
@@ -453,39 +416,21 @@ async fn shared_pool_bounds_active_bodies_and_preserves_order() {
     .await
     .unwrap();
     for (capture, expected) in captures.iter().zip([[b"/a", b"/b"], [b"/c", b"/d"]]) {
-        let state = capture.0.lock().unwrap();
-        let values = state.batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
-        assert_eq!(values.value(0), expected[0]);
-        assert_eq!(values.value(1), expected[1]);
-        assert!(state.committed);
+        let values = capture.binary(0);
+        assert_eq!(values[0].as_deref().unwrap(), expected[0]);
+        assert_eq!(values[1].as_deref().unwrap(), expected[1]);
+        assert!(capture.0.lock().unwrap().committed);
     }
 }
 
 #[tokio::test]
 async fn cancelling_download_releases_shared_pool_capacity() {
-    use open_arrow_sink_layer::DownloadPool;
-
     let (server, mut events) = gated_server().await;
-    let pool = Arc::new(
-        DownloadPool::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-        )
-        .unwrap(),
-    );
+    let pool = Arc::new(download_pool());
     let input = batch(vec![Some(&server.url)]);
     let capture = Capture::default();
-    let layer = download_layer(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
-    let mut writer = capture
-        .clone()
-        .layer(layer.clone())
-        .open((), input.schema(), WriteOptions::default())
-        .await
-        .unwrap();
+    let layer = layer_with_pool(["url"], pool);
+    let mut writer = capture.writer(layer.clone(), input.schema()).await.unwrap();
     let mut write = Box::pin(writer.write(input.clone()));
     let held_body = tokio::select! {
         _ = &mut write => panic!("body has not been released"),
@@ -495,37 +440,13 @@ async fn cancelling_download_releases_shared_pool_capacity() {
     assert!(writer.commit().await.is_err());
     assert!(capture.0.lock().unwrap().aborted);
 
-    let mut next_writer = Capture::default()
-        .layer(layer)
-        .open((), input.schema(), WriteOptions::default())
-        .await
-        .unwrap();
-    let mut write = Box::pin(next_writer.write(input));
-    let body = tokio::select! {
-        _ = &mut write => panic!("body has not been released"),
-        request = next_request(&mut events) => request,
-    };
-    body.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), write)
-        .await
-        .unwrap()
-        .unwrap();
-    next_writer.commit().await.unwrap();
+    assert_pool_has_capacity(layer, input, &mut events).await;
     drop(held_body);
 }
 
 #[tokio::test]
 async fn downloads_columns_concurrently_with_single_row_batches() {
-    use open_arrow_sink_layer::DownloadPool;
-
     let (server, mut events) = gated_server().await;
-    let pool = Arc::new(
-        DownloadPool::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-        )
-        .unwrap(),
-    );
     let left = format!("{}/left", server.url);
     let right = format!("{}/right", server.url);
     let input = RecordBatch::try_from_iter([
@@ -538,16 +459,7 @@ async fn downloads_columns_concurrently_with_single_row_batches() {
     .unwrap();
     let capture = Capture::default();
     let mut writer = capture
-        .clone()
-        .layer(
-            download_layer(
-                ["left".to_owned(), "right".to_owned()]
-                    .into_iter()
-                    .collect(),
-            )
-            .with_download_pool(pool),
-        )
-        .open((), input.schema(), WriteOptions::default())
+        .writer(download_layer(["left", "right"]), input.schema())
         .await
         .unwrap();
     let write = tokio::spawn(async move {
@@ -562,14 +474,9 @@ async fn downloads_columns_concurrently_with_single_row_batches() {
         .await
         .unwrap()
         .unwrap();
-    let state = capture.0.lock().unwrap();
     for (index, expected) in [b"/left".as_slice(), b"/right"].into_iter().enumerate() {
-        let values = state.batches[0]
-            .column(index)
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
-        assert_eq!(values.value(0), expected);
+        let values = capture.binary(index);
+        assert_eq!(values[0].as_deref().unwrap(), expected);
     }
 }
 
@@ -585,9 +492,7 @@ async fn opendal_preserves_signed_queries_and_escaped_paths() {
     let input = batch(urls.iter().map(|url| Some(url.as_str())).collect());
     let capture = Capture::default();
     let mut writer = capture
-        .clone()
-        .layer(download_layer(["url".to_owned()].into_iter().collect()))
-        .open((), input.schema(), WriteOptions::default())
+        .writer(download_layer(["url"]), input.schema())
         .await
         .unwrap();
     let write = tokio::spawn(async move {
@@ -601,20 +506,14 @@ async fn opendal_preserves_signed_queries_and_escaped_paths() {
         .await
         .unwrap()
         .unwrap();
-    let state = capture.0.lock().unwrap();
-    let values = state.batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
+    let values = capture.binary(0);
     for (row, path) in paths.into_iter().enumerate() {
-        assert_eq!(values.value(row), path.as_bytes());
+        assert_eq!(values[row].as_deref().unwrap(), path.as_bytes());
     }
 }
 
 #[tokio::test]
 async fn opendal_timeout_on_body_releases_pool_capacity() {
-    use open_arrow_sink_layer::DownloadPool;
     use open_arrow_sink_storage::{StorageConfig, TimeoutConfig};
 
     let (server, mut events) = gated_server().await;
@@ -625,24 +524,11 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
         }),
         ..StorageConfig::default()
     };
-    let pool = Arc::new(
-        DownloadPool::new(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-        )
-        .unwrap()
-        .with_http_config(config)
-        .unwrap(),
-    );
-    let layer = download_layer(["url".to_owned()].into_iter().collect()).with_download_pool(pool);
+    let pool = Arc::new(download_pool().with_http_config(config).unwrap());
+    let layer = layer_with_pool(["url"], pool);
     let input = batch(vec![Some(&server.url)]);
     let capture = Capture::default();
-    let mut writer = capture
-        .clone()
-        .layer(layer.clone())
-        .open((), input.schema(), WriteOptions::default())
-        .await
-        .unwrap();
+    let mut writer = capture.writer(layer.clone(), input.schema()).await.unwrap();
     let mut write = Box::pin(writer.write(input.clone()));
     let held_body = tokio::select! {
         _ = &mut write => panic!("response body should still be pending"),
@@ -656,22 +542,7 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
     assert!(writer.commit().await.is_err());
     assert!(capture.0.lock().unwrap().aborted);
 
-    let mut next_writer = Capture::default()
-        .layer(layer)
-        .open((), input.schema(), WriteOptions::default())
-        .await
-        .unwrap();
-    let mut write = Box::pin(next_writer.write(input));
-    let body = tokio::select! {
-        _ = &mut write => panic!("response body should still be pending"),
-        request = next_request(&mut events) => request,
-    };
-    body.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), write)
-        .await
-        .unwrap()
-        .unwrap();
-    next_writer.commit().await.unwrap();
+    assert_pool_has_capacity(layer, input, &mut events).await;
     drop(held_body);
 }
 
@@ -680,14 +551,12 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
 #[case::enabled(true)]
 #[tokio::test]
 async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bool) {
-    use open_arrow_sink_layer::DownloadPool;
     use open_arrow_sink_storage::{RetryConfig, StorageConfig, TimeoutConfig};
 
-    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let requests = attempts.clone();
-    let server = serve(move |uri, _| {
+    let first = std::sync::atomic::AtomicBool::new(true);
+    let server = serve(move |uri| {
         assert_eq!(uri.path_and_query().unwrap().as_str(), "/blob?token=a%2Fb");
-        if requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+        if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
             Reply::bytes(b"".as_slice()).status(HttpStatus::SERVICE_UNAVAILABLE)
         } else {
             Reply::bytes(b"ok".as_slice())
@@ -695,11 +564,7 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
     })
     .await;
     let url = format!("{}/blob?token=a%2Fb", server.url);
-    let mut pool = DownloadPool::new(
-        NonZeroUsize::new(2).unwrap(),
-        NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
-    )
-    .unwrap();
+    let mut pool = download_pool();
     if retry {
         let config = StorageConfig {
             retry: Some(RetryConfig {
@@ -718,31 +583,18 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
     let capture = Capture::default();
     let input = batch(vec![Some(&url)]);
     let mut writer = capture
-        .clone()
-        .layer(
-            download_layer(["url".to_owned()].into_iter().collect())
-                .with_download_pool(Arc::new(pool)),
-        )
-        .open((), input.schema(), WriteOptions::default())
+        .writer(layer_with_pool(["url"], Arc::new(pool)), input.schema())
         .await
         .unwrap();
     let result = tokio::time::timeout(Duration::from_secs(5), writer.write(input))
         .await
         .unwrap();
     assert_eq!(result.is_ok(), retry, "{result:?}");
-    assert_eq!(
-        attempts.load(std::sync::atomic::Ordering::SeqCst),
-        if retry { 2 } else { 1 }
-    );
+    assert_eq!(server.requests(), if retry { 2 } else { 1 });
     if retry {
         writer.commit().await.unwrap();
-        let state = capture.0.lock().unwrap();
-        let values = state.batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
-        assert_eq!(values.value(0), b"ok");
+        let values = capture.binary(0);
+        assert_eq!(values[0].as_deref().unwrap(), b"ok");
     } else {
         assert!(writer.commit().await.is_err());
         assert!(capture.0.lock().unwrap().aborted);
@@ -766,7 +618,7 @@ async fn rejects_missing_streaming_capability_before_open() {
     }
     let input = batch(vec![Some("https://example.invalid/blob")]);
     let result = UnsupportedSink
-        .layer(download_layer(["url".to_owned()].into_iter().collect()))
+        .layer(download_layer(["url"]))
         .open((), input.schema(), WriteOptions::default())
         .await;
     assert!(matches!(
@@ -778,14 +630,12 @@ async fn rejects_missing_streaming_capability_before_open() {
 #[tokio::test]
 async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it() {
     let capture = Capture::default();
-    let sink = capture
-        .clone()
-        .layer(download_layer(["url".to_owned()].into()));
+    let sink = capture.clone().layer(download_layer(["url"]));
     assert!(sink.capability().supports_blob_handle);
     assert!(!sink.capability().supports_blob_streaming);
     let input = batch(vec![Some("https://example.invalid/blob")]);
     let result = sink
-        .layer(download_layer(["url".to_owned()].into()))
+        .layer(download_layer(["url"]))
         .open((), input.schema(), WriteOptions::default())
         .await;
     assert!(matches!(
@@ -797,12 +647,12 @@ async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it()
 
 #[tokio::test]
 async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
-    let server = serve(|_, _| Reply::bytes(b"abc".as_slice())).await;
+    let server = serve(|_| Reply::bytes(b"abc".as_slice())).await;
     let input = batch(vec![Some(&server.url)]);
     let layer = open_arrow_sink_layer::MetricsLayer::default();
     let metrics = layer.metrics();
     let sink = Capture::default()
-        .layer(download_layer(["url".to_owned()].into()))
+        .layer(download_layer(["url"]))
         .layer(layer);
     let mut writer = sink
         .open((), input.schema(), WriteOptions::default())
@@ -839,7 +689,7 @@ async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: 
     let layer = open_arrow_sink_layer::MetricsLayer::default();
     let metrics = layer.metrics();
     let sink = Capture::default()
-        .layer(download_layer(["url".to_owned()].into()))
+        .layer(download_layer(["url"]))
         .layer(layer);
     let mut writer = sink
         .open((), input.schema(), WriteOptions::default())
@@ -872,4 +722,26 @@ async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: 
     assert!(writer.commit().await.is_err());
     assert_eq!(metrics.snapshot().bytes_read, 3);
     assert_eq!(metrics.snapshot().rows_committed, 0);
+}
+
+async fn assert_pool_has_capacity(
+    layer: DownloadBlobLayer,
+    input: RecordBatch,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
+) {
+    let mut next_writer = Capture::default()
+        .writer(layer, input.schema())
+        .await
+        .unwrap();
+    let mut write = Box::pin(next_writer.write(input));
+    let body = tokio::select! {
+        _ = &mut write => panic!("body has not been released"),
+        request = next_request(events) => request,
+    };
+    body.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), write)
+        .await
+        .unwrap()
+        .unwrap();
+    next_writer.commit().await.unwrap();
 }

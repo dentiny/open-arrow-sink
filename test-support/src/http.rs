@@ -12,13 +12,19 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
 pub struct Server {
     pub url: String,
     task: JoinHandle<()>,
+    requests: Arc<AtomicUsize>,
+}
+impl Server {
+    /// Number of requests received, including retries.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -29,7 +35,6 @@ impl Drop for Server {
 /// A response generated for each request. `gate` delays the body, not headers.
 pub struct Reply {
     status: StatusCode,
-    delay: Duration,
     gate: Option<oneshot::Receiver<()>>,
     body: Payload,
 }
@@ -41,7 +46,6 @@ impl Reply {
     pub fn bytes(bytes: impl Into<Bytes>) -> Self {
         Self {
             status: StatusCode::OK,
-            delay: Duration::ZERO,
             gate: None,
             body: Payload::Bytes(bytes.into()),
         }
@@ -50,7 +54,6 @@ impl Reply {
     pub fn repeated(byte: u8, size: usize) -> Self {
         Self {
             status: StatusCode::OK,
-            delay: Duration::ZERO,
             gate: None,
             body: Payload::Repeated { byte, size },
         }
@@ -59,16 +62,11 @@ impl Reply {
         self.status = status;
         self
     }
-    pub fn delay(mut self, delay: Duration) -> Self {
-        self.delay = delay;
-        self
-    }
     pub fn gated(mut self, gate: oneshot::Receiver<()>) -> Self {
         self.gate = Some(gate);
         self
     }
     async fn response(self) -> Response<Body> {
-        tokio::time::sleep(self.delay).await;
         let size = match &self.body {
             Payload::Bytes(bytes) => bytes.len(),
             Payload::Repeated { size, .. } => *size,
@@ -107,22 +105,28 @@ impl Reply {
     }
 }
 
-/// Route on the original URI (including escaped path/query) and zero-based attempt.
+/// Route on the original URI (including escaped path/query).
 /// The handler runs for each request, including retries, and can capture counters
 /// or channels for assertions without manually parsing TCP/HTTP framing.
-pub async fn serve(handler: impl Fn(Uri, usize) -> Reply + Send + Sync + 'static) -> Server {
+pub async fn serve(handler: impl Fn(Uri) -> Reply + Send + Sync + 'static) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let handler = Arc::new(handler);
     let attempts = Arc::new(AtomicUsize::new(0));
+    let requests = attempts.clone();
     let app = Router::new().fallback(any(move |uri: Uri| {
-        let reply = handler(uri, attempts.fetch_add(1, Ordering::SeqCst));
+        attempts.fetch_add(1, Ordering::SeqCst);
+        let reply = handler(uri);
         async move { reply.response().await }
     }));
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    Server { url, task }
+    Server {
+        url,
+        task,
+        requests,
+    }
 }
 
 pub use axum::http::StatusCode as HttpStatus;

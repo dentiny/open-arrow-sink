@@ -1,4 +1,3 @@
-use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::Schema;
 use lance::{
@@ -7,19 +6,14 @@ use lance::{
 };
 use more_asserts::assert_gt;
 use open_arrow_sink_core::{
-    BlobHandleConfig, IndexSpec, IndexType, Ordering, Sink, SinkExt, UploadConfig, WriteOptions,
+    BlobHandleConfig, IndexSpec, IndexType, Sink, SinkExt, UploadConfig, WriteOptions,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
-use open_arrow_sink_storage::opendal;
 use std::{num::NonZeroUsize, sync::Arc};
 
 fn storage() -> Storage {
-    Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///warehouse/".parse().unwrap(),
-    )
-    .unwrap()
+    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
 }
 fn batch() -> RecordBatch {
     RecordBatch::try_from_iter([(
@@ -29,54 +23,92 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 fn write_options() -> WriteOptions {
-    WriteOptions::default()
-        .with_ordering(Ordering::Unordered)
-        .with_upload(
-            UploadConfig::default()
-                .with_part_size(NonZeroUsize::new(16 * 1024).unwrap())
-                .with_concurrency(NonZeroUsize::new(2).unwrap()),
-        )
+    open_arrow_sink_test_support::unordered_options().with_upload(
+        UploadConfig::default()
+            .with_part_size(NonZeroUsize::new(16 * 1024).unwrap())
+            .with_concurrency(NonZeroUsize::new(2).unwrap()),
+    )
 }
 
-#[tokio::test]
-async fn shared_operator_commit_indexes_and_read_back() {
-    use lance::index::DatasetIndexExt;
-    let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("雪 output%20/").unwrap();
-    let io = open_arrow_sink_core::IoMetrics::default();
-    let options = write_options()
-        .with_io_metrics(io.clone())
-        .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
-    let mut writer = sink
-        .clone()
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
-        .open(url.clone(), batch().schema(), options)
-        .await
-        .unwrap();
+async fn write_dataset(
+    sink: impl Sink<Request = open_arrow_sink_lance::Url>,
+    url: open_arrow_sink_lance::Url,
+    options: WriteOptions,
+) {
+    let mut writer = sink.open(url, batch().schema(), options).await.unwrap();
     for _ in 0..4 {
         writer.write(batch()).await.unwrap();
     }
-    let summary = writer.commit().await.unwrap();
-    assert_eq!(summary.rows_written, 12);
+    assert_eq!(writer.commit().await.unwrap().rows_written, 12);
+}
+
+#[tokio::test]
+async fn shared_operator_unordered_commit_preserves_rows() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("output/").unwrap();
+    write_dataset(
+        sink.clone()
+            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap())),
+        url.clone(),
+        write_options(),
+    )
+    .await;
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let actual = dataset.scan().try_into_batch().await.unwrap();
+    let expected = vec![batch(); 4];
+    assert_eq!(
+        open_arrow_sink_test_support::concat_sorted(
+            &actual.schema(),
+            &[actual.clone()],
+            &["value"]
+        )
+        .unwrap(),
+        open_arrow_sink_test_support::concat_sorted(&actual.schema(), &expected, &["value"])
+            .unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn shared_operator_records_read_and_write_metrics() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let io = open_arrow_sink_core::IoMetrics::default();
+    write_dataset(
+        sink,
+        storage.url("output/").unwrap(),
+        // Building the index forces reads within the measured session.
+        write_options()
+            .with_io_metrics(io.clone())
+            .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
+    )
+    .await;
     assert_gt!(io.snapshot().bytes_read, 0);
     assert_gt!(io.snapshot().bytes_written, 0);
-    let dataset = sink
-        .dataset_builder(url.clone())
-        .unwrap()
-        .load()
-        .await
-        .unwrap();
-    let actual = dataset.scan().try_into_batch().await.unwrap();
-    let mut values = actual
-        .column(0)
-        .as_primitive::<arrow_array::types::Int64Type>()
-        .values()
-        .to_vec();
-    values.sort_unstable();
-    assert_eq!(values, vec![1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
+}
+
+#[tokio::test]
+async fn shared_operator_builds_requested_index() {
+    use lance::index::DatasetIndexExt;
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("output/").unwrap();
+    write_dataset(
+        sink.clone(),
+        url.clone(),
+        write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
+    )
+    .await;
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
-    // Native data must resolve to the configured storage namespace.
+}
+
+#[tokio::test]
+async fn native_files_use_the_configured_storage_namespace() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("雪 output%20/").unwrap();
+    write_dataset(sink.clone(), url.clone(), write_options()).await;
     assert_gt!(
         storage
             .list(&storage.resolve(&url).unwrap())
@@ -85,21 +117,34 @@ async fn shared_operator_commit_indexes_and_read_back() {
             .len(),
         1
     );
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 12);
+}
+
+#[tokio::test]
+async fn duplicate_create_preserves_the_existing_dataset() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("output/").unwrap();
+    write_dataset(sink.clone(), url.clone(), write_options()).await;
     assert!(matches!(
         sink.open(url.clone(), batch().schema(), write_options()).await,
         Err(open_arrow_sink_core::Error::AlreadyExists(location)) if location == url.as_str()
     ));
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 12);
+}
+
+#[tokio::test]
+async fn duplicate_index_reports_already_exists() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("output/").unwrap();
+    let options = write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
+    write_dataset(sink.clone(), url.clone(), options.clone()).await;
     assert!(matches!(
-        sink.open(
-            url,
-            batch().schema(),
-            write_options()
-                .with_mode(open_arrow_sink_core::WriteMode::Append)
-                .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
-        )
-        .await,
-        Err(open_arrow_sink_core::Error::AlreadyExists(message))
-            if message.contains("index oas_btree_")
+        sink.open(url, batch().schema(), options.with_mode(open_arrow_sink_core::WriteMode::Append)).await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(message)) if message.contains("index oas_btree_")
     ));
 }
 
@@ -239,13 +284,7 @@ async fn ingests_blob_with_configured_layout(
 
 #[tokio::test]
 async fn external_blobs_resolve_independent_buckets() {
-    let make = |base: &str| {
-        Storage::new(
-            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-            base.parse().unwrap(),
-        )
-        .unwrap()
-    };
+    let make = |base: &str| open_arrow_sink_test_support::memory_storage(base);
     let destination = make("s3://destination/");
     let first = make("s3://source-a/");
     let second = make("s3://source-b/");
@@ -308,7 +347,10 @@ async fn io_metrics_are_isolated_per_session() {
             .open(
                 store.url(name).unwrap(),
                 batch().schema(),
-                write_options().with_io_metrics(io.clone()),
+                // Building the index forces reads within the measured session.
+                write_options()
+                    .with_io_metrics(io.clone())
+                    .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
             )
             .await
             .unwrap();
