@@ -30,14 +30,14 @@ Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-g
 `parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
 layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
 
-Create reserves a new prefix with conditional creation of `.open-arrow-sink`.
-It also claims each part name before opening a streaming writer. Backends without
-conditional-create support fail instead of overwriting. External writers must
-not modify a reserved prefix. The marker is removed after a file finishes; all
-part names have already been claimed, so the destination remains occupied.
-Abort removes owned parts and the marker when no other objects remain, preserving
-unrelated files. Drop performs no async cleanup. These rules apply to local and
-remote destinations alike.
+Create checks that the destination prefix does not exist, then claims each part
+name with conditional creation before opening a streaming writer. Backends without
+conditional-create support fail instead of overwriting. Callers must exclude
+concurrent writes or directory replacement during a session. No marker files are
+created. Abort removes owned parts and, for Create, the directory if it is empty,
+preserving unrelated files. Drop performs no async cleanup; a process crash can
+leave output files that require manual cleanup before another Create. These rules
+apply to local and remote destinations alike.
 
 Use `WriteOptions::default().with_ordering(Ordering::Unordered)`: this
 sink does not promise directory scan order. Each write validates its schema. Small

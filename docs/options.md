@@ -263,7 +263,10 @@ Configure policies with `with_http_config(StorageConfig)` and replace the provid
 with `with_http_transport(HttpTransporter)` for authentication or instrumentation.
 These replace the former `http_storage` / `with_http_storage` configuration API;
 import `DownloadPool` from `open_arrow_sink_layer` (or the facade's `layer` module).
-Non-HTTP stores retain their own backend request limits.
+Non-HTTP stores retain their own backend request limits. Use `with_config(config)`
+to apply policies to both HTTP downloads and URL-derived non-HTTP stores; explicit
+source stores keep their own policies. Share source registrations and cached
+backends with other consumers through `with_source_resolver(Arc<StorageResolver>)`.
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.

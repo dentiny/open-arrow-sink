@@ -27,7 +27,7 @@ const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 pub struct DownloadPool {
     http: Operator,
     transport: HttpTransporter,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
     // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
     stream_slots: Arc<Semaphore>,
     concurrency: NonZeroUsize,
@@ -47,12 +47,21 @@ impl DownloadPool {
         Ok(Self {
             http,
             transport,
-            sources: StorageResolver::default(),
+            sources: Arc::default(),
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
             buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
             max_buffered_bytes,
         })
+    }
+
+    /// Apply policies to HTTP downloads and URL-resolved non-HTTP sources.
+    /// Explicit source stores retain their own configuration. Detach resolver
+    /// configuration so other consumers of a shared resolver keep their policies.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.sources = Arc::new(self.sources.as_ref().clone().with_config(config.clone())?);
+        self.http = config.apply(self.http)?;
+        Ok(self)
     }
 
     /// Replace HTTP retry/timeout policies. Each retry attempt gets its own timeout.
@@ -69,9 +78,17 @@ impl DownloadPool {
         self
     }
 
+    /// Share source namespaces, credentials, and the URL-derived cache with other consumers.
+    /// This replaces any previously configured non-HTTP source stores.
+    pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
+        self.sources = sources;
+        self
+    }
+
     /// Register a source store for non-HTTP downloads, including custom S3 credentials.
+    /// If the resolver is shared, detach its registrations before adding this store.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = self.sources.with_storage(storage);
+        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
         self
     }
 

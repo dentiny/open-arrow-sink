@@ -14,7 +14,7 @@ separate transaction for every worker.
 | `open-arrow-sink-core` / `core` | Sink/writer/session/layer traits, options, capabilities, validation, blob contracts | Backend I/O or catalog transactions |
 | `open-arrow-sink-layer` / `layer` | Option overrides, bounded concurrent dispatch, URL-to-blob transformation | File naming or native publication metadata |
 | `open-arrow-sink-storage` / `storage` | OpenDAL byte streams, URL namespaces, HTTP budgets, I/O policies | Arrow encoding or destination write modes |
-| `open-arrow-sink-parquet` / `sink/parquet` | Directory reservation, Parquet encoding/rolling, append cleanup | A table catalog |
+| `open-arrow-sink-parquet` / `sink/parquet` | Directory validation, Parquet encoding/rolling, append cleanup | A table catalog |
 | `open-arrow-sink-iceberg` / `sink/iceberg` | Existing-table validation, partition routing, native fast append | Table creation or schema evolution |
 | `open-arrow-sink-lance` / `sink/lance` | Fragment/blob writers, native manifests, optional indexes | Input production or general schema reconciliation |
 
