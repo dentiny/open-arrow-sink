@@ -37,8 +37,11 @@ pub(crate) fn unsupported_index(index: &crate::IndexSpec) -> Error {
     ))
 }
 
-pub(crate) fn duplicate_index(column: &str) -> Error {
-    Error::Unsupported(format!("multiple indexes requested for column {column}"))
+pub(crate) fn duplicate_index(index: &crate::IndexSpec) -> Error {
+    Error::Unsupported(format!(
+        "duplicate {:?} index requested for column {}",
+        index.index_type, index.column
+    ))
 }
 
 pub(crate) fn invalid_index_column(column: &str) -> Error {

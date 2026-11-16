@@ -174,13 +174,13 @@ pub fn unique_column_index(schema: &Schema, name: &str) -> Option<usize> {
     Some(index)
 }
 
-/// Validate index column existence and uniqueness independently of the backend.
+/// Validate index columns and uniqueness of (column, index type) requests.
 /// Concrete backends additionally validate their supported column types.
 pub fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
-    let mut columns = HashSet::new();
+    let mut requests = HashSet::new();
     for index in indexes {
-        if !columns.insert(&index.column) {
-            return Err(duplicate_index(&index.column));
+        if !requests.insert((&index.column, index.index_type)) {
+            return Err(duplicate_index(index));
         }
         unique_column_index(schema, &index.column)
             .ok_or_else(|| invalid_index_column(&index.column))?;

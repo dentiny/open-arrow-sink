@@ -215,6 +215,9 @@ requested type must appear in that list. Lance supports Scalar, Vector, Text,
 and BloomFilter; Parquet and Iceberg expose empty lists and reject index requests
 before opening a writer or accessing the destination.
 General layers forward this capability and the options to their inner sink.
+Distinct index types may be requested on the same column, such as Scalar and Text
+on a string field. Repeating the same (column, type) is rejected, including when
+the requests specify different existing-index policies.
 
 ```rust
 use open_arrow_sink::{IndexType, IndexSpec, Ordering, WriteOptions};

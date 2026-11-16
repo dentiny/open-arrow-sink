@@ -79,8 +79,9 @@ requested type against the supported list.
 
 The shared `validation.rs` checks index column existence and uniqueness. Lance's
 `validation.rs` checks each requested kind against its supported Arrow types before
-creating a directory or writer. Each column can have one requested index. Lance's
-concrete mappings are:
+creating a directory or writer. Distinct index kinds can share a column (for
+example Scalar and Text on the same string field); repeating the same column and
+kind is rejected even when existing-index policies differ. Lance's concrete mappings are:
 
 | Shared type | Lance implementation |
 | --- | --- |
