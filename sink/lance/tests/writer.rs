@@ -127,4 +127,88 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     writer.commit().await.unwrap();
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), expected_rows);
+    assert_eq!(dataset.version().version, 2);
+}
+
+#[rstest::rstest]
+#[case::empty(vec![])]
+#[case::empty_lance_directories(vec!["data/", "_versions/", "_blobs/"])]
+#[case::orphans(vec!["data/uncommitted.lance", "data/partial.lance-stage", "data/part/0.blob", "_blobs/uncommitted.blob", "_transactions/0-uncommitted.txn", "_indices/uncommitted/index.idx"])]
+#[tokio::test]
+async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    std::fs::create_dir(&path).unwrap();
+    for relative in &paths {
+        let file = path.join(relative);
+        if relative.ends_with('/') {
+            std::fs::create_dir_all(file).unwrap();
+        } else {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"orphan").unwrap();
+        }
+    }
+    let url = Url::from_directory_path(&path).unwrap();
+    // Recovery is specific to Overwrite; neither Create nor Append is relaxed.
+    for mode in [WriteMode::Create, WriteMode::Append] {
+        assert!(
+            LanceDatasetSink::default()
+                .open(url.clone(), batch().schema(), options().with_mode(mode))
+                .await
+                .is_err()
+        );
+    }
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            url,
+            batch().schema(),
+            options().with_mode(WriteMode::Overwrite),
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(dataset.version().version, 1);
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap(), batch());
+    for relative in paths.into_iter().filter(|path| !path.ends_with('/')) {
+        assert_eq!(std::fs::read(path.join(relative)).unwrap(), b"orphan");
+    }
+}
+
+#[rstest::rstest]
+#[case::exact_file("")]
+#[case::unrelated("notes.txt")]
+#[case::nested_unrelated("data/notes.txt")]
+#[case::unrelated_directory("unrelated/")]
+#[case::corrupt_manifest("_versions/1.manifest")]
+#[case::unrecognized_version_metadata("_versions/unknown")]
+#[tokio::test]
+async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let file = if relative.is_empty() {
+        path.clone()
+    } else {
+        path.join(relative)
+    };
+    if relative.ends_with('/') {
+        std::fs::create_dir_all(&file).unwrap();
+    } else {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"keep").unwrap();
+    }
+    assert!(
+        LanceDatasetSink::default()
+            .open(
+                Url::from_directory_path(&path).unwrap(),
+                batch().schema(),
+                options().with_mode(WriteMode::Overwrite),
+            )
+            .await
+            .is_err()
+    );
+    if !relative.ends_with('/') {
+        assert_eq!(std::fs::read(file).unwrap(), b"keep");
+    }
 }

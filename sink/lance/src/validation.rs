@@ -92,6 +92,14 @@ pub(crate) async fn validate_existing_dataset(
     storage_version: Option<LanceFileVersion>,
 ) -> Result<lance::Dataset> {
     let dataset = builder.load().await.map_err(Error::backend)?;
+    validate_dataset(dataset, schema, storage_version)
+}
+
+pub(crate) fn validate_dataset(
+    dataset: lance::Dataset,
+    schema: Option<&Schema>,
+    storage_version: Option<LanceFileVersion>,
+) -> Result<lance::Dataset> {
     if !matches!(
         dataset.manifest().data_storage_format.version,
         lance_file::version::ConcreteFileVersion::V2_2

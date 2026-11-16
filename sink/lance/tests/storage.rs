@@ -429,3 +429,61 @@ async fn empty_fragment_workers_create_no_files() {
     session.committer.abort().await.unwrap();
     assert!(storage.list(&path).await.unwrap().is_empty());
 }
+
+#[rstest::rstest]
+#[case::single(1)]
+#[case::parallel(3)]
+#[tokio::test]
+async fn overwrite_retries_aborted_initial_write(#[case] count: usize) {
+    use open_arrow_sink_core::WriteMode;
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url(&ObjectPath::parse("retry/").unwrap()).unwrap();
+    let directory = storage.path(&url).unwrap();
+    let mut session = sink
+        .open_writers(
+            url.clone(),
+            batch().schema(),
+            write_options(),
+            NonZeroUsize::new(count).unwrap(),
+        )
+        .await
+        .unwrap();
+    session.writers[0].write(batch()).await.unwrap();
+    session.writers[0].finish().await.unwrap();
+    for writer in session.writers {
+        writer.abort().await.unwrap();
+    }
+    session.committer.abort().await.unwrap();
+    let orphans = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
+    assert!(!orphans.is_empty());
+    assert!(
+        sink.dataset_builder(url.clone())
+            .unwrap()
+            .load()
+            .await
+            .is_err()
+    );
+    let mut retry = sink
+        .open_writers(
+            url.clone(),
+            batch().schema(),
+            write_options().with_mode(WriteMode::Overwrite),
+            NonZeroUsize::new(count).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut retry.writers {
+        writer.write(batch()).await.unwrap();
+        outputs.push(writer.finish().await.unwrap());
+    }
+    retry.committer.commit(outputs).await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.version().version, 1);
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 3 * count);
+    let files = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
+    for orphan in orphans {
+        assert!(files.contains(&orphan));
+    }
+}
