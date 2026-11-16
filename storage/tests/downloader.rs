@@ -4,7 +4,7 @@ use futures::{TryStreamExt, poll, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
 use open_arrow_sink_storage::{
-    DownloadPool, HttpConcurrencyLimitLayer, RetryConfig, StorageConfig, opendal,
+    BlobDownloader, HttpConcurrencyLimitLayer, RetryConfig, StorageConfig, opendal,
 };
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
@@ -41,22 +41,22 @@ fn pool_with(
     bytes: usize,
     config: StorageConfig,
     transport: impl HttpTransport,
-) -> DownloadPool {
-    let http = DownloadPool::http_storage(config)
+) -> BlobDownloader {
+    let http = BlobDownloader::http_storage(config)
         .unwrap()
         .with_http_transport(HttpTransporter::new(transport));
-    DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
+    BlobDownloader::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
         .unwrap()
         .with_http_storage(http)
         .unwrap()
 }
 
-fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+fn pool(concurrency: usize, bytes: usize) -> BlobDownloader {
     pool_with(concurrency, bytes, StorageConfig::default(), Transport)
 }
 
 // Consume chunks promptly so a payload larger than the budget can make progress.
-async fn read_body(pool: &DownloadPool, source: &str) -> Vec<u8> {
+async fn read_body(pool: &BlobDownloader, source: &str) -> Vec<u8> {
     timeout(Duration::from_secs(5), async {
         let mut download = pool.stream(source).await.unwrap();
         let mut body = Vec::new();
@@ -95,6 +95,30 @@ async fn independent_budgets_and_cleanup() {
         drop(resumed);
         assert_eq!(first.buffered_bytes(), 0);
         assert_eq!(read_body(&first, URL).await, BODY);
+
+        // Full payloads and their clones retain the group reservation until the
+        // consumer releases them, even after the download future has completed.
+        let full = pool(2, 2 * (2 * BODY.len() + 8))
+            .with_download_limits(BODY.len().try_into().unwrap(), 8.try_into().unwrap())
+            .unwrap();
+        let payload = full.download_all(&[URL], None).await.unwrap();
+        assert_eq!(payload[0].as_ref(), BODY);
+        let retained = payload[0].clone();
+        drop(payload);
+        assert_eq!(full.buffered_bytes(), 2 * BODY.len() + 8);
+        drop(retained);
+        assert_eq!(full.buffered_bytes(), 0);
+        assert!(full.download_all(&[URL, URL], None).await.is_err());
+        assert_eq!(full.buffered_bytes(), 0);
+        // Reserve more than u32::MAX without allocating the payload itself.
+        let large = u32::MAX as usize + 65;
+        let large = pool(1, large)
+            .with_download_limits(((large - 8) / 2).try_into().unwrap(), 8.try_into().unwrap())
+            .unwrap();
+        let reservation = large.begin().await.unwrap();
+        assert!(large.buffered_bytes() > u32::MAX as usize);
+        drop(reservation);
+        assert_eq!(large.buffered_bytes(), 0);
     })
     .await
     .expect("pool budgets stalled");
@@ -170,11 +194,11 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
     timeout(Duration::from_secs(5), async {
         let shared = HttpConcurrencyLimitLayer::new(1).unwrap();
         let make_pool = |concurrency| {
-            let http = DownloadPool::http_storage(StorageConfig::default())
+            let http = BlobDownloader::http_storage(StorageConfig::default())
                 .unwrap()
                 .with_http_concurrency_limit(shared.clone())
                 .with_http_transport(HttpTransporter::new(HeldBody));
-            DownloadPool::new(concurrency, 8.try_into().unwrap())
+            BlobDownloader::new(concurrency, 8.try_into().unwrap())
                 .unwrap()
                 .with_http_storage(http)
                 .unwrap()
@@ -194,6 +218,23 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
         assert_eq!(first.buffered_bytes(), 8);
         drop(chunk);
         assert_eq!(first.buffered_bytes(), 0);
+
+        let limit = 2 * (BODY.len() + 1) + 8;
+        let full = pool_with(1, limit, StorageConfig::default(), HeldBody)
+            .with_download_limits((BODY.len() + 1).try_into().unwrap(), 8.try_into().unwrap())
+            .unwrap();
+        let metrics = open_arrow_sink_core::IoMetrics::default();
+        let mut cancelled = Box::pin(full.download_all(&[URL], Some(&metrics)));
+        assert!(poll!(&mut cancelled).is_pending());
+        assert_eq!(metrics.snapshot().bytes_read, BODY.len() as u64);
+        assert_eq!(full.buffered_bytes(), limit);
+        drop(cancelled);
+        assert_eq!(full.buffered_bytes(), 0);
+        let mut resumed = Box::pin(full.download_all(&[URL], Some(&metrics)));
+        assert!(poll!(&mut resumed).is_pending());
+        assert_eq!(metrics.snapshot().bytes_read, 2 * BODY.len() as u64);
+        drop(resumed);
+        assert_eq!(full.buffered_bytes(), 0);
     })
     .await
     .expect("shared HTTP budget stalled");
@@ -202,7 +243,7 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
 #[test]
 fn rejects_concurrency_above_semaphore_capacity() {
     assert!(
-        DownloadPool::new(
+        BlobDownloader::new(
             (tokio::sync::Semaphore::MAX_PERMITS + 1)
                 .try_into()
                 .unwrap(),

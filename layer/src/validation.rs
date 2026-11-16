@@ -17,34 +17,3 @@ pub(crate) fn validate_session<T: Send + 'static>(
     }
     Ok(())
 }
-
-pub(crate) fn validate_download_config(
-    schema: &arrow_schema::Schema,
-    columns: &std::collections::HashSet<String>,
-) -> Result<Vec<usize>> {
-    let mut indices = Vec::new();
-    for name in columns {
-        let index = open_arrow_sink_core::validation::unique_column_index(schema, name)
-            .ok_or_else(|| error::download_column_unique(name))?;
-        let field = schema.field(index);
-        if !matches!(
-            field.data_type(),
-            arrow_schema::DataType::Utf8
-                | arrow_schema::DataType::LargeUtf8
-                | arrow_schema::DataType::Utf8View
-        ) {
-            return Err(error::download_column_type(name));
-        }
-        indices.push(index);
-    }
-    // Resolve selected columns in schema order.
-    indices.sort_unstable();
-    Ok(indices)
-}
-
-pub(crate) fn validate_download_support(selected: bool, supported: bool) -> Result<()> {
-    if selected && !supported {
-        return Err(error::streaming_blobs_required());
-    }
-    Ok(())
-}

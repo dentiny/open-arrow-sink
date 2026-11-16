@@ -1,5 +1,6 @@
 use std::sync::{Arc, atomic::Ordering};
 
+use futures::StreamExt;
 use lance::Dataset;
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary,
@@ -21,7 +22,8 @@ pub(crate) struct BlobDatasetWriter {
     storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<Message>>,
-    task: JoinHandle<lance::Result<Dataset>>,
+    task: Option<JoinHandle<lance::Result<Dataset>>>,
+    logical: bool,
     rows: u64,
     state: Poison,
     destination: NativeStorage,
@@ -35,11 +37,46 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.write_with_blobs(batch, Vec::new()).await
+        crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.start_worker(true)?;
+        if !self.logical {
+            return self.write_with_blobs(batch, Vec::new()).await;
+        }
+        self.state.poison();
+        validation::validate_batch(&self.schema, &batch)?;
+        let rows = batch.num_rows() as u64;
+        let schema = crate::blob::logical_schema(&self.encoding_schema);
+        let mut prepared = crate::blob_input::rows(
+            &batch,
+            &schema,
+            &self.destination.downloader,
+            self.options
+                .blob_handle
+                .as_ref()
+                .map(|config| config.external_blob_mode)
+                .unwrap_or_default(),
+            self.options.io_metrics.as_ref(),
+        );
+        while let Some(row) = prepared.next().await {
+            self.sender
+                .as_ref()
+                .unwrap()
+                .send(Message::Batch(row?))
+                .await
+                .map_err(|_| worker_stopped())?;
+        }
+        self.rows += rows;
+        self.state.complete();
+        Ok(())
     }
 
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.start_worker(false)?;
+        if self.logical {
+            self.state.poison();
+            return Err(crate::error::mixed_blob_inputs());
+        }
         self.state.poison();
         let blob =
             crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
@@ -52,7 +89,15 @@ impl Writer for BlobDatasetWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
+        if blobs.is_empty() && (self.task.is_none() || self.logical) {
+            return self.write(batch).await;
+        }
         crate::validation::validate_blob_state(&self.state, &self.blob_session)?;
+        self.start_worker(false)?;
+        if self.logical {
+            self.state.poison();
+            return Err(crate::error::mixed_blob_inputs());
+        }
         self.state.poison();
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
@@ -80,11 +125,18 @@ impl Writer for BlobDatasetWriter {
             let _ = self.abort().await;
             return Err(error);
         }
+        self.start_worker(true)?;
         let sender = self.sender.take().unwrap();
         // Channel closure is an error; only this marker permits native publication.
         let _ = sender.send(Message::Commit).await;
         drop(sender);
-        let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        let mut dataset = self
+            .task
+            .take()
+            .unwrap()
+            .await
+            .map_err(backend)?
+            .map_err(backend)?;
         let summary = WriteSummary {
             rows_written: self.rows,
         };
@@ -98,7 +150,9 @@ impl Writer for BlobDatasetWriter {
         self.blob_session.failed.store(true, Ordering::Release);
         drop(self.sender.take());
         // Let native writing stop before removing only our reserved directory.
-        let _ = self.task.await;
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
         if self.options.cleanup_on_error {
             let blobs = self.blob_session.abort().await;
             let directory = self.destination.cleanup().await;
@@ -109,6 +163,32 @@ impl Writer for BlobDatasetWriter {
 }
 
 impl BlobDatasetWriter {
+    fn start_worker(&mut self, logical: bool) -> Result<()> {
+        if self.task.is_some() {
+            return Ok(());
+        }
+        let (sender, receiver) = mpsc::channel(1);
+        let reader = ChannelReader {
+            schema: if logical {
+                crate::blob::logical_schema(&self.encoding_schema)
+            } else {
+                self.encoding_schema.clone()
+            },
+            receiver,
+            finished: false,
+        };
+        let params = self
+            .destination
+            .bind_write_params(crate::write_options::write_params(&self.options)?);
+        let uri = self.destination.url.to_string();
+        let task =
+            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
+        self.sender = Some(sender);
+        self.task = Some(task);
+        self.logical = logical;
+        Ok(())
+    }
+
     pub(crate) fn new(
         schema: SchemaRef,
         storage_schema: SchemaRef,
@@ -116,16 +196,6 @@ impl BlobDatasetWriter {
         destination: NativeStorage,
         options: WriteOptions,
     ) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
-            schema: encoding_schema.clone(),
-            receiver,
-            finished: false,
-        };
-        let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
-        let uri = destination.url.to_string();
-        let task =
-            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Ok(Self {
             schema,
             storage_schema,
@@ -135,8 +205,9 @@ impl BlobDatasetWriter {
                 &destination.url,
                 destination.io_tracker.clone(),
             )),
-            sender: Some(sender),
-            task,
+            sender: None,
+            task: None,
+            logical: true,
             rows: 0,
             state: Poison::default(),
             destination,

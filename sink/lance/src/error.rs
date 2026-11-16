@@ -108,9 +108,7 @@ pub(crate) fn unfinished_blobs() -> Error {
         "writer failed or has unfinished blobs; session aborted",
     ))
 }
-pub(crate) fn parallel_blobs() -> Error {
-    invalid_blob("parallel sessions do not support blob-marked columns")
-}
+
 pub(crate) fn schema_mismatch() -> Error {
     Error::SchemaMismatch
 }
@@ -152,4 +150,10 @@ pub(crate) fn storage_version_mismatch(
     Error::Unsupported(format!(
         "Lance append storage version {requested} does not match existing dataset version {existing}"
     ))
+}
+
+pub(crate) fn mixed_blob_inputs() -> Error {
+    Error::Unsupported(
+        "cannot mix logical blob writes and prepared streaming handles in one session".into(),
+    )
 }

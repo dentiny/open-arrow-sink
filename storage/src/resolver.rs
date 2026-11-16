@@ -25,6 +25,12 @@ impl StorageResolver {
             .sort_by_key(|s| std::cmp::Reverse(s.base_url().path().len()));
         self
     }
+    pub(crate) fn merged(mut self, other: &Self) -> Self {
+        for storage in &other.configured {
+            self = self.with_storage(storage.clone());
+        }
+        self
+    }
     /// Schemes accepted by OpenDAL or explicitly configured namespaces.
     /// Register custom OpenDAL services before constructing an upstream adapter;
     /// adapters such as Lance snapshot these schemes when creating a session.

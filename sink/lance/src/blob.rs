@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{error::backend, validation};
-use arrow_array::{Array, ArrayRef, LargeBinaryArray};
+use arrow_array::{Array, ArrayRef, LargeBinaryArray, StringArray, StructArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
@@ -241,4 +241,32 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         })
         .collect::<Vec<_>>();
     Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+/// Logical input reuses the binary buffers, retaining download reservations until
+/// Lance consumes them. This is the same shape produced by BlobArrayBuilder's
+/// push_bytes, without another payload copy at the adapter boundary.
+pub(crate) fn logical_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
+    let columns = batch
+        .columns()
+        .iter()
+        .zip(batch.schema().fields())
+        .zip(schema.fields())
+        .map(|((array, source), target)| {
+            if source.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+                return array.clone();
+            }
+            let values = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            let arrow_schema::DataType::Struct(fields) = target.data_type() else {
+                unreachable!("logical blob field is a struct");
+            };
+            Arc::new(StructArray::new(
+                fields.clone(),
+                vec![array.clone(), Arc::new(StringArray::new_null(array.len()))],
+                values.nulls().cloned(),
+            )) as ArrayRef
+        })
+        .collect();
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(backend)
 }

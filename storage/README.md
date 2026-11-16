@@ -99,7 +99,7 @@ let sink_storage = storage.clone();
 Separately constructed stores have independent budgets unless given clones of
 the same limiter. Reconfiguring one `Storage` does not change previously created
 clones, operators, or sinks. This transport budget also does not set a
-`DownloadPool`'s stream concurrency or buffered-byte quota; those are separate
+`BlobDownloader`'s stream concurrency or buffered-byte quota; those are separate
 admission limits.
 
 ## Upload part size
@@ -113,27 +113,34 @@ adapter defaults. All clones of the configured storage carry the setting.
 
 ## HTTP downloads
 
-A `DownloadPool` sends HTTP(S) downloads through a `Storage`, so they use the
+Every Lance sink has a `BlobDownloader`; logical blob URI writes use it without
+a layer or explicit download call. Configure one shared instance with
+`LanceDatasetSink::with_blob_downloader`. A `BlobDownloader` sends HTTP(S) downloads through a `Storage`, so they use the
 same retry, timeout, request-budget, and transport configuration as every other
-storage. Build it with `DownloadPool::http_storage(config)`, adjust it with
+storage. Build it with `BlobDownloader::http_storage(config)`, adjust it with
 `with_http_concurrency_limit` or `with_http_transport`, and install it with
 `with_http_storage`. Each request goes to the complete source URL, including
 signed queries.
 
 ```rust,ignore
-use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, StorageConfig};
+use open_arrow_sink_storage::{BlobDownloader, HttpConcurrencyLimitLayer, StorageConfig};
 
 let shared_limit = HttpConcurrencyLimitLayer::new(32)?;
-let http = DownloadPool::http_storage(StorageConfig::default())?
+let http = BlobDownloader::http_storage(StorageConfig::default())?
     .with_http_concurrency_limit(shared_limit.clone())
     .with_http_transport(transport);
-let pool = DownloadPool::with_defaults()?.with_http_storage(http)?;
+let pool = BlobDownloader::with_defaults()?.with_http_storage(http)?;
 ```
 
 `Storage::with_http_transport` replaces the provider transport for shared
 authentication, instrumentation, or in-memory test fixtures without installing a
 process-global default. The current request budget and operator layers still apply.
-Returned chunks retain the same buffer accounting.
+Returned full payloads retain their memory reservations, including clones and
+Arrow buffers sharing the bytes. `with_download_limits(payload_bytes, chunk_bytes)`
+sets the full-download and application copy caps. `download(url)` returns complete
+bytes; `download_all(&urls, metrics)` shares one payload limit across a group.
+The SDK, rather than the downloader, chooses inline, packed, or dedicated layout.
+See [memory and concurrency contracts](../docs/options.md#blob-downloader-and-memory-limits).
 
 ## Related documentation
 

@@ -129,9 +129,9 @@ let summary = writer.commit().await?;
 ```
 
 The unordered layer advertises `supports_blob_streaming: false`: its data writers
-have no native streaming blob interface. An outer `DownloadBlobLayer` selecting
-URL columns is rejected before opening writers. Native logical blob inputs and
-`WriteOptions.blob_handle` configuration remain backend-controlled.
+have no native streaming blob interface. Download URLs independently with
+`storage::BlobDownloader`, then submit logical blob inputs. Native blob inputs
+and `WriteOptions.blob_handle` configuration remain backend-controlled.
 
 The inner sink implements `ParallelSink`. It reserves a single destination and
 returns a `WriteSession` containing independent `DataWriter`s and one
@@ -243,132 +243,87 @@ See the [Lance documentation](../sink/lance/README.md) for construction failure 
 `WriteOptions` owns its index list and implements `Clone`; clone options when
 reusing them across sessions.
 
-## Streaming download pool
+## Blob downloader and memory limits
 
-`layer::DownloadPool` re-exports the common storage downloader, using its HTTP
-concurrency limiter. Construct a pool with
-`DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
-writers. Each new pool owns the requested stream-concurrency and transfer-buffer
-budgets. No environment variable or process-wide singleton changes these limits.
-The former `DownloadPool::global()` and
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` override have been removed.
-`DownloadPool::with_defaults()` creates an independent pool with 64 stream slots
-and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
-`DownloadBlobLayer` creates one default pool per opened writer.
+Every `LanceDatasetSink` owns a `storage::BlobDownloader` by default. Blob writes
+always use it to materialize inputs before handing them to Lance: URI inputs in
+`Ingest` mode are downloaded completely; existing bytes are admitted under the
+same memory budget. `Reference` mode preserves external references without
+copying their source. There is no download layer and no explicit download call
+in the ordinary write flow. Lance selects inline, packed, or dedicated layout
+from the complete payload size and `WriteOptions.blob_handle` thresholds.
 
-HTTP(S) downloads go through the pool's HTTP `Storage`. By default its request
-budget equals the pool's `concurrency`. To share HTTP capacity across otherwise
-independent pools or with other storage, create one `HttpConcurrencyLimitLayer`,
-install its clones with `with_http_concurrency_limit` on each `Storage` (including
-one built by `DownloadPool::http_storage`), and pass that storage to
-`DownloadPool::with_http_storage`. Stream slots also cover non-HTTP sources; HTTP
-permits cover network requests until response-body release. These are separate
-budgets.
-
-
-`pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
-Consume each chunk (for example with `BlobWriter::write`) before requesting more.
-The pool reserves buffer capacity before allocation and reading; the reservation
-travels with the chunk until the consumer drops it. Retaining a chunk keeps its
-budget charged even if the source stream is cancelled. Exhausting the shared
-budget pauses readers, including readers from other writers. Whole blobs are
-never collected by the pool and may exceed its budget.
-
-The budget covers application-owned transfer buffers. OpenDAL/HTTP/TLS read buffers,
-Lance encoding/output buffers, input batches, and descriptor metadata are separate;
-it is not a process RSS limit. Error response bodies are discarded before OpenDAL
-classifies the status to avoid collecting unbounded diagnostic payloads.
-
-HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
-retry policy is enabled by default. Configure them with the same `StorageConfig`
-used by other storage: `DownloadPool::http_storage(config)` applies the timeout
-inside the retry so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
-releases its request slot; dropping its yielded chunks releases their byte budget.
-
-## Download URL columns into native blobs
-
-Compose `DownloadBlobLayer` with a sink advertising `SinkCapability.supports_blob_streaming` (currently
-`LanceDatasetSink`). Select top-level `Utf8`, `LargeUtf8`, or `Utf8View` URL
-columns by name. The layer passes budgeted chunks directly from OpenDAL into the
-sink's native blob writer; it never collects a complete blob or a batch of payloads.
-Completed, session-owned descriptors are attached to the corresponding rows.
-The download layer consumes native streams internally and advertises
-`supports_blob_streaming: false` to callers. Select all URL columns in one layer;
-nesting download layers is rejected before opening the destination.
-`supports_blob_handle` separately governs native logical blob inputs and
-`WriteOptions.blob_handle` configuration.
+Configure and share the built-in component when limits should span sinks:
 
 ```rust,no_run
 use std::{num::NonZeroUsize, sync::Arc};
-use open_arrow_sink::{SinkExt, lance::LanceDatasetSink, layer::{DownloadBlobLayer, DownloadPool}};
+use open_arrow_sink::{lance::LanceDatasetSink, storage::BlobDownloader};
 
-# fn example() -> open_arrow_sink::Result<()> {
-let pool = Arc::new(DownloadPool::new(
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let downloader = Arc::new(BlobDownloader::new(
     NonZeroUsize::new(16).unwrap(),
-    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+    NonZeroUsize::new(1024 * 1024 * 1024).unwrap(),
+)?.with_download_limits(
+    NonZeroUsize::new(16 * 1024 * 1024).unwrap(), // payload limit per row
+    NonZeroUsize::new(2 * 1024 * 1024).unwrap(),  // application copy chunk
 )?);
-let sink = LanceDatasetSink::default().layer(
-    DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
-        .with_download_pool(pool),
-);
+let sink = LanceDatasetSink::default()
+    .with_blob_downloader(downloader)
+    .with_encoding_buffer_size(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
+// Write normal logical blob batches, including BlobArrayBuilder::push_uri.
+# let _ = sink;
 # Ok(())
 # }
 ```
 
-`DownloadBlobLayer` is always available. Enable `sink-lance` for this example. Input batch
-boundaries, row order, nulls, and metadata are preserved by the layer; the final
-sink's ordering guarantee still applies. There is no per-blob size limit or
-separate output batch size. Payloads larger than the shared buffer budget stream
-through in chunks. Streamed Lance blobs use native dedicated storage, and default
-scans return descriptors; use `blob_handling(BlobHandling::AllBinary)` to read bytes.
+Three downloader limits work together:
 
-The input writer schema retains URL columns. The inner writer schema has
-blob-marked `LargeBinary` fields with empty placeholders; payloads are carried by
-native handles, not those arrays. Sinks without streaming blob support are rejected
-when opening the layer. Blob ingestion currently uses single-writer sessions;
-the underlying sink controls the final scan ordering.
+- Download concurrency bounds active groups. A row's selected blobs share one
+  group and are read sequentially; rows download concurrently, preserving row
+  order at handoff. All writers using the same downloader share admission.
+- The HTTP storage's request limiter bounds requests through response-body EOF,
+  failure, or cancellation. Its default equals download concurrency; install a
+  shared `HttpConcurrencyLimitLayer` to share capacity with destination storage.
+- `max_buffered_bytes` bounds shared application reservations. Each group
+  atomically reserves `2 * payload_limit + chunk_limit`: complete payloads,
+  allocation/copy headroom, and scratch. All blob payloads in one row, including
+  nested blobs, must fit the payload limit. Oversized rows fail. A download never
+  waits while holding only part of its reservation. Payload reservations follow
+  shared Arrow buffers through the native writer's bounded queue and release
+  after consumption, cancellation, or error.
 
-A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Earlier batches may already have been accepted.
-Dropping chunks releases the shared byte budget, and native blob cleanup follows
-the writer's abort/drop guarantees.
+Without `with_download_limits`, each group reserves the shared budget divided
+by concurrency. Scratch is at most 2 MiB and one third of
+that reservation; half of the remainder is the payload limit. `with_defaults()`
+uses 64 download slots and an 8 GiB shared budget. No environment override or
+process-wide singleton changes these limits. Cloned downloaders share budgets;
+newly constructed sinks have independent default budgets unless configured to
+share a downloader.
 
-### Blob handle configuration
+The downloader budget covers application-owned blob materialization and queued
+payloads. Caller-owned input batches, Arrow metadata, OpenDAL/HTTP/TLS buffers,
+and SDK encoding/output caches remain separate; this is not a process RSS cap.
+`with_encoding_buffer_size` configures Lance's native column-data cache per
+physical writer. Divide an encoding budget by writer count for parallel writes;
+configure storage upload part size and HTTP concurrency for upload buffers.
 
-`WriteOptions.blob_handle: Option<BlobHandleConfig>` configures each write session.
-The configuration follows Lance's `BlobFieldOptions`: `inline_size_threshold`
-(inline to packed) and `dedicated_size_threshold` (packed to dedicated), plus
-`external_blob_mode` (`Ingest` by default or explicit `Reference`). Thresholds
-apply to top-level native blob fields; omitted thresholds preserve field metadata
-or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
-`SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
-configuration before destination I/O. Native schema and parallel-session restrictions
-still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
+HTTP(S) downloads preserve escaped paths and signed queries, support redirects,
+and do not require HEAD or range support. `with_http_storage` installs storage
+built by `BlobDownloader::http_storage(config)` for retry, timeout, transport,
+and request-budget policies. No retry or timeout is enabled by default.
+`LanceDatasetSink::with_source_storage` supplies independent source credentials
+to both the downloader and SDK. The destination's own namespace remains readable
+through its configured operator. Error bodies are discarded before diagnostics
+can collect them without a bound.
 
-### Existing indexes
-
-`IndexSpec::new` defaults to `ExistingIndexPolicy::Error`. Use
-`.with_existing_policy(ExistingIndexPolicy::Keep)` to retain an existing named
-index or `Rebuild` to recreate it over all committed rows. Lance preflights
-Append name conflicts for Error before accepting data. Index work still occurs
-after publication; training or storage failures return `IndexCommitError` and
-leave committed data visible. Keep can leave appended fragments unindexed.
-
-`IndexSpec` gains an `existing` field; constructors preserve the default behavior.
-
-### Nested Lance compression overrides
-
-`CompressionOptions.nested_columns` uses literal path segments, for example
-`[(vec!["messages".into(), "text".into()], Compression::Zstd { level: Some(6) })].into()`.
-Struct children are named directly; list containers are transparent (omit `item`).
-Dots inside a segment are literal field names. Paths must uniquely identify a
-nested field and cannot enter native blob internals. Lance applies global policy,
-then top-level overrides, then nested overrides from ancestors to descendants.
-A nested codec override preserves independently selected structural encoding.
-Parquet and Iceberg reject this scope before opening the destination.
-
-`CompressionOptions` gains `nested_columns`; complete literals should use
-`..Default::default()`. `CompressionCapability.nested_columns` advertises support.
+The component also exposes `download(url)` and `download_all(&urls, metrics)` for
+independent consumers, plus `begin`/`buffer` for admitted in-memory payloads.
+Returned bytes and their clones retain the shared memory reservation. Its
+low-level `stream(url)` API still supports one budgeted chunk at a time for
+streaming consumers; ordinary blob ingestion uses complete payloads instead.
+Dropping a pending write cancels its downloads and poisons the writer. Commit
+then aborts the native session rather than publishing partial data. The explicit
+legacy native streaming-handle API remains separate from logical ingestion.
 
 ## Observing sessions with MetricsLayer
 
@@ -385,7 +340,7 @@ are accumulated wall time of operations and can overlap with parallel writers.
 
 Payload-byte observations are separate from `WriteSummary`, which only returns
 `rows_written`. `MetricsLayer` passes a shared `IoMetrics` handle through
-`WriteOptions.io_metrics`; backends and download layers report I/O independently of
+`WriteOptions.io_metrics`; backends and the built-in downloader report I/O independently of
 commit success. You can also supply your own handle without installing the layer.
 Existing complete `WriteOptions` literals should add `io_metrics: None` or
 `..Default::default()`.
@@ -394,7 +349,7 @@ Lance registers a fresh counter for each session, covering native reads, paralle
 fragment writes, manifest/index work, and successfully closed streamed blobs.
 Counters are visible while sessions are active and retained after commit, failure,
 cancellation, abort, or drop. Active sources are released after their I/O owners
-are dropped, retaining final totals. DownloadBlobLayer records each source chunk
+are dropped, retaining final totals. The standalone downloader can record each source chunk
 as it is consumed, including chunks consumed before a later error or cancellation.
 Failed I/O requests and unfinished streamed-blob writes are not counted as
 successful payload writes. These are measured logical payloads, not HTTP headers,
@@ -406,8 +361,9 @@ therefore reports measured traffic, not a complete total for every backend.
 Snapshotting does not reset counters.
 
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
-Install one observation layer at the boundary you want to measure. Placing it outside
-DownloadBlobLayer includes downloaded source bytes; placing it inside observes only
-the native sink's I/O. Nested observers receive backend measurements independently;
-reusing the same handle does not duplicate byte observations. Placing MetricsLayer
-inside or outside UnorderedWriteLayer still counts one successful session commit.
+Install one observation layer at the boundary you want to measure. The built-in
+blob downloader records source reads using the writer's `IoMetrics` handle, so
+its traffic is included without a download layer. Nested observers receive
+backend measurements independently; reusing the same handle does not duplicate
+byte observations. Placing MetricsLayer inside or outside UnorderedWriteLayer
+still counts one successful session commit.

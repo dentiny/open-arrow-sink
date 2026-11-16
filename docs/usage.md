@@ -217,8 +217,9 @@ in response to an index error.
 Use `sink.dataset_builder(url)?.load().await?` to read with the same storage.
 [The Lance guide](../sink/lance/README.md) explains vector training requirements,
 effective-schema matching, native blobs, and explicit file versions `2.2`/`2.3`.
-For URL columns, [DownloadBlobLayer](../layer/README.md#download-url-columns) streams
-payloads into native managed blobs without collecting a complete blob in memory.
+The sink's built-in [BlobDownloader](options.md#blob-downloader-and-memory-limits)
+materializes logical blob URI inputs automatically. Configure its shared resource
+limits; Lance chooses the resulting storage layout.
 
 ## Runnable examples
 

@@ -1,5 +1,6 @@
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
+use futures::StreamExt;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
@@ -7,7 +8,6 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    compression::writer_batch,
     error::{aborted, backend, worker_stopped},
     storage::NativeStorage,
 };
@@ -61,9 +61,21 @@ pub(crate) struct FragmentWriter {
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
     state: Poison,
+    downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
+    blob_mode: open_arrow_sink_core::ExternalBlobMode,
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 
 impl FragmentWriter {
+    async fn send(&self, batch: RecordBatch) -> Result<()> {
+        self.sender
+            .as_ref()
+            .unwrap()
+            .send(Message::Batch(batch))
+            .await
+            .map_err(|_| worker_stopped())
+    }
+
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
@@ -93,6 +105,13 @@ impl FragmentWriter {
             task: Some(task),
             rows: 0,
             state: Poison::default(),
+            downloader: destination.downloader.clone(),
+            blob_mode: options
+                .blob_handle
+                .as_ref()
+                .map(|config| config.external_blob_mode)
+                .unwrap_or_default(),
+            io_metrics: options.io_metrics.clone(),
         })
     }
 }
@@ -110,13 +129,24 @@ impl DataWriter for FragmentWriter {
         }
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
-        self.sender
-            .as_ref()
-            .unwrap()
-            .send(Message::Batch(batch))
-            .await
-            .map_err(|_| worker_stopped())?;
+        if crate::blob_input::has_blobs(&self.encoding_schema) {
+            let mut prepared = crate::blob_input::rows(
+                &batch,
+                &self.encoding_schema,
+                &self.downloader,
+                self.blob_mode,
+                self.io_metrics.as_ref(),
+            );
+            while let Some(row) = prepared.next().await {
+                self.send(row?).await?;
+            }
+        } else {
+            self.send(crate::compression::writer_batch(
+                batch,
+                &self.encoding_schema,
+            )?)
+            .await?;
+        }
         self.rows += rows;
         self.state.complete();
         Ok(())

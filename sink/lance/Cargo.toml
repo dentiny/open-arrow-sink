@@ -24,6 +24,7 @@ object_store = { version = "0.14.2", default-features = false }
 object_store_opendal = { version = "0.60.2", default-features = false }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
+arrow-buffer.workspace = true
 arrow-schema.workspace = true
 lance-index = { version = "14.0.1", default-features = false }
 lance-linalg = { version = "14.0.1", default-features = false }

@@ -8,7 +8,6 @@ description = "Composable layers for Arrow RecordBatch sinks"
 
 [dependencies]
 arrow-array.workspace = true
-open-arrow-sink-storage.workspace = true
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true

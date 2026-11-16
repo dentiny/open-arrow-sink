@@ -211,19 +211,6 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
-    validate_blob_schema(schema)?;
-    if schema.fields().iter().any(|field| {
-        field
-            .metadata()
-            .get(open_arrow_sink_core::BLOB_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-    }) {
-        return Err(error::parallel_blobs());
-    }
-    Ok(())
-}
 pub(crate) fn validate_blob_state(
     state: &open_arrow_sink_core::Poison,
     session: &crate::blob::BlobSession,

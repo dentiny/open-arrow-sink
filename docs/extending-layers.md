@@ -85,9 +85,8 @@ forwarding `open_writers`. See [OrderingLayer](../layer/src/ordering.rs) and
 A per-batch transformation must also wrap every returned `DataWriter` if it
 exposes `ParallelSink`; merely forwarding `open_writers` would bypass that policy.
 Preserve the requested writer count, schemas, output ownership, and single
-committer. Blob transformation currently does not support the concurrent path;
-[DownloadBlobLayer](../layer/src/download_blob.rs) is a useful schema-transform
-reference with that restriction.
+committer. [SchemaEvolutionLayer](../layer/src/schema_evolution.rs) provides a
+schema-transform reference that wraps both single and parallel writers.
 
 ## 5. Document composition and integrate
 

@@ -15,5 +15,5 @@ pub use http_limit::HttpConcurrencyLimitLayer;
 pub use opendal;
 pub use url::Url;
 
-mod download_pool;
-pub use download_pool::DownloadPool;
+mod downloader;
+pub use downloader::{BlobDownload, BlobDownloader};

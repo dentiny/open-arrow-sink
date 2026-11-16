@@ -138,3 +138,12 @@ pub(crate) fn download_response(
         opendal::HttpBody::new(futures::stream::empty(), Some(0)),
     )
 }
+
+pub(crate) fn download_payload_limit() -> Error {
+    invalid("download payload and chunk limits must fit the shared byte budget")
+}
+pub(crate) fn download_too_large(limit: usize) -> Error {
+    invalid(&format!(
+        "download group exceeds its {limit}-byte payload limit"
+    ))
+}

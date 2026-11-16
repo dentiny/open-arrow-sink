@@ -12,10 +12,12 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct NativeStorage {
     pub storage: Storage,
+    pub downloader: Arc<open_arrow_sink_storage::BlobDownloader>,
     pub url: Url,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
+    pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
 impl NativeStorage {
     pub fn new(
@@ -36,10 +38,12 @@ impl NativeStorage {
         }
         Ok(Self {
             storage,
+            downloader: Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults()?),
             url,
             session,
             io_tracker,
             reserved: false,
+            encoding_buffer_size: None,
         })
     }
     pub async fn prepare(
@@ -92,7 +96,13 @@ impl NativeStorage {
         Ok(())
     }
     /// Bind native parameters to this destination's storage and commit policy.
-    pub fn bind_write_params(&self, params: WriteParams) -> WriteParams {
+    pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {
+        if let Some(bytes) = self.encoding_buffer_size {
+            let options = params
+                .file_writer_options
+                .get_or_insert_with(Default::default);
+            options.data_cache_bytes = Some(bytes.get() as u64);
+        }
         WriteParams {
             session: Some(self.session.clone()),
             commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),

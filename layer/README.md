@@ -10,7 +10,6 @@ Enable a backend feature to construct that backend.
 | `OrderingLayer` | Overrides `WriteOptions.ordering`; does not sort or start workers | `Sink`; also forwards `ParallelSink` when implemented |
 | `CompressionLayer` | Replaces codec and structural encoding policies, including column overrides | `Sink`; also forwards `ParallelSink` when implemented |
 | `UnorderedWriteLayer` | Dispatches whole batches to a fixed set of independent data writers | `ParallelSink` |
-| `DownloadBlobLayer` | Streams selected URL columns into native managed blobs | `Sink` advertising `supports_blob_streaming`; currently Lance single-writer sessions |
 
 ## Order of composition
 
@@ -82,52 +81,12 @@ fails. Once publication begins, the committer owns uncertain outcomes; the layer
 does not delete potentially committed output. Drop performs no async cleanup.
 
 Ordering and compression decorators forward `ParallelSink`. The concurrent sink
-itself exposes `Sink`, not `ParallelSink`. `DownloadBlobLayer` also does not expose
-`ParallelSink`; placing concurrency outside it will not compile. Placing download
-outside concurrency cannot supply native blob methods either. Use blob ingestion
-with a supported single writer.
+itself exposes `Sink`, not `ParallelSink`.
 
-## Download URL columns
-
-```rust,ignore
-use std::{num::NonZeroUsize, sync::Arc};
-use open_arrow_sink::{SinkExt, lance::LanceDatasetSink,
-    layer::{DownloadBlobLayer, DownloadPool}};
-
-let pool = Arc::new(DownloadPool::new(
-    NonZeroUsize::new(16).unwrap(),
-    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
-)?);
-let sink = LanceDatasetSink::default().layer(
-    DownloadBlobLayer::new(["image_url".to_owned()].into_iter().collect())
-        .with_download_pool(pool),
-);
-// Open with the URL input schema and Ordering::Unordered.
-```
-
-Enable `sink-lance`. Select exact, unique top-level `Utf8`, `LargeUtf8`, or
-`Utf8View` columns. The public writer retains the URL input schema; the inner
-schema uses blob-marked `LargeBinary` fields. Native handles carry the payloads,
-with empty binary placeholders in batches. Nulls, row order within each batch,
-batch boundaries, and unrelated metadata are preserved; the final sink's scan
-ordering still applies.
-
-The pool streams owned, budgeted chunks directly to the native writer. Payloads
-can exceed the transfer-buffer budget; retaining chunks holds their reservations.
-Stream concurrency and byte budgets belong to each pool; every constructor
-honors its limits. Without a configured pool, each opened writer gets independent
-default limits. Share an `Arc<DownloadPool>` when writers should share stream and
-transfer budgets. HTTP(S) downloads go through the pool's HTTP `Storage`; replace
-it with `with_http_storage(DownloadPool::http_storage(config)?)` to configure
-retries, timeouts, or a request budget shared with other storage. Transfer
-budgets exclude SDK/HTTP/encoding buffers. No retry or timeout is installed by
-default.
-
-A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Existing accepted batches may have created
-output. Cleanup follows the native writer's guarantees. See the
-[complete download contracts](../docs/options.md#streaming-download-pool) and
-[Lance blob guide](../sink/lance/README.md#streaming-native-blobs).
+Downloads are independent of sink decorators. Lance always owns a
+[`BlobDownloader`](../storage/README.md#http-downloads), materializes blob inputs,
+and hands complete payloads to its SDK for layout selection. Downloader limits
+apply regardless of which layers are installed.
 
 To build your own decorator, follow [extend a layer](../docs/extending-layers.md).
 

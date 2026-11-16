@@ -4233,6 +4233,7 @@ name = "open-arrow-sink-lance"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "bytes",
  "futures",
@@ -4264,7 +4265,6 @@ dependencies = [
  "async-trait",
  "futures",
  "open-arrow-sink-core",
- "open-arrow-sink-storage",
  "open-arrow-sink-test-support",
  "rstest",
  "tokio",

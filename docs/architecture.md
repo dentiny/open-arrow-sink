@@ -19,7 +19,7 @@ separate transaction for every worker.
 | `open-arrow-sink-lance` / `sink/lance` | Fragment/blob writers, native manifests, optional indexes | Input production or general schema reconciliation |
 
 Core does not depend on storage or a backend. Storage depends on core; layers use
-core and storage. Backend crates use core and storage; the facade re-exports them.
+core. Backend crates use core and storage; the facade re-exports them.
 There is no dependency on `open-arrow-access`. Its readers can feed a writer just
 like any other producer of compatible Arrow batches.
 
@@ -63,7 +63,7 @@ path. Lance native blob writes use a specialized single writer.
 `sink.layer(a).layer(b)` puts `b` outside `a`: open flows through b → a → sink.
 Ordering and compression layers change options and forward capabilities. A record
 transform can expose one input schema and give its inner writer a different one;
-`DownloadBlobLayer` replaces selected URL columns with native blob fields.
+schema evolution layers remap fields. URL downloading is independent of the layer stack.
 
 `ParallelSink` reserves one destination and creates independent data writers with
 disjoint output ownership plus one committer. `UnorderedWriteLayer` dispatches
@@ -118,8 +118,10 @@ adapters retain that storage so data, metadata, reads, and cleanup use the same
 credentials and namespace. Iceberg injects it through the catalog's
 `OpenDalStorageFactory`; table metadata still selects the locations.
 
-`DownloadPool` owns explicit stream and transfer-buffer budgets. Callers share
-an `Arc<DownloadPool>` for a common budget, or install clones of an explicit
-`HttpConcurrencyLimitLayer` to share HTTP capacity across independent pools. Chunks retain accounting reservations until dropped. It streams blobs
-larger than the budget; the budget does not include all SDK or encoding memory.
-See [layers](../layer/README.md) and [storage](../storage/README.md).
+`BlobDownloader` owns explicit download, chunk, and application-memory budgets.
+Lance owns one by default; configure a shared `Arc<BlobDownloader>` to share
+limits across sinks. Blob URI inputs are materialized automatically. Reservations follow returned bytes and shared
+Arrow buffers through the write queue. The SDK chooses inline, packed, or
+dedicated storage. SDK encoding and transport buffers have separate limits.
+An explicit `HttpConcurrencyLimitLayer` can share HTTP capacity across downloaders
+and destination storage. See [storage](../storage/README.md).
