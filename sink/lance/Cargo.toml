@@ -26,11 +26,12 @@ lance-io = { version = "14.0.1", default-features = false }
 object_store = { version = "0.14.2", default-features = false }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
+arrow-buffer.workspace = true
 arrow-schema.workspace = true
 lance-index = { version = "14.0.1", default-features = false }
 lance-linalg = { version = "14.0.1", default-features = false }
 lance = { version = "14.0.1", default-features = false }
-tokio = { version = "1", features = ["fs", "rt", "sync"] }
+tokio = { workspace = true, features = ["fs", "rt", "sync", "macros"] }
 
 [dev-dependencies]
 open-arrow-sink-test-support.workspace = true
@@ -38,4 +39,4 @@ more-asserts.workspace = true
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

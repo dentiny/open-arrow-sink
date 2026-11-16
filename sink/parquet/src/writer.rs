@@ -9,8 +9,7 @@ use crate::{destination::Destination, file_writer::FileWriter};
 pub(crate) struct ParquetDirectoryWriter {
     destination: Arc<Destination>,
     schema: SchemaRef,
-    // None only during rolling or after finish. Poison gates every operation
-    // before accessing it.
+    // Open lazily on the first nonempty batch. Poison gates every operation.
     writer: Option<AsyncArrowWriter<FileWriter>>,
     target_file_size: Option<usize>,
     state: Poison,
@@ -31,12 +30,15 @@ impl DataWriter for ParquetDirectoryWriter {
         // Retain upload ownership for abort, including after cancellation.
         self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
-        if self.should_roll_file(
-            self.writer
-                .as_ref()
-                .expect("active writer owns a Parquet file"),
-            batch.num_rows(),
-        ) {
+        if batch.num_rows() == 0 {
+            self.state.complete();
+            return Ok(());
+        }
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|writer| self.should_roll_file(writer))
+        {
             self.writer
                 .as_mut()
                 .unwrap()
@@ -44,6 +46,8 @@ impl DataWriter for ParquetDirectoryWriter {
                 .await
                 .map_err(Error::backend)?;
             self.writer = None;
+        }
+        if self.writer.is_none() {
             let writer = self
                 .destination
                 .open_writer(
@@ -81,17 +85,18 @@ impl DataWriter for ParquetDirectoryWriter {
 
     async fn finish(&mut self) -> Result<u64> {
         self.state.begin()?;
-        self.writer
-            .as_mut()
-            .expect("active writer owns a Parquet file")
-            .finish()
-            .await
-            .map_err(Error::backend)?;
-        self.writer = None;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.finish().await.map_err(Error::backend)?;
+            self.writer = None;
+        }
         Ok(self.rows_written)
     }
-    async fn abort(self: Box<Self>) -> Result<()> {
-        Ok(())
+    async fn abort(mut self: Box<Self>) -> Result<()> {
+        self.state.poison();
+        match self.writer.take() {
+            Some(writer) => writer.into_inner().0.abort().await,
+            None => Ok(()),
+        }
     }
 }
 
@@ -99,7 +104,6 @@ impl ParquetDirectoryWriter {
     pub(crate) fn new(
         destination: Arc<Destination>,
         schema: SchemaRef,
-        writer: AsyncArrowWriter<FileWriter>,
         target_file_size: Option<usize>,
         properties: WriterProperties,
         writer_index: usize,
@@ -107,23 +111,18 @@ impl ParquetDirectoryWriter {
         Self {
             destination,
             schema,
-            writer: Some(writer),
+            writer: None,
             state: Poison::default(),
             target_file_size,
             properties,
             rows_written: 0,
-            files_created: 1,
+            files_created: 0,
             writer_index,
         }
     }
 
-    fn should_roll_file(
-        &self,
-        writer: &AsyncArrowWriter<FileWriter>,
-        incoming_rows: usize,
-    ) -> bool {
+    fn should_roll_file(&self, writer: &AsyncArrowWriter<FileWriter>) -> bool {
         !writer.flushed_row_groups().is_empty()
-            && incoming_rows > 0
             && self
                 .target_file_size
                 .is_some_and(|size| writer.bytes_written() >= size)

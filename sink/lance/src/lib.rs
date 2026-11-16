@@ -1,7 +1,7 @@
 //! Versioned Lance datasets over shared OpenDAL storage. Requires a Tokio runtime.
 
 mod blob;
-mod blob_writer;
+mod blob_input;
 mod committer;
 mod compression;
 mod error;

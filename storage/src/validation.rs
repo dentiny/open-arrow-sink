@@ -1,3 +1,4 @@
+use crate::error;
 use std::{borrow::Cow, ops::Range};
 
 use open_arrow_sink_core::{Error, Result};
@@ -110,4 +111,22 @@ pub(crate) fn validate_http_concurrency(limit: usize) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<()> {
+    if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(error::download_limit());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_download_url(source: &str) -> Result<http::Uri> {
+    let mut url = url::Url::parse(source).map_err(|_| error::invalid_download_url())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(error::download_scheme());
+    }
+    url.set_fragment(None);
+    url.as_str()
+        .parse()
+        .map_err(|_| error::invalid_download_url())
 }

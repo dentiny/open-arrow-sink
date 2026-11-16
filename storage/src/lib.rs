@@ -13,7 +13,7 @@ pub use resolver::StorageResolver;
 
 pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
-pub use http_limit::HttpConcurrencyLimitLayer;
+pub use http_limit::{HttpConcurrencyLimitLayer, HttpRequestPermit};
 pub use io_metrics::IoMetricsLayer;
 pub use object_path::ObjectPath;
 pub use opendal;
@@ -29,3 +29,11 @@ impl Storage {
         std::sync::Arc::new(object_store::UploadStore::new(self.clone()))
     }
 }
+
+mod downloader;
+pub use downloader::{BlobDownload, BlobDownloader};
+
+mod download_source;
+mod opendal_downloader;
+pub use download_source::{DownloadContext, DownloadStream, Downloader};
+pub use opendal_downloader::OpenDalDownloader;

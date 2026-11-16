@@ -104,7 +104,19 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         batches
     }
     async fn assert_aborted(&self) {
-        assert!(tokio::fs::try_exists(&self.path).await.unwrap());
+        // Lazy writers may abort before creating the destination. Once data
+        // exists, abort must retain it (also covered by the preservation test).
+        if tokio::fs::try_exists(&self.path).await.unwrap() {
+            assert!(
+                tokio::fs::read_dir(&self.path)
+                    .await
+                    .unwrap()
+                    .next_entry()
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 }
 
@@ -219,4 +231,52 @@ async fn append_adds_rows() {
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     assert_eq!(row_count(&path).await, 4);
+}
+
+#[tokio::test]
+async fn idle_writers_do_not_create_parquet_files() {
+    use open_arrow_sink_core::ParallelSink;
+    use std::num::NonZeroUsize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("output");
+    let input = batch();
+    let mut session = ParquetDirectorySink::default()
+        .open_writers(
+            Url::from_directory_path(&directory).unwrap(),
+            input.schema(),
+            options(),
+            NonZeroUsize::new(8).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!directory.exists());
+    session.writers[0].write(input.slice(0, 0)).await.unwrap();
+    session.writers[1].write(input.clone()).await.unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut session.writers {
+        outputs.push(writer.finish().await.unwrap());
+    }
+    assert_eq!(
+        session
+            .committer
+            .commit(outputs)
+            .await
+            .unwrap()
+            .rows_written,
+        input.num_rows() as u64,
+    );
+    let files = std::fs::read_dir(&directory)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(files.len(), 1);
+    let file = tokio::fs::File::open(files[0].path()).await.unwrap();
+    let mut reader = ParquetRecordBatchStreamBuilder::new(file)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(reader.try_next().await.unwrap().unwrap(), input);
+    assert!(reader.try_next().await.unwrap().is_none());
 }

@@ -60,7 +60,7 @@ async fn shared_operator_unordered_commit_preserves_rows() {
     assert_eq!(
         open_arrow_sink_test_support::concat_sorted(
             &actual.schema(),
-            &[actual.clone()],
+            std::slice::from_ref(&actual),
             &["value"]
         )
         .unwrap(),
@@ -288,7 +288,23 @@ async fn external_blobs_resolve_independent_buckets() {
     let destination = make("s3://destination/");
     let first = make("s3://source-a/");
     let second = make("s3://source-b/");
-    let mut values = BlobArrayBuilder::new(2);
+    let shadow = make("s3://destination/local/");
+    shadow
+        .write(
+            &shadow.resolve(&shadow.url("blob").unwrap()).unwrap(),
+            b"wrong".to_vec().into(),
+        )
+        .await
+        .unwrap();
+    let owned = destination.url("local/blob").unwrap();
+    destination
+        .write(
+            &destination.resolve(&owned).unwrap(),
+            b"owned".to_vec().into(),
+        )
+        .await
+        .unwrap();
+    let mut values = BlobArrayBuilder::new(3);
     for (storage, bytes) in [(&first, "first"), (&second, "second")] {
         let uri = storage.url("same-key").unwrap();
         storage
@@ -300,14 +316,19 @@ async fn external_blobs_resolve_independent_buckets() {
             .unwrap();
         values.push_uri(uri.as_str()).unwrap();
     }
+    values.push_uri(owned.as_str()).unwrap();
     let batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![blob_field("blob", true)])),
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let sink = LanceDatasetSink::new(destination.clone())
+    let downloader = open_arrow_sink_storage::BlobDownloader::with_defaults()
+        .unwrap()
         .with_source_storage(first.clone())
-        .with_source_storage(second.clone());
+        .with_source_storage(second.clone())
+        .with_source_storage(shadow);
+    let sink =
+        LanceDatasetSink::new(destination.clone()).with_blob_downloader(Arc::new(downloader));
     let url = destination.url("dataset/").unwrap();
     let mut writer = sink
         .open(url.clone(), batch.schema(), write_options())
@@ -323,9 +344,13 @@ async fn external_blobs_resolve_independent_buckets() {
         .delete(&second.resolve(&second.url("same-key").unwrap()).unwrap())
         .await
         .unwrap();
+    destination
+        .delete(&destination.resolve(&owned).unwrap())
+        .await
+        .unwrap();
     let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());
     let blobs = dataset
-        .take_blobs_by_indices(&[0, 1], "blob")
+        .take_blobs_by_indices(&[0, 1, 2], "blob")
         .await
         .unwrap();
     let mut actual = Vec::new();
@@ -333,7 +358,10 @@ async fn external_blobs_resolve_independent_buckets() {
         actual.push(blob.unwrap().read().await.unwrap().to_vec());
     }
     actual.sort();
-    assert_eq!(actual, vec![b"first".to_vec(), b"second".to_vec()]);
+    assert_eq!(
+        actual,
+        vec![b"first".to_vec(), b"owned".to_vec(), b"second".to_vec()]
+    );
 }
 
 #[tokio::test]
