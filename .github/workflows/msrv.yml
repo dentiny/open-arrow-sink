@@ -32,7 +32,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y protobuf-compiler clang lld pkg-config libssl-dev
+          sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev clang lld pkg-config libssl-dev
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           key: msrv-1.95
