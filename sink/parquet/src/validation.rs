@@ -4,6 +4,9 @@ use open_arrow_sink_storage::{Storage, Url};
 
 use crate::error;
 
+// Bound footer readers independently of storage transport or directory size.
+const APPEND_SCHEMA_CONCURRENCY: usize = 32;
+
 pub(crate) async fn validate_append_directory(
     storage: &Storage,
     directory: &Url,
@@ -19,10 +22,10 @@ pub(crate) async fn validate_append_directory(
     if metadata.is_none() && files.is_empty() && !storage.exists(directory).await? {
         return Err(error::missing_directory());
     }
-    // Schedule all schema checks; storage enforces the shared HTTP request budget.
-    let concurrency = files.len();
+    // A transport budget does not limit filesystem reads or the number of
+    // live footer readers. Keep schema validation bounded for large directories.
     stream::iter(files.into_iter().map(Ok))
-        .try_for_each_concurrent(concurrency, |file| async move {
+        .try_for_each_concurrent(APPEND_SCHEMA_CONCURRENCY, |file| async move {
             if file
                 .path()
                 .strip_prefix(directory.path())
