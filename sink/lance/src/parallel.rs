@@ -112,9 +112,6 @@ impl DataWriter for FragmentWriter {
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
-        if self.sender.is_none() {
-            return Err(open_arrow_sink_core::Error::Poisoned);
-        }
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
@@ -133,13 +130,13 @@ impl DataWriter for FragmentWriter {
         let sender = self
             .sender
             .take()
-            .ok_or(open_arrow_sink_core::Error::Poisoned)?;
+            .expect("active writer owns its native worker");
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let transaction = self
             .task
             .take()
-            .ok_or(open_arrow_sink_core::Error::Poisoned)?
+            .expect("active writer owns its native worker")
             .await
             .map_err(Error::backend)?
             .map_err(Error::backend)?;

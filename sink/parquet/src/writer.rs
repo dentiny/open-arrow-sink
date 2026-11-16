@@ -5,11 +5,13 @@ use open_arrow_sink_core::{
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
 
-use crate::{destination::Destination, error::closed, file_writer::FileWriter};
+use crate::{destination::Destination, file_writer::FileWriter};
 
 pub(crate) struct ParquetDirectoryWriter {
     pub(crate) destination: Arc<Destination>,
     schema: SchemaRef,
+    // None only during rolling or after finish. Poison gates every operation
+    // before accessing it; retain Option for ownership transfer during cleanup.
     writer: Option<AsyncArrowWriter<FileWriter>>,
     options: WriteOptions,
     state: Poison,
@@ -31,7 +33,12 @@ impl DataWriter for ParquetDirectoryWriter {
         // Retain upload ownership for abort, including after cancellation.
         self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
-        if self.should_roll_file(self.writer.as_ref().ok_or_else(closed)?, batch.num_rows()) {
+        if self.should_roll_file(
+            self.writer
+                .as_ref()
+                .expect("active writer owns a Parquet file"),
+            batch.num_rows(),
+        ) {
             self.writer
                 .as_mut()
                 .unwrap()
@@ -50,7 +57,10 @@ impl DataWriter for ParquetDirectoryWriter {
             self.files_created += 1;
             self.writer = Some(writer);
         }
-        let writer = self.writer.as_mut().ok_or_else(closed)?;
+        let writer = self
+            .writer
+            .as_mut()
+            .expect("active writer owns a Parquet file");
         writer.write(&batch).await.map_err(Error::backend)?;
         // Let Parquet coalesce small batches into its bounded row groups.
         // Only force an early group boundary when buffered encoded data could
@@ -74,7 +84,7 @@ impl DataWriter for ParquetDirectoryWriter {
         self.state.begin()?;
         self.writer
             .as_mut()
-            .ok_or_else(closed)?
+            .expect("active writer owns a Parquet file")
             .finish()
             .await
             .map_err(Error::backend)?;

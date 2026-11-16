@@ -2,8 +2,9 @@
 use arrow_array::{ArrayRef, RecordBatchOptions};
 use arrow_schema::{FieldRef, Schema};
 use open_arrow_sink_core::{
-    DataWriter, Error, Layer, Poison, RecordBatch, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, WriteSession, WriteSummary, Writer, async_trait, validation,
+    DataWriter, Error, GuardedDataWriter, GuardedWriter, Layer, RecordBatch, Result, SchemaRef,
+    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
+    validation,
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -144,12 +145,11 @@ impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
     }
 
     fn wrap_writer(&self, output: Plan, inner: Box<dyn Writer>) -> Box<dyn Writer> {
-        Box::new(EvolutionWriter {
+        Box::new(GuardedWriter::new(Box::new(EvolutionWriter {
             inner,
             schema: output.source.clone(),
             output,
-            state: Poison::default(),
-        })
+        })))
     }
 
     fn wrap_session<T: Send + 'static>(
@@ -162,12 +162,11 @@ impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
                 .writers
                 .into_iter()
                 .map(|inner| {
-                    Box::new(EvolutionDataWriter {
+                    Box::new(GuardedDataWriter::new(Box::new(EvolutionDataWriter {
                         inner,
                         schema: output.source.clone(),
                         output: output.clone(),
-                        state: Poison::default(),
-                    }) as Box<dyn DataWriter<Output = T>>
+                    }))) as Box<dyn DataWriter<Output = T>>
                 })
                 .collect(),
             committer: session.committer,
@@ -178,7 +177,6 @@ struct EvolutionWriter {
     inner: Box<dyn Writer>,
     schema: SchemaRef,
     output: Plan,
-    state: Poison,
 }
 #[async_trait]
 impl Writer for EvolutionWriter {
@@ -186,16 +184,10 @@ impl Writer for EvolutionWriter {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        self.state.begin()?;
         self.inner.write(self.output.apply(input)?).await?;
-        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.state.check() {
-            let _ = self.inner.abort().await;
-            return Err(error);
-        }
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -206,7 +198,6 @@ struct EvolutionDataWriter<T: Send + 'static> {
     inner: Box<dyn DataWriter<Output = T>>,
     schema: SchemaRef,
     output: Plan,
-    state: Poison,
 }
 #[async_trait]
 impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
@@ -215,13 +206,10 @@ impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        self.state.begin()?;
         self.inner.write(self.output.apply(input)?).await?;
-        self.state.complete();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        self.state.begin()?;
         self.inner.finish().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
