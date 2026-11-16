@@ -1,5 +1,5 @@
 use iceberg::arrow::schema_to_arrow_schema;
-use iceberg::spec::Transform;
+use iceberg::spec::{PartitionKey, PartitionSpecRef, Struct, Transform};
 use iceberg::table::Table;
 use open_arrow_sink_core::{
     Compression, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
@@ -26,11 +26,17 @@ pub(crate) fn validate_options(
     Ok(())
 }
 
+/// The writer strategy selected after validating the table and requested partitioning.
+pub(crate) enum WriterKind {
+    Fanout(PartitionSpecRef),
+    Fixed(PartitionKey),
+}
+
 pub(crate) fn validate_table(
     table: &Table,
     schema: &SchemaRef,
     partition: Option<PartitionOptions>,
-) -> Result<()> {
+) -> Result<WriterKind> {
     if table.readonly() {
         return Err(Error::Unsupported("read-only Iceberg table".into()));
     }
@@ -72,7 +78,17 @@ pub(crate) fn validate_table(
     if schema.as_ref() != &table_schema {
         return Err(Error::SchemaMismatch);
     }
-    Ok(())
+    if spec.is_unpartitioned() {
+        // All-void specs are unpartitioned to the SDK, but their file
+        // metadata must retain one null value per partition field.
+        Ok(WriterKind::Fixed(PartitionKey::new(
+            spec.as_ref().clone(),
+            table.metadata().current_schema().clone(),
+            Struct::from_iter(spec.fields().iter().map(|_| None)),
+        )))
+    } else {
+        Ok(WriterKind::Fanout(spec.clone()))
+    }
 }
 
 /// Parse native SDK locations before validating them against the storage scope.
