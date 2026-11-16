@@ -11,10 +11,27 @@ use open_arrow_sink_core::{
     BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode, WriteOptions, is_blob_field,
 };
 
-/// Caller input and logical SDK input, including per-write encoding metadata.
+/// Separates the caller's batch schema from the logical input expected by Lance.
+///
+/// The writer exposes `input` through `DataWriter::schema` and validates incoming
+/// batches against it before adapting them to `logical`. The latter carries
+/// per-write compression/encoding and blob layout metadata, and replaces marked
+/// blob fields with Lance's logical blob type. Keeping both schemas lets callers
+/// supply their original batches without constructing Lance-specific fields or
+/// attaching write options to their schema.
+///
+/// For example, a nullable `payload: LargeBinary` field marked with
+/// `open-arrow-sink:blob = "true"` stays unchanged in `input`. In `logical`, it
+/// becomes a nullable `payload: Struct<data: LargeBinary, uri: Utf8>` with the
+/// `lance.blob.v2` extension metadata. `blob::logical_batch` wraps the caller's
+/// bytes in the `data` child and supplies null URIs before passing them to Lance.
+/// For an ordinary column with only a compression override, its Arrow type stays
+/// the same and only `logical` receives the requested encoding metadata.
 #[derive(Clone)]
 pub(crate) struct LanceSchemas {
+    /// Original caller schema, used for the public writer contract and validation.
     pub input: SchemaRef,
+    /// Adapted SDK input schema, used for destination checks and fragment writing.
     pub logical: SchemaRef,
 }
 
