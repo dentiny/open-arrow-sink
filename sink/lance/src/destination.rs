@@ -5,7 +5,7 @@ use lance::{
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{DirectoryState, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and owned publication reservation.
@@ -53,7 +53,7 @@ impl LanceDestination {
             )
             .await;
         }
-        if self.storage.prefix_exists(&self.url).await? {
+        if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {

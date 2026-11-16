@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{DirectoryState, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
@@ -24,7 +24,9 @@ impl Destination {
         cleanup_on_error: bool,
     ) -> Result<Self> {
         let directory = storage.directory_url(&directory)?;
-        if mode == WriteMode::Create && storage.prefix_exists(&directory).await? {
+        if mode == WriteMode::Create
+            && storage.inspect_directory(&directory).await? != DirectoryState::Missing
+        {
             return Err(Error::DestinationExists);
         }
         let (prefix, owns_directory) = match mode {
