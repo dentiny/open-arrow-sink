@@ -140,21 +140,9 @@ leftovers from earlier sessions. Exclude concurrent destination mutations.
 
 | Backend | Next Overwrite after a failed commit |
 | --- | --- |
-| Parquet (filesystem only) | Validates the target as a directory (symlinks/non-directories are rejected) or accepts a missing target, then reserves a new sibling `.open-arrow-sink-<uuid>/` staging directory. It does not require the old target's Parquet files to be readable. On success, the entire current target directory, including unrelated files inside it, is replaced. Old sibling staging/backup directories are not discovered or cleaned by the new session. |
+| Parquet | Unsupported; rejected before writing. |
 | Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's marker/fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
 | Iceberg | Unsupported; rejected before writing. Reload/reconcile the table before opening another Append session. |
-
-For Parquet, publication first renames the current target to a unique sibling
-`.open-arrow-sink-old-<uuid>/`, then renames staging to the target. If the second
-rename fails, restoration of the backup is **best effort**; the target can remain
-missing if restoration also fails. With cleanup enabled, publication failure
-attempts to remove that session's staging directory. After a successful swap,
-backup deletion is best effort even with `cleanup_on_error = false`, and its
-failure does not fail commit. There is no atomic directory transaction or fsync
-guarantee. Inspect target, staging, and backup before retrying: if the target is
-missing and the backup is the only old copy, restore or retain it before another
-Overwrite. Delete leftover sibling directories only after verifying ownership,
-that no session is using them, and that no recovery copy is still needed.
 
 ## Choose write options
 
@@ -177,7 +165,7 @@ replace the global codec and level, and use exact unique top-level field names.
 File size is a positive soft target, not a strict maximum or a total-output limit.
 
 Use `Append` only for existing destinations. `Overwrite` replaces all rows, not
-just affected partitions; Parquet supports it only on filesystem storage. Lance
+just affected partitions; Parquet and Iceberg do not support it. Lance
 retains historical dataset versions. Inspect capabilities and read the backend's
 publication rules before selecting a mode.
 

@@ -87,63 +87,49 @@ async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> us
     rows
 }
 
+#[rstest::rstest]
+#[case::memory(false)]
+#[case::filesystem(true)]
 #[tokio::test]
-async fn filesystem_staged_overwrite_abort_preserves_visible_target() {
+async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
     let temp = tempfile::tempdir().unwrap();
-    let directory =
-        open_arrow_sink_parquet::Url::from_directory_path(temp.path().join("output")).unwrap();
-    let storage = Storage::from_url(&directory).unwrap();
-    let sink = ParquetDirectorySink::default();
+    let (sink, storage, directory) = if filesystem {
+        let directory =
+            open_arrow_sink_parquet::Url::from_directory_path(temp.path().join("output")).unwrap();
+        let storage = Storage::from_url(&directory).unwrap();
+        (ParquetDirectorySink::default(), storage, directory)
+    } else {
+        let storage = storage();
+        let directory = storage.url("output/").unwrap();
+        (
+            ParquetDirectorySink::new(storage.clone()),
+            storage,
+            directory,
+        )
+    };
     let mut original = sink
         .open(directory.clone(), batch().schema(), options())
         .await
         .unwrap();
     original.write(batch()).await.unwrap();
     original.commit().await.unwrap();
-    let mut writer = sink
+    assert!(
+        !sink
+            .capability()
+            .supported_modes
+            .contains(&WriteMode::Overwrite)
+    );
+    let result = sink
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
         .open(
             directory.clone(),
             batch().schema(),
             options().with_mode(WriteMode::Overwrite),
         )
-        .await
-        .unwrap();
-    writer.write(batch()).await.unwrap();
-    assert_eq!(rows(&storage, &directory).await, 3);
-    writer.abort().await.unwrap();
-    assert_eq!(rows(&storage, &directory).await, 3);
-    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn overwrite_rejects_symlink_targets_before_staging() {
-    let temp = tempfile::tempdir().unwrap();
-    let real = temp.path().join("real");
-    std::fs::create_dir(&real).unwrap();
-    tokio::fs::write(real.join("keep"), "original")
-        .await
-        .unwrap();
-    let link = temp.path().join("link");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
-    let sink = ParquetDirectorySink::default();
-    let result = sink
-        .open(
-            open_arrow_sink_parquet::Url::from_directory_path(&link).unwrap(),
-            batch().schema(),
-            options().with_mode(WriteMode::Overwrite),
-        )
         .await;
-    assert!(result.is_err());
-    assert!(
-        std::fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        std::fs::read_to_string(real.join("keep")).unwrap(),
-        "original"
-    );
+    assert!(matches!(
+        result,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
+    assert_eq!(rows(&storage, &directory).await, 3);
 }

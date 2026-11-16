@@ -74,7 +74,7 @@ The default write mode is `Create`. Iceberg requires explicit `WriteMode::Append
 
 | Destination | Facade feature | Request | Modes | Publication |
 | --- | --- | --- | --- | --- |
-| [Parquet directory](sink/parquet/README.md) | `sink-parquet` | `Url` | Create, Append, filesystem Overwrite | Files can be visible before commit; no directory transaction |
+| [Parquet directory](sink/parquet/README.md) | `sink-parquet` | `Url` | Create, Append | Files can be visible before commit; no directory transaction |
 | [Iceberg table](sink/iceberg/README.md) | `sink-iceberg` | SDK `TableIdent` | Append to an existing table | One native fast-append transaction |
 | [Lance dataset](sink/lance/README.md) | `sink-lance` | `Url` | Create, Append, versioned Overwrite | Native data manifest, then optional index commits |
 

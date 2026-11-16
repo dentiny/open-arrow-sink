@@ -41,19 +41,3 @@ pub(crate) async fn validate_append_directory(
         .await?;
     Ok(())
 }
-
-pub(crate) async fn validate_overwrite_directory(storage: &Storage, directory: &Url) -> Result<()> {
-    if storage.operator().info().scheme() != "fs" {
-        return Err(error::overwrite_unsupported());
-    }
-    // OpenDAL stat follows symlinks. This local-only guard preserves main's
-    // no-follow check before a whole directory is renamed and replaced.
-    let physical = std::path::PathBuf::from(storage.operator().info().root())
-        .join(storage.path(directory)?.trim_end_matches('/'));
-    match tokio::fs::symlink_metadata(physical).await {
-        Ok(metadata) if !metadata.is_dir() => Err(error::not_directory()),
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(crate::error::backend(error)),
-    }
-}
