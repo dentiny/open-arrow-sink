@@ -35,7 +35,15 @@ impl DataWriter for ParquetDirectoryWriter {
         // A failed or cancelled write is terminal, but retain the upload for abort.
         self.active = false;
         validation::validate_batch(&self.schema, &batch)?;
-        if self.should_roll_file(self.writer.as_ref().ok_or_else(closed)?, batch.num_rows()) {
+        if batch.num_rows() == 0 {
+            self.active = true;
+            return Ok(());
+        }
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|writer| self.should_roll_file(writer))
+        {
             self.writer
                 .as_mut()
                 .unwrap()
@@ -43,15 +51,17 @@ impl DataWriter for ParquetDirectoryWriter {
                 .await
                 .map_err(backend)?;
             self.writer = None;
+        }
+        if self.writer.is_none() {
+            let index = self.file_index(self.files_created);
+            self.destination.reserve_file(index).await?;
+            // Retain ownership before opening/awaiting the upload so abort can
+            // remove this part after cancellation, without deleting collisions.
+            self.files_created += 1;
             let writer = self
                 .destination
-                .open_writer(
-                    self.file_index(self.files_created),
-                    self.schema.clone(),
-                    self.properties.clone(),
-                )
+                .open_reserved_writer(index, self.schema.clone(), self.properties.clone())
                 .await?;
-            self.files_created += 1;
             self.writer = Some(writer);
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
@@ -77,14 +87,10 @@ impl DataWriter for ParquetDirectoryWriter {
     async fn finish(&mut self) -> Result<u64> {
         crate::validation::validate_writer_active(self.active)?;
         self.active = false;
-        self.writer
-            .as_mut()
-            .ok_or_else(closed)?
-            .finish()
-            .await
-            .map_err(backend)?;
-        self.writer = None;
-        self.destination.complete_reservation().await?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.finish().await.map_err(backend)?;
+            self.writer = None;
+        }
         Ok(self.rows_written)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -97,7 +103,6 @@ impl ParquetDirectoryWriter {
     pub(crate) fn new(
         destination: Arc<Destination>,
         schema: SchemaRef,
-        writer: AsyncArrowWriter<FileWriter>,
         options: WriteOptions,
         properties: WriterProperties,
         first_file: usize,
@@ -106,24 +111,19 @@ impl ParquetDirectoryWriter {
         Self {
             destination,
             schema,
-            writer: Some(writer),
+            writer: None,
             active: true,
             options,
             properties,
             rows_written: 0,
-            files_created: 1,
+            files_created: 0,
             first_file,
             file_stride,
         }
     }
 
-    fn should_roll_file(
-        &self,
-        writer: &AsyncArrowWriter<FileWriter>,
-        incoming_rows: usize,
-    ) -> bool {
+    fn should_roll_file(&self, writer: &AsyncArrowWriter<FileWriter>) -> bool {
         !writer.flushed_row_groups().is_empty()
-            && incoming_rows > 0
             && self
                 .options
                 .target_file_size

@@ -74,14 +74,16 @@ impl Destination {
             .create(&self.child(RESERVATION), Bytes::new())
             .await
     }
-    pub(crate) async fn open_writer(
+    pub(crate) async fn reserve_file(&self, index: usize) -> Result<()> {
+        self.storage.create(&self.file(index), Bytes::new()).await
+    }
+    pub(crate) async fn open_reserved_writer(
         &self,
         index: usize,
         schema: SchemaRef,
         properties: WriterProperties,
     ) -> Result<AsyncArrowWriter<FileWriter>> {
         let path = self.file(index);
-        self.storage.create(&path, Bytes::new()).await?;
         let result = async {
             let file = FileWriter(self.storage.writer(&path).await?);
             AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(crate::error::backend)
@@ -91,6 +93,29 @@ impl Destination {
             let _ = self.storage.delete(&path).await;
         }
         result
+    }
+    pub(crate) fn needs_empty_file(&self) -> bool {
+        self.owns_directory
+    }
+    pub(crate) async fn write_empty_file(
+        &self,
+        schema: SchemaRef,
+        properties: WriterProperties,
+    ) -> Result<()> {
+        self.reserve_file(0).await?;
+        let mut writer = self.open_reserved_writer(0, schema, properties).await?;
+        let result = writer.finish().await.map_err(crate::error::backend);
+        if result.is_err() && self.cleanup_on_error {
+            let _ = writer.into_inner().abort().await;
+            let _ = self.remove_file(0).await;
+        }
+        result.map(|_| ())
+    }
+    pub(crate) async fn cleanup_reservation(&self) -> Result<()> {
+        if self.cleanup_on_error {
+            self.remove_reservation().await?;
+        }
+        Ok(())
     }
     pub(crate) async fn complete_reservation(&self) -> Result<()> {
         if self.owns_directory {

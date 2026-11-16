@@ -131,3 +131,7 @@ External writers must not modify a destination during a session.
 [Usage](../../docs/usage.md) · [Architecture](../../docs/architecture.md) ·
 [Support matrix](../../docs/support.md) · [Write layers](../../layer/README.md) ·
 [Extend a sink](../../docs/extending-sinks.md)
+
+Idle physical writers do not create Parquet files. An all-empty Create or
+Overwrite session writes one empty, schema-bearing file at commit so readers
+can still discover its schema; an empty Append session adds no files.

@@ -92,8 +92,8 @@ impl ParallelSink for ParquetDirectorySink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
-        let writers = self
-            .create_writers(directory, schema, options, count)
+        let (writers, properties) = self
+            .create_writers(directory, schema.clone(), options, count)
             .await?;
         let destination = writers[0].destination.clone();
         Ok(WriteSession {
@@ -101,7 +101,11 @@ impl ParallelSink for ParquetDirectorySink {
                 .into_iter()
                 .map(|w| Box::new(w) as Box<dyn DataWriter<Output = u64>>)
                 .collect(),
-            committer: Box::new(ParquetCommitter(destination)),
+            committer: Box::new(ParquetCommitter {
+                destination,
+                schema,
+                properties,
+            }),
         })
     }
 }
@@ -113,7 +117,10 @@ impl ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
         count: NonZeroUsize,
-    ) -> Result<Vec<ParquetDirectoryWriter>> {
+    ) -> Result<(
+        Vec<ParquetDirectoryWriter>,
+        parquet::file::properties::WriterProperties,
+    )> {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let storage = match &self.storage {
@@ -130,32 +137,18 @@ impl ParquetDirectorySink {
             )
             .await?,
         );
-        let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
-        for index in 0..count.get() {
-            let opened = destination
-                .open_writer(index, schema.clone(), properties.clone())
-                .await;
-            match opened {
-                Ok(writer) => writers.push(ParquetDirectoryWriter::new(
+        let writers = (0..count.get())
+            .map(|index| {
+                ParquetDirectoryWriter::new(
                     destination.clone(),
                     schema.clone(),
-                    writer,
                     options.clone(),
                     properties.clone(),
                     index,
                     count.get(),
-                )),
-                Err(error) => {
-                    for writer in writers {
-                        let _ = DataWriter::abort(Box::new(writer)).await;
-                    }
-                    if options.cleanup_on_error {
-                        let _ = destination.remove_reservation().await;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        Ok(writers)
+                )
+            })
+            .collect();
+        Ok((writers, properties))
     }
 }
