@@ -24,9 +24,6 @@ pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
     lance::Error::invalid_input(error.to_string())
 }
 
-pub(crate) fn invalid_blob_column(column: &str) -> Error {
-    Error::InvalidInput(format!("blob column must be LargeBinary: {column}"))
-}
 pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Error {
     Error::Unsupported(format!(
         "Lance storage version must be 2.2 or 2.3: {version}"
@@ -83,9 +80,6 @@ pub(crate) fn storage_version_mismatch(
     ))
 }
 
-pub(crate) fn poisoned() -> Error {
-    Error::Poisoned
-}
 pub(crate) fn different_dataset_versions() -> Error {
     Error::InvalidInput("Lance writers observed different dataset versions".into())
 }
@@ -95,27 +89,93 @@ pub(crate) fn invalid_create_fragments() -> Error {
 pub(crate) fn empty_writer_session() -> Error {
     Error::InvalidInput("empty Lance writer session".into())
 }
-pub(crate) fn parallel_blobs() -> Error {
-    Error::Unsupported("parallel sessions do not support blob-marked columns".into())
-}
-pub(crate) fn blob_column_out_of_bounds() -> Error {
-    Error::InvalidInput("blob column out of bounds".into())
-}
-pub(crate) fn invalid_blob_cell() -> Error {
-    Error::InvalidInput("blob placement must target a blob-marked cell".into())
-}
-pub(crate) fn invalid_blob_placeholder() -> Error {
-    Error::InvalidInput("blob placement must replace an empty non-null payload".into())
-}
-pub(crate) fn foreign_blob() -> Error {
-    Error::InvalidInput("foreign blob handle".into())
-}
-pub(crate) fn blob_owner() -> Error {
-    Error::InvalidInput("blob handle belongs to another session".into())
-}
-pub(crate) fn duplicate_blob_placement() -> Error {
-    Error::InvalidInput("duplicate blob placement".into())
-}
+
 pub(crate) fn invalid_destination_root() -> Error {
     Error::InvalidInput("destination must not be the storage root".into())
+}
+
+pub(crate) fn blob_input(column: &str, row: usize, source: Error) -> Error {
+    let context = |message: String| format!("blob column {column} row {row}: {message}");
+    match source {
+        Error::AlreadyExists(message) => Error::AlreadyExists(context(message)),
+        Error::NotFound(message) => Error::NotFound(context(message)),
+        Error::InvalidInput(message) => Error::InvalidInput(context(message)),
+        Error::InvalidConfig(message) => Error::InvalidConfig(context(message)),
+        Error::Unsupported(message) => Error::Unsupported(context(message)),
+        source @ Error::Backend(_) => Error::backend(BlobInputError {
+            column: column.into(),
+            row,
+            source,
+        }),
+        source => source,
+    }
+}
+#[derive(Debug)]
+struct BlobInputError {
+    column: String,
+    row: usize,
+    source: Error,
+}
+impl std::fmt::Display for BlobInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "blob column {} row {}: {}",
+            self.column, self.row, self.source
+        )
+    }
+}
+impl std::error::Error for BlobInputError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_input_preserves_categories() {
+        let errors = [
+            Error::AlreadyExists("object".into()),
+            Error::NotFound("object".into()),
+            Error::Unsupported("operation".into()),
+            Error::InvalidInput("URL".into()),
+            Error::InvalidConfig("limit".into()),
+        ];
+        for error in errors {
+            let kind = std::mem::discriminant(&error);
+            let error = blob_input("blob", 3, error);
+            assert_eq!(std::mem::discriminant(&error), kind);
+            assert!(error.to_string().contains("blob column blob row 3"));
+        }
+        assert!(matches!(
+            blob_input("blob", 3, Error::Poisoned),
+            Error::Poisoned
+        ));
+    }
+
+    #[test]
+    fn backend_download_retains_native_source() {
+        use open_arrow_sink_storage::opendal::{Error as NativeError, ErrorKind};
+        use std::error::Error as _;
+
+        let error = blob_input(
+            "blob",
+            3,
+            Error::backend(NativeError::new(ErrorKind::Unexpected, "transport failed")),
+        );
+        assert!(matches!(error, Error::Backend(_)));
+        assert!(error.to_string().contains("blob column blob row 3"));
+        let mut source = error.source();
+        while let Some(cause) = source {
+            if let Some(native) = cause.downcast_ref::<NativeError>() {
+                assert_eq!(native.kind(), ErrorKind::Unexpected);
+                return;
+            }
+            source = cause.source();
+        }
+        panic!("native download error must remain in the source chain");
+    }
 }

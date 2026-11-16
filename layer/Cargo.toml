@@ -8,18 +8,12 @@ description = "Composable layers for Arrow RecordBatch sinks"
 
 [dependencies]
 arrow-array.workspace = true
-open-arrow-sink-storage.workspace = true
 open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
-async-stream.workspace = true
-http = "1"
-tokio = { workspace = true, features = ["sync"] }
 futures.workspace = true
 
 [dev-dependencies]
-more-asserts.workspace = true
-tempfile.workspace = true
 open-arrow-sink-test-support.workspace = true
 futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "net", "io-util", "time", "fs"] }

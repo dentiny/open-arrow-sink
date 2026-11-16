@@ -10,7 +10,7 @@ use lance::{
 };
 use open_arrow_sink_core::{BlobHandleConfig, Ordering, ParallelSink, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
-use open_arrow_sink_storage::opendal;
+use open_arrow_sink_storage::{BlobDownloader, opendal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,7 +40,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Field::new("id", DataType::UInt64, false),
         blob_field("blob", false),
     ]));
-    let sink = LanceDatasetSink::new(destination.clone()).with_source_storage(source.clone());
+    // The downloader is always part of blob ingestion. These limits are shared
+    // by all physical writers; SDK encoding has a separate per-writer budget.
+    let downloader = Arc::new(
+        BlobDownloader::new(
+            NonZeroUsize::new(16).unwrap(),
+            NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+        )?
+        .with_download_limits(
+            NonZeroUsize::new(1024 * 1024).unwrap(),
+            NonZeroUsize::new(64 * 1024).unwrap(),
+        )?,
+    );
+    let sink = LanceDatasetSink::new(destination.clone())
+        .with_source_storage(source.clone())
+        .with_blob_downloader(downloader.clone())
+        .with_encoding_buffer_size(NonZeroUsize::new(4 * 1024 * 1024).unwrap());
     let url = destination.url("dataset/")?;
     // Field updates also support the non-exhaustive options API.
     #[allow(clippy::field_reassign_with_default)]
@@ -112,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let committed = session.committer.commit(outputs).await;
     drop(writers);
     let summary = committed?;
+    assert_eq!(downloader.buffered_bytes(), 0);
     source.delete(&source.resolve(&packed_source)?).await?;
     source.delete(&source.resolve(&dedicated_source)?).await?;
 

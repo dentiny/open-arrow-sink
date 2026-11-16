@@ -59,6 +59,8 @@ atomic directory transaction or durability/fsync guarantee.
 Write, finish, open, and commit failures leave output in place and return the
 error without automatic abort or deletion. Explicit abort retains output too.
 Applications own any later cleanup of incomplete files.
+Configure bucket lifecycle rules to clean up incomplete multipart uploads left by
+dropped writers, failed aborts, or process crashes.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 

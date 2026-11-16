@@ -56,6 +56,42 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
     }
 }
 
+pub(crate) fn download_limit() -> Error {
+    Error::InvalidConfig("download limits exceed semaphore capacity".into())
+}
+pub(crate) fn invalid_download_url() -> Error {
+    Error::InvalidInput("invalid blob URL".into())
+}
+pub(crate) fn download_scheme() -> Error {
+    Error::InvalidInput("blob URL must use HTTP or HTTPS".into())
+}
+pub(crate) fn http_storage_service() -> Error {
+    Error::InvalidConfig("HTTP download storage must use the OpenDAL http service".into())
+}
+
+pub(crate) fn download_response(
+    response: http::Response<opendal::HttpBody>,
+) -> http::Response<opendal::HttpBody> {
+    if response.status().is_success() {
+        return response;
+    }
+    // OpenDAL collects error bodies for diagnostics. Discard an unbounded body.
+    let (parts, _) = response.into_parts();
+    http::Response::from_parts(
+        parts,
+        opendal::HttpBody::new(futures::stream::empty(), Some(0)),
+    )
+}
+
+pub(crate) fn download_payload_limit() -> Error {
+    Error::InvalidConfig("download payload and chunk limits must fit the shared byte budget".into())
+}
+pub(crate) fn download_too_large(limit: usize) -> Error {
+    Error::InvalidInput(format!(
+        "download group exceeds its {limit}-byte payload limit"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

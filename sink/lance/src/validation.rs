@@ -190,60 +190,63 @@ pub(crate) fn validate_session_transaction(
 }
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
-    for field in schema.fields() {
-        if is_blob_field(field) && field.data_type() != &DataType::LargeBinary {
-            return Err(error::invalid_blob_column(field.name()));
+    fn check(field: &arrow_schema::Field, top_level: bool) -> Result<()> {
+        if is_blob_field(field) {
+            if !top_level
+                || !matches!(
+                    field.data_type(),
+                    DataType::LargeBinary
+                        | DataType::Utf8
+                        | DataType::LargeUtf8
+                        | DataType::Utf8View
+                )
+            {
+                return Err(Error::InvalidInput(format!(
+                    "blob-marked column must be top-level binary or URL text: {}",
+                    field.name()
+                )));
+            }
+            return Ok(());
         }
+        if crate::blob::is_native_blob(field) {
+            let DataType::Struct(fields) = field.data_type() else {
+                return Err(Error::Unsupported(
+                    "use logical blob bytes or URI inputs".into(),
+                ));
+            };
+            let ty = |name: &str| {
+                fields
+                    .iter()
+                    .find(|field| field.name() == name)
+                    .map(|field| field.data_type())
+            };
+            if ty("kind").is_some()
+                || ty("data") != Some(&DataType::LargeBinary)
+                || ty("uri") != Some(&DataType::Utf8)
+            {
+                return Err(Error::Unsupported(
+                    "use logical blob bytes or URI inputs, not prepared descriptors".into(),
+                ));
+            }
+        }
+        match field.data_type() {
+            DataType::Struct(fields) => {
+                for child in fields {
+                    check(child, false)?;
+                }
+            }
+            DataType::List(child)
+            | DataType::LargeList(child)
+            | DataType::FixedSizeList(child, _)
+            | DataType::Map(child, _) => check(child, false)?,
+            _ => {}
+        }
+        Ok(())
+    }
+    for input in schema.fields() {
+        check(input, true)?;
     }
     Ok(())
-}
-pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
-    validate_blob_schema(schema)?;
-    if schema.fields().iter().any(|field| is_blob_field(field)) {
-        return Err(error::parallel_blobs());
-    }
-    Ok(())
-}
-pub(crate) fn validate_blob_placements(
-    batch: &open_arrow_sink_core::RecordBatch,
-    blobs: Vec<open_arrow_sink_core::BlobPlacement>,
-    session: &std::sync::Arc<crate::blob::BlobSession>,
-) -> Result<std::collections::HashMap<(usize, usize), open_arrow_sink_core::BlobHandle>> {
-    use crate::blob::NativeBlob;
-    use arrow_array::{Array, LargeBinaryArray};
-    let mut placements = std::collections::HashMap::new();
-    for blob in blobs {
-        let field = batch
-            .schema_ref()
-            .fields()
-            .get(blob.column)
-            .ok_or_else(error::blob_column_out_of_bounds)?;
-        if blob.row >= batch.num_rows() || !is_blob_field(field) {
-            return Err(error::invalid_blob_cell());
-        }
-        let array = batch
-            .column(blob.column)
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .ok_or_else(|| error::invalid_blob_column(field.name()))?;
-        if array.is_null(blob.row) || !array.value(blob.row).is_empty() {
-            return Err(error::invalid_blob_placeholder());
-        }
-        let native = blob
-            .blob
-            .downcast_ref::<NativeBlob>()
-            .ok_or_else(error::foreign_blob)?;
-        if !std::sync::Arc::ptr_eq(&native.session, session) {
-            return Err(error::blob_owner());
-        }
-        if placements
-            .insert((blob.column, blob.row), blob.blob)
-            .is_some()
-        {
-            return Err(error::duplicate_blob_placement());
-        }
-    }
-    Ok(placements)
 }
 
 pub(crate) fn parse_storage_version(

@@ -12,9 +12,11 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(crate) struct LanceDestination {
     pub storage: Storage,
+    pub downloader: Arc<open_arrow_sink_storage::BlobDownloader>,
     pub url: Url,
     pub path: ObjectPath,
     session: Arc<Session>,
+    pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
 impl LanceDestination {
     pub fn new(
@@ -34,9 +36,11 @@ impl LanceDestination {
         }
         Ok(Self {
             storage,
+            downloader: Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults()?),
             url,
             path,
             session,
+            encoding_buffer_size: None,
         })
     }
     pub async fn prepare(
@@ -50,7 +54,13 @@ impl LanceDestination {
         Ok(existing)
     }
     /// Bind native parameters to this destination's storage and commit policy.
-    pub fn bind_write_params(&self, params: WriteParams) -> WriteParams {
+    pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {
+        if let Some(bytes) = self.encoding_buffer_size {
+            params
+                .file_writer_options
+                .get_or_insert_with(Default::default)
+                .data_cache_bytes = Some(bytes.get() as u64);
+        }
         WriteParams {
             session: Some(self.session.clone()),
             commit_handler: Some(Arc::new(ConditionalPutCommitHandler)),
