@@ -14,6 +14,7 @@ use crate::{
 };
 
 const DEFAULT_UPLOAD_PART_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 /// An OpenDAL operator bound to a URL namespace. Clones share the configured backend.
 /// The operator's root must correspond exactly to `base_url`.
@@ -52,7 +53,7 @@ impl Storage {
             base_url,
             base_path,
             upload_part_size: None,
-            upload_concurrency: NonZeroUsize::new(1).unwrap(),
+            upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
         })
     }
 
@@ -149,7 +150,7 @@ impl Storage {
     }
 
     /// Bound concurrent multipart requests per writer, including native adapters.
-    /// Defaults to one; increase this together with the upload-buffer budget.
+    /// Defaults to four; increase this together with the upload-buffer budget.
     pub fn with_upload_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.upload_concurrency = concurrency;
         self
@@ -408,7 +409,7 @@ mod tests {
         .unwrap();
         let native = storage.upload_options(NativeWriteOptions::default());
         assert_eq!(native.chunk, Some(DEFAULT_UPLOAD_PART_SIZE));
-        assert_eq!(native.concurrent, 1);
+        assert_eq!(native.concurrent, DEFAULT_UPLOAD_CONCURRENCY.get());
 
         let storage = storage
             .with_upload_part_size(NonZeroUsize::new(8 * 1024 * 1024).unwrap())
