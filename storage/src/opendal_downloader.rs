@@ -48,8 +48,8 @@ impl OpenDalDownloader {
             return Err(error::http_storage_service());
         }
         self.http_budget = Some(storage.http_concurrency_limit());
-        let (storage, metrics) = storage.without_io_metrics();
-        self.http_metrics = metrics;
+        let crate::backend::UnobservedStorage { storage, observers } = storage.without_io_metrics();
+        self.http_metrics = observers;
         self.http = storage.operator();
         self.transport = self.http.base_context().http_transport().clone();
         Ok(self)
@@ -92,7 +92,7 @@ impl Downloader for OpenDalDownloader {
             (operator.with_context(ctx), "blob".to_owned())
         } else {
             crate::url::sanitize_download_url(&mut url);
-            let (storage, path) = context.resolve_source(&url)?;
+            let crate::ResolvedSource { storage, path } = context.resolve_source(&url)?;
             let operator = storage.operator();
             let operator = if storage
                 .http_concurrency_limit()

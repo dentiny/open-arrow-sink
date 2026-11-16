@@ -5,6 +5,13 @@ use futures::stream::BoxStream;
 use open_arrow_sink_core::{Result, async_trait};
 use std::sync::Arc;
 
+/// A source namespace and the object path resolved within it.
+#[derive(Clone, Debug)]
+pub struct ResolvedSource {
+    pub storage: Storage,
+    pub path: ObjectPath,
+}
+
 pub type DownloadStream = BoxStream<'static, Result<Bytes>>;
 
 /// Download I/O for custom protocols, authentication, or clients.
@@ -42,8 +49,8 @@ impl DownloadContext {
         })
     }
     fn source_storage(&self, storage: Storage) -> Storage {
-        let (storage, metrics) = storage.without_io_metrics();
-        match self.unobserved_metrics(metrics) {
+        let crate::backend::UnobservedStorage { storage, observers } = storage.without_io_metrics();
+        match self.unobserved_metrics(observers) {
             Some(metrics) => storage.with_io_metrics(metrics),
             None => storage,
         }
@@ -57,15 +64,21 @@ impl DownloadContext {
         &self.http_limit
     }
     /// Resolve a registered source, preferring a backend's own namespace.
-    pub fn resolve_source(&self, url: &Url) -> Result<(Storage, ObjectPath)> {
+    pub fn resolve_source(&self, url: &Url) -> Result<ResolvedSource> {
         if let Some(storage) = &self.primary
             && let Ok(path) = storage.path(url)
         {
-            return Ok((self.source_storage(storage.clone()), path));
+            return Ok(ResolvedSource {
+                storage: self.source_storage(storage.clone()),
+                path,
+            });
         }
         let storage = self.sources.storage_for(url)?;
         let path = storage.path(url)?;
-        Ok((self.source_storage(storage), path))
+        Ok(ResolvedSource {
+            storage: self.source_storage(storage),
+            path,
+        })
     }
 }
 
