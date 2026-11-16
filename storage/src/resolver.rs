@@ -25,9 +25,18 @@ impl StorageResolver {
             .sort_by_key(|s| std::cmp::Reverse(s.base_url().path().len()));
         self
     }
-    /// Schemes requiring registration with an upstream storage adapter.
-    pub fn schemes(&self) -> impl Iterator<Item = &str> {
-        self.configured.iter().map(|s| s.base_url().scheme())
+    /// Schemes accepted by OpenDAL or explicitly configured namespaces.
+    /// Register custom OpenDAL services before constructing an upstream adapter;
+    /// adapters such as Lance snapshot these schemes when creating a session.
+    pub fn schemes(&self) -> impl Iterator<Item = String> {
+        opendal::init_default_registry();
+        let mut schemes = opendal::OperatorRegistry::get().schemes();
+        schemes.extend(
+            self.configured
+                .iter()
+                .map(|s| s.base_url().scheme().to_owned()),
+        );
+        schemes.into_iter()
     }
     /// Select explicit configuration first, then reuse or create URL-derived
     /// storage. URL-derived cloud storage requires the corresponding feature.

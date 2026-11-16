@@ -67,3 +67,22 @@ async fn explicit_configuration_overrides_url_cache_without_changing_other_clone
         "filesystem"
     );
 }
+
+#[tokio::test]
+async fn discovers_services_registered_through_opendal() {
+    let scheme = "resolver-custom";
+    opendal::OperatorRegistry::get().register::<opendal::services::Memory>(scheme);
+    let resolver = StorageResolver::default().with_storage(memory("explicit-only://source/"));
+    let schemes: std::collections::HashSet<_> = resolver.schemes().collect();
+    assert!(schemes.contains(scheme));
+    assert!(schemes.contains("file"));
+    assert!(schemes.contains("explicit-only"));
+
+    let url = Url::parse("resolver-custom://source/key").unwrap();
+    let source = resolver.resolve(&url).unwrap();
+    source.write(&url, "custom backend".into()).await.unwrap();
+    assert_eq!(
+        resolver.resolve(&url).unwrap().read(&url).await.unwrap(),
+        "custom backend"
+    );
+}

@@ -318,3 +318,9 @@ Signed HTTP URLs should use `DownloadBlobLayer`, which preserves their query.
 Its `stream` method accepts file and enabled cloud URLs in addition to HTTP(S),
 with the same transfer-buffer budget and active-stream limit. Policies on
 explicit source stores are retained; `with_layer` configures the HTTP downloader.
+
+Provider schemes are discovered from OpenDAL's operator registry and explicitly
+configured source/destination namespaces. To extend URL-based resolution, enable
+an OpenDAL service or register a builder with `opendal::OperatorRegistry` before
+opening the sink or constructing a dataset builder. Lance sessions snapshot that
+registry; no backend list needs to be changed in the Lance adapter.

@@ -19,13 +19,11 @@ impl StorageRouter {
         }
     }
 
-    /// Schemes handled by the shared provider. Backend features still determine
-    /// which URL-configured stores can actually be constructed.
-    pub fn schemes(&self) -> impl Iterator<Item = &str> {
-        ["file", "s3", "http", "https", "gs", "az", "abfs", "abfss"]
-            .into_iter()
-            .chain(self.sources.schemes())
-            .chain(std::iter::once(self.destination.base_url().scheme()))
+    /// Adapt storage capabilities to Lance's per-scheme provider registry.
+    pub fn schemes(&self) -> impl Iterator<Item = String> {
+        self.sources.schemes().chain(std::iter::once(
+            self.destination.base_url().scheme().to_owned(),
+        ))
     }
 
     pub fn resolve(&self, url: &Url) -> Result<Storage> {
