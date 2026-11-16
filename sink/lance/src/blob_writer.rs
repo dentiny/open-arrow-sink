@@ -1,6 +1,9 @@
 use crate::config::SessionOptions;
 use std::sync::{Arc, atomic::Ordering};
 
+use arrow_array::RecordBatchReader;
+use arrow_schema::ArrowError;
+
 use lance::Dataset;
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
@@ -10,10 +13,48 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     destination::LanceDestination,
-    error::{backend, worker_stopped},
+    error::{aborted, backend, worker_stopped},
     index::build_indexes,
-    parallel::{ChannelReader, Message},
 };
+
+enum Message {
+    Batch(RecordBatch),
+    Commit,
+}
+
+struct ChannelReader {
+    schema: SchemaRef,
+    receiver: mpsc::Receiver<Message>,
+    finished: bool,
+}
+
+impl Iterator for ChannelReader {
+    type Item = std::result::Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        // Lance polls RecordBatchReader on its blocking background iterator.
+        match self.receiver.blocking_recv() {
+            Some(Message::Batch(batch)) => Some(Ok(batch)),
+            Some(Message::Commit) => {
+                self.finished = true;
+                None
+            }
+            None => {
+                self.finished = true;
+                Some(Err(aborted()))
+            }
+        }
+    }
+}
+
+impl RecordBatchReader for ChannelReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
 
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
