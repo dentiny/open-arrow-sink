@@ -74,3 +74,30 @@ fn nested_paths_are_literal_and_cross_lists() {
         );
     }
 }
+
+#[test]
+fn nested_paths_do_not_interpret_backend_extension_metadata() {
+    use open_arrow_sink_core::{Compression, CompressionCodec};
+
+    let schema = Schema::new(vec![
+        Field::new(
+            "extension",
+            DataType::Struct(vec![Arc::new(Field::new("value", DataType::Utf8, false))].into()),
+            false,
+        )
+        .with_metadata([("ARROW:extension:name".into(), "lance.blob.v2".into())].into()),
+    ]);
+    let path = vec!["extension".into(), "value".into()];
+    assert_eq!(
+        validation::nested_field(&schema, &path).unwrap().name(),
+        "value"
+    );
+    let options = CompressionOptions {
+        nested_columns: [(path, Compression::Zstd { level: None })].into(),
+        ..Default::default()
+    };
+    let capability = CompressionCapability::default()
+        .with_per_column(&[CompressionCodec::Zstd])
+        .with_nested_columns(true);
+    validation::validate_compression_options(&schema, &options, capability).unwrap();
+}

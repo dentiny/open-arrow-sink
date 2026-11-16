@@ -201,7 +201,6 @@ pub fn validate_storage_version_options(
 }
 
 /// Resolve literal struct names through list containers without list-item segments.
-/// Native blob internals are not user-addressable column paths.
 pub fn nested_field<'a>(schema: &'a Schema, path: &[String]) -> Option<&'a arrow_schema::Field> {
     fn fields<'a>(
         fields: &'a arrow_schema::Fields,
@@ -214,14 +213,6 @@ pub fn nested_field<'a>(schema: &'a Schema, path: &[String]) -> Option<&'a arrow
         }
         if path.len() == 1 {
             return Some(field);
-        }
-        if field
-            .metadata()
-            .get("ARROW:extension:name")
-            .map(String::as_str)
-            == Some("lance.blob.v2")
-        {
-            return None;
         }
         descend(field.data_type(), &path[1..])
     }

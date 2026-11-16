@@ -38,6 +38,23 @@ fn validate_compression(options: &CompressionOptions) -> Result<()> {
 }
 
 fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    // Native blob descriptors are opaque to Lance users. Keep this backend rule
+    // here rather than teaching core's Arrow path resolver about Lance metadata.
+    for path in options.nested_columns.keys() {
+        if (1..path.len()).any(|end| {
+            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2")
+            })
+        }) {
+            return Err(Error::Unsupported(format!(
+                "nested compression inside native blob column: {path:?}"
+            )));
+        }
+    }
     for field in schema.fields() {
         let encoding = options
             .column_encodings
@@ -298,5 +315,57 @@ pub(crate) fn parse_storage_version(
         Some("2.2") => Ok(Some(LanceFileVersion::V2_2)),
         Some("2.3") => Ok(Some(LanceFileVersion::V2_3)),
         Some(version) => Err(error::unsupported_storage_version(version)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Field;
+    use open_arrow_sink_core::Sink;
+    use std::sync::Arc;
+
+    #[test]
+    fn nested_compression_cannot_address_native_blob_internals() {
+        let blob = Field::new(
+            "blob",
+            DataType::Struct(
+                vec![Arc::new(Field::new("data", DataType::LargeBinary, false))].into(),
+            ),
+            false,
+        )
+        .with_metadata([("ARROW:extension:name".into(), "lance.blob.v2".into())].into());
+        let item = Arc::new(Field::new(
+            "item",
+            DataType::Struct(vec![Arc::new(blob.clone())].into()),
+            false,
+        ));
+        let mut cases = vec![(blob, vec!["blob".into(), "data".into()])];
+        for ty in [
+            DataType::List(item.clone()),
+            DataType::LargeList(item.clone()),
+            DataType::FixedSizeList(item, 2),
+        ] {
+            cases.push((
+                Field::new("items", ty, false),
+                vec!["items".into(), "blob".into(), "data".into()],
+            ));
+        }
+        for (field, path) in cases {
+            let schema = Schema::new(vec![field]);
+            let options = WriteOptions::default()
+                .with_ordering(open_arrow_sink_core::Ordering::Unordered)
+                .with_compression(CompressionOptions {
+                    nested_columns: [(path, Compression::Zstd { level: None })].into(),
+                    ..Default::default()
+                });
+            let capability = crate::LanceDatasetSink::default().capability();
+            validation::validate_options(&schema, &options, capability).unwrap();
+            assert!(matches!(
+                validate_options(&schema, &options, capability),
+                Err(Error::Unsupported(message))
+                    if message.contains("nested compression inside native blob column")
+            ));
+        }
     }
 }
