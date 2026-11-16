@@ -129,7 +129,7 @@ async fn streaming_limits_and_cleanup() {
         drop(retried);
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("source.bin");
-        std::fs::write(&file, BODY).unwrap();
+        tokio::fs::write(&file, BODY).await.unwrap();
         let uri = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
         let mut local = first.stream(uri.as_str()).await.unwrap();
         let mut bytes = Vec::new();

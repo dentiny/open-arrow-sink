@@ -35,4 +35,4 @@ url = "2"
 more-asserts.workspace = true
 tempfile.workspace = true
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }
