@@ -15,6 +15,7 @@ pub struct OpenDalDownloader {
     http: Operator,
     transport: HttpTransporter,
     http_budget: Option<HttpConcurrencyLimitLayer>,
+    http_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 impl OpenDalDownloader {
     pub fn new(config: StorageConfig) -> Result<Self> {
@@ -28,6 +29,7 @@ impl OpenDalDownloader {
             http,
             transport,
             http_budget: None,
+            http_metrics: None,
         })
     }
     pub fn with_http_config(mut self, config: StorageConfig) -> Result<Self> {
@@ -46,6 +48,8 @@ impl OpenDalDownloader {
             return Err(error::http_storage_service());
         }
         self.http_budget = Some(storage.http_concurrency_limit());
+        let (storage, metrics) = storage.without_io_metrics();
+        self.http_metrics = metrics;
         self.http = storage.operator();
         self.transport = self.http.base_context().http_transport().clone();
         Ok(self)
@@ -78,7 +82,10 @@ impl Downloader for OpenDalDownloader {
                 uri,
                 inner: transport,
             });
-            let operator = self.http.clone();
+            let operator = match context.unobserved_metrics(self.http_metrics.clone()) {
+                Some(metrics) => self.http.clone().layer(crate::IoMetricsLayer(metrics)),
+                None => self.http.clone(),
+            };
             let ctx = operator.base_context().with_http_transport(transport);
             (operator.with_context(ctx), "blob".to_owned())
         } else {

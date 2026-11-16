@@ -80,6 +80,11 @@ impl BlobDownloader {
         self
     }
 
+    /// Source namespaces retained when this downloader is installed on a sink.
+    pub fn source_resolver(&self) -> Arc<crate::StorageResolver> {
+        self.sources.clone()
+    }
+
     /// Replace source namespaces and share their URL-derived cache while retaining
     /// this downloader's transfer budgets.
     pub fn with_source_resolver(mut self, sources: Arc<crate::StorageResolver>) -> Self {
@@ -97,7 +102,7 @@ impl BlobDownloader {
     pub fn concurrency(&self) -> usize {
         self.concurrency.get()
     }
-    /// Bound queued and active row metadata as well as payload allocations.
+    /// Bound queued and active groups as well as payload allocations.
     pub fn in_flight_limit(&self) -> usize {
         self.concurrency()
             .min(self.max_buffered_bytes() / (3 * self.download_bytes + self.chunk_bytes))
@@ -202,16 +207,28 @@ impl BlobDownloader {
         })
     }
 
-    fn context(&self, chunk_bytes: usize) -> DownloadContext {
+    fn context(
+        &self,
+        chunk_bytes: usize,
+        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+    ) -> DownloadContext {
         DownloadContext {
             chunk_bytes,
             http_limit: self.http_limit.clone(),
             sources: self.sources.clone(),
             primary: self.primary.clone(),
+            io_metrics: metrics.cloned(),
         }
     }
-    async fn open(&self, source: &str, chunk_bytes: usize) -> Result<DownloadStream> {
-        self.backend.open(source, self.context(chunk_bytes)).await
+    async fn open(
+        &self,
+        source: &str,
+        chunk_bytes: usize,
+        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+    ) -> Result<DownloadStream> {
+        self.backend
+            .open(source, self.context(chunk_bytes, metrics))
+            .await
     }
 }
 
@@ -302,7 +319,7 @@ impl BlobDownload {
     ) -> Result<bytes::Bytes> {
         let mut reader = self
             .downloader
-            .open(source, self.downloader.chunk_bytes)
+            .open(source, self.downloader.chunk_bytes, metrics)
             .await?;
         let mut data = Vec::new();
         while let Some(chunk) = reader.try_next().await? {

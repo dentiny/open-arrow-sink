@@ -322,10 +322,13 @@ async fn external_blobs_resolve_independent_buckets() {
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let sink = LanceDatasetSink::new(destination.clone())
+    let downloader = open_arrow_sink_storage::BlobDownloader::with_defaults()
+        .unwrap()
         .with_source_storage(first.clone())
         .with_source_storage(second.clone())
         .with_source_storage(shadow);
+    let sink =
+        LanceDatasetSink::new(destination.clone()).with_blob_downloader(Arc::new(downloader));
     let url = destination.url("dataset/").unwrap();
     let mut writer = sink
         .open(url.clone(), batch.schema(), write_options())

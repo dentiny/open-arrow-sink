@@ -22,8 +22,27 @@ pub struct DownloadContext {
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,
+    pub(crate) io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 impl DownloadContext {
+    // The wrapper records consumed chunks; source operators retain only observers
+    // not already present on that wrapper, including partially overlapping handles.
+    pub(crate) fn unobserved_metrics(
+        &self,
+        metrics: Option<open_arrow_sink_core::IoMetrics>,
+    ) -> Option<open_arrow_sink_core::IoMetrics> {
+        metrics.and_then(|metrics| match &self.io_metrics {
+            Some(observed) => metrics.excluding(observed),
+            None => Some(metrics),
+        })
+    }
+    fn source_storage(&self, storage: Storage) -> Storage {
+        let (storage, metrics) = storage.without_io_metrics();
+        match self.unobserved_metrics(metrics) {
+            Some(metrics) => storage.with_io_metrics(metrics),
+            None => storage,
+        }
+    }
     pub fn chunk_bytes(&self) -> usize {
         self.chunk_bytes
     }
@@ -37,10 +56,10 @@ impl DownloadContext {
         if let Some(storage) = &self.primary
             && let Ok(path) = storage.resolve(url)
         {
-            return Ok((storage.clone(), path));
+            return Ok((self.source_storage(storage.clone()), path));
         }
         let storage = self.sources.resolve(url)?;
         let path = storage.resolve(url)?;
-        Ok((storage, path))
+        Ok((self.source_storage(storage), path))
     }
 }

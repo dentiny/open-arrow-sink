@@ -42,6 +42,14 @@ impl IoMetrics {
         }
         self
     }
+    /// Remove observers already accounted for at another transfer boundary.
+    /// Returns None when every observer is excluded; retained observers still
+    /// share their original counters.
+    pub fn excluding(mut self, other: &Self) -> Option<Self> {
+        self.0
+            .retain(|state| !other.0.iter().any(|existing| Arc::ptr_eq(existing, state)));
+        (!self.0.is_empty()).then_some(self)
+    }
     pub fn snapshot(&self) -> IoSnapshot {
         // A combined handle records the same event to each destination.
         *self.0[0]

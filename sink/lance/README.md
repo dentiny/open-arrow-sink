@@ -334,9 +334,9 @@ Unregistered sources use URL-configured storage cached by `StorageResolver`.
 Lance’s `Provider` applies destination precedence and adapts the selected storage
 to Lance.
 
-Configure sources once and pass the same `Arc<StorageResolver>` to the download
-pool and native Lance sink. Both paths then use the same source operators,
-credentials, and URL-derived cache:
+The sink inherits its injected downloader's source resolver unless an explicit
+sink resolver is configured. Register sources once on the downloader to share
+operators, credentials, and the URL-derived cache with native Lance reads:
 
 ```rust
 use std::sync::Arc;
@@ -349,8 +349,7 @@ let source = Storage::new(
 )?;
 let sources = Arc::new(StorageResolver::default().with_storage(source));
 let pool = Arc::new(BlobDownloader::with_defaults()?.with_source_resolver(sources.clone()));
-let sink = LanceDatasetSink::default().with_source_resolver(sources)
-    .with_blob_downloader(pool);
+let sink = LanceDatasetSink::default().with_blob_downloader(pool);
 // Blob writes always use the configured downloader.
 # let _ = sink;
 # Ok::<(), Box<dyn std::error::Error>>(())

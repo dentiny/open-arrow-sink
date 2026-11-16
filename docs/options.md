@@ -287,9 +287,11 @@ let sink = LanceDatasetSink::default()
 
 Three downloader limits work together:
 
-- Download concurrency bounds active groups. A row's selected blobs share one
-  group and are read sequentially; rows download concurrently, preserving row
-  order at handoff. Ready plus active rows are bounded together by both
+- Download concurrency bounds active groups. Unknown-size URL rows and nested
+  blobs use one group per row, reading selected sources sequentially. Known
+  top-level in-memory payloads are batched up to 1024 rows while fitting one
+  payload limit; an oversized row still fails independently. Groups run
+  concurrently, preserving input order at handoff. Ready plus active groups are bounded together by both
   configured concurrency and the number of reservations the memory budget fits. Pending
   downloads continue being polled while the SDK's input channel is full, so
   sharing HTTP permits with destination uploads does not stall body consumption.
@@ -388,7 +390,8 @@ totals or bytes inferred from Arrow batches. Install the layer outside retry lay
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
 Install one observation layer at the boundary you want to measure. The built-in
 blob downloader records source reads using the writer's `IoMetrics` handle, so
-its traffic is included regardless of URL-selection layers. Nested observers receive
+its traffic is included regardless of URL-selection layers. Shared source observers
+are deduplicated against the downloader handle, preserving independent observers. Nested observers receive
 backend measurements independently; reusing the same handle does not duplicate
 byte observations. Placing MetricsLayer inside or outside UnorderedWriteLayer
 still counts one successful session commit.

@@ -170,6 +170,11 @@ impl Storage {
         self
     }
 
+    pub(crate) fn without_io_metrics(mut self) -> (Self, Option<open_arrow_sink_core::IoMetrics>) {
+        let metrics = self.io_metrics.take();
+        (self, metrics)
+    }
+
     /// Observe this namespace, including native adapters. Clones keep the handle;
     /// configuring another clone leaves existing sessions unchanged.
     pub fn with_io_metrics(mut self, metrics: open_arrow_sink_core::IoMetrics) -> Self {

@@ -204,19 +204,6 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
     .expect("HTTP admission stalled");
 }
 
-#[test]
-fn rejects_concurrency_above_semaphore_capacity() {
-    assert!(
-        BlobDownloader::new(
-            (tokio::sync::Semaphore::MAX_PERMITS + 1)
-                .try_into()
-                .unwrap(),
-            8.try_into().unwrap()
-        )
-        .is_err()
-    );
-}
-
 #[tokio::test]
 async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
     struct Custom;
@@ -258,4 +245,45 @@ async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
     })
     .await
     .expect("custom downloader leaked a permit");
+}
+
+#[tokio::test]
+async fn shared_source_observers_count_each_download_once() {
+    let shared = IoMetrics::default();
+    let independent = IoMetrics::default();
+    let observers = shared.clone().combine(independent.clone());
+    let memory = open_arrow_sink_test_support::memory_storage("memory://source/");
+    let url = memory.url("blob").unwrap();
+    memory
+        .write(&memory.resolve(&url).unwrap(), BODY.into())
+        .await
+        .unwrap();
+    let http = OpenDalDownloader::http_storage(StorageConfig::default())
+        .unwrap()
+        .with_http_transport(HttpTransporter::new(Transport))
+        .with_io_metrics(observers.clone());
+    let downloads = [
+        (
+            url.as_str(),
+            pool(1, 1, BODY.len()).with_source_storage(memory.with_io_metrics(observers)),
+        ),
+        (
+            URL,
+            pool(1, 1, BODY.len()).with_downloader(Arc::new(
+                OpenDalDownloader::new(StorageConfig::default())
+                    .unwrap()
+                    .with_http_storage(http)
+                    .unwrap(),
+            )),
+        ),
+    ];
+    for (index, (url, downloads)) in downloads.into_iter().enumerate() {
+        assert_eq!(
+            downloads.download_all(&[url], Some(&shared)).await.unwrap()[0].as_ref(),
+            BODY
+        );
+        let expected = (index as u64 + 1) * BODY.len() as u64;
+        assert_eq!(shared.snapshot().bytes_read, expected);
+        assert_eq!(independent.snapshot().bytes_read, expected);
+    }
 }

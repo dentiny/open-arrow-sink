@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    sources: Arc<StorageResolver>,
+    sources: Option<Arc<StorageResolver>>,
     downloader: Arc<BlobDownloader>,
     encoding_buffer_size: Option<NonZeroUsize>,
 }
@@ -24,7 +24,7 @@ impl Default for LanceDatasetSink {
     fn default() -> Self {
         Self {
             storage: None,
-            sources: Arc::default(),
+            sources: None,
             downloader: Arc::new(
                 BlobDownloader::with_defaults().expect("valid default download limits"),
             ),
@@ -51,17 +51,28 @@ impl LanceDatasetSink {
     /// Share source namespaces, credentials, and the URL-derived cache with a download pool.
     /// This replaces any previously configured source stores.
     pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
-        self.sources = sources;
+        self.sources = Some(sources);
         self
     }
 
     /// Configure an independent source namespace for native external blob ingestion.
     /// If the resolver is shared, detach its registrations before adding this store.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
+        self.sources = Some(Arc::new(
+            self.source_resolver()
+                .as_ref()
+                .clone()
+                .with_storage(storage),
+        ));
         self
     }
+    fn source_resolver(&self) -> Arc<StorageResolver> {
+        self.sources
+            .clone()
+            .unwrap_or_else(|| self.downloader.source_resolver())
+    }
     fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
+        let sources = self.source_resolver();
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
@@ -70,13 +81,13 @@ impl LanceDatasetSink {
             self.downloader
                 .as_ref()
                 .clone()
-                .with_source_resolver(self.sources.clone())
+                .with_source_resolver(sources.clone())
                 .with_primary_storage(storage.clone()),
         );
         let mut destination = LanceDestination::new(
             storage.with_write_options(options),
             url,
-            self.sources.clone(),
+            sources,
             options.io_metrics.as_ref(),
         )?;
         destination.downloader = downloader;
