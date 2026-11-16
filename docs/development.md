@@ -5,6 +5,14 @@ Use a Rust toolchain supporting edition 2024 and the resolved dependencies in
 Lance's dependencies require `protoc` (`protobuf-compiler` on Ubuntu).
 Install Taplo with `cargo install taplo-cli --version 0.10.0 --locked`.
 
+The [CI workflow](../.github/workflows/ci.yml) runs the checks below on pull
+requests and pushes to `main`, and can also be dispatched manually. It uses
+stable Rust on Ubuntu, installs Protobuf and native build dependencies, and
+tests both default workspace features and all features. Download tests use
+local loopback listeners and require no cloud credentials. CI disables debug
+information and incremental compilation and uses the LLVM linker to reduce
+Lance's memory and disk requirements on hosted runners.
+
 ## Repository checks
 
 Run from the repository root:

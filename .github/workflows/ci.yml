@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Formatting and manifests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Install Taplo
+        run: cargo install taplo-cli --version 0.10.0 --locked
+      - name: Check TOML formatting and syntax
+        run: |
+          taplo fmt --check
+          taplo lint --no-schema
+      - name: Check workspace manifests and lockfile
+        run: cargo metadata --no-deps --locked --format-version 1 > /dev/null
+
+  rust:
+    name: Tests, Clippy, and documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      RUSTFLAGS: -C linker=clang -C link-arg=-fuse-ld=lld
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y protobuf-compiler clang lld pkg-config libssl-dev
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - name: Test default workspace features
+        run: cargo test --workspace --locked
+      - name: Test all workspace features
+        run: cargo test --workspace --all-features --locked
+      - name: Check all targets and features with Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build documentation
+        run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Run extension examples
+        run: |
+          cargo run --locked -p open-arrow-sink-layer --example custom_sink
+          cargo run --locked -p open-arrow-sink-layer --example custom_layer
