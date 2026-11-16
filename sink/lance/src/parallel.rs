@@ -5,7 +5,7 @@ use std::{
 
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
     DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
@@ -136,16 +136,15 @@ impl DataWriter for FragmentWriter {
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         if crate::blob_input::has_blobs(&self.encoding_schema) {
-            let mut prepared = crate::blob_input::rows(
+            crate::blob_input::send_rows(
                 &batch,
                 &self.encoding_schema,
                 &self.downloader,
                 self.blob_mode,
                 self.io_metrics.as_ref(),
-            );
-            while let Some(row) = prepared.next().await {
-                self.send(row?).await?;
-            }
+                self.sender.as_ref().unwrap(),
+            )
+            .await?;
         } else {
             self.send(crate::compression::writer_batch(
                 batch,

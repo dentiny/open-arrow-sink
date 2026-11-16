@@ -1,7 +1,6 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use datafusion_physical_plan::SendableRecordBatchStream;
-use futures::StreamExt;
 use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
@@ -47,7 +46,7 @@ impl Writer for BlobDatasetWriter {
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let schema = crate::blob::logical_schema(&self.encoding_schema);
-        let mut prepared = crate::blob_input::rows(
+        crate::blob_input::send_rows(
             &batch,
             &schema,
             &self.destination.downloader,
@@ -57,15 +56,9 @@ impl Writer for BlobDatasetWriter {
                 .map(|config| config.external_blob_mode)
                 .unwrap_or_default(),
             self.options.io_metrics.as_ref(),
-        );
-        while let Some(row) = prepared.next().await {
-            self.sender
-                .as_ref()
-                .unwrap()
-                .send(Message::Batch(row?))
-                .await
-                .map_err(|_| worker_stopped())?;
-        }
+            self.sender.as_ref().unwrap(),
+        )
+        .await?;
         self.rows += rows;
         self.state.complete();
         Ok(())

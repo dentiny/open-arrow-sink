@@ -98,14 +98,14 @@ async fn independent_budgets_and_cleanup() {
 
         // Full payloads and their clones retain the group reservation until the
         // consumer releases them, even after the download future has completed.
-        let full = pool(2, 2 * (2 * BODY.len() + 8))
+        let full = pool(2, 2 * (3 * BODY.len() + 8))
             .with_download_limits(BODY.len().try_into().unwrap(), 8.try_into().unwrap())
             .unwrap();
         let payload = full.download_all(&[URL], None).await.unwrap();
         assert_eq!(payload[0].as_ref(), BODY);
         let retained = payload[0].clone();
         drop(payload);
-        assert_eq!(full.buffered_bytes(), 2 * BODY.len() + 8);
+        assert_eq!(full.buffered_bytes(), 3 * BODY.len() + 8);
         drop(retained);
         assert_eq!(full.buffered_bytes(), 0);
         assert!(full.download_all(&[URL, URL], None).await.is_err());
@@ -113,7 +113,7 @@ async fn independent_budgets_and_cleanup() {
         // Reserve more than u32::MAX without allocating the payload itself.
         let large = u32::MAX as usize + 65;
         let large = pool(1, large)
-            .with_download_limits(((large - 8) / 2).try_into().unwrap(), 8.try_into().unwrap())
+            .with_download_limits(((large - 8) / 3).try_into().unwrap(), 8.try_into().unwrap())
             .unwrap();
         let reservation = large.begin().await.unwrap();
         assert!(large.buffered_bytes() > u32::MAX as usize);
@@ -219,7 +219,7 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
         drop(chunk);
         assert_eq!(first.buffered_bytes(), 0);
 
-        let limit = 2 * (BODY.len() + 1) + 8;
+        let limit = 3 * (BODY.len() + 1) + 8;
         let full = pool_with(1, limit, StorageConfig::default(), HeldBody)
             .with_download_limits((BODY.len() + 1).try_into().unwrap(), 8.try_into().unwrap())
             .unwrap();

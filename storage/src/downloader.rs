@@ -47,7 +47,7 @@ impl BlobDownloader {
         validation::validate_download_limit(max_buffered_bytes)?;
         let reservation = max_buffered_bytes.get() / concurrency.get();
         let chunk_bytes = CHUNK_BYTES.min(reservation / 3).max(1);
-        let download_bytes = reservation.saturating_sub(chunk_bytes) / 2;
+        let download_bytes = reservation.saturating_sub(chunk_bytes) / 3;
         Ok(Self {
             download_bytes,
             chunk_bytes,
@@ -124,8 +124,8 @@ impl BlobDownloader {
     }
 
     /// Configure full-download payload and chunk caps. Each download group
-    /// atomically reserves `2 * payload_bytes + chunk_bytes` from the shared
-    /// budget before reading: payloads, allocation/copy headroom, and scratch.
+    /// atomically reserves `3 * payload_bytes + chunk_bytes` from the shared
+    /// budget before reading: payloads, assembly/SDK copy headroom, and scratch.
     /// A group's selected blobs must fit together; limits do not grow with data.
     pub fn with_download_limits(
         mut self,
@@ -134,7 +134,7 @@ impl BlobDownloader {
     ) -> Result<Self> {
         let reservation = payload_bytes
             .get()
-            .checked_mul(2)
+            .checked_mul(3)
             .and_then(|bytes| bytes.checked_add(chunk_bytes.get()));
         if reservation.is_none_or(|bytes| bytes > self.max_buffered_bytes.get()) {
             return Err(error::download_payload_limit());
@@ -187,7 +187,7 @@ impl BlobDownloader {
             acquire_bytes(
                 self.buffers.clone(),
                 self.admission.clone(),
-                self.download_bytes * 2 + self.chunk_bytes,
+                self.download_bytes * 3 + self.chunk_bytes,
             )
             .await,
         );

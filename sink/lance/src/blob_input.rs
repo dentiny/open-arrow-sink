@@ -1,5 +1,5 @@
 //! Materialize blob sources before the SDK makes layout decisions.
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, LargeBinaryArray, LargeListArray, ListArray, MapArray,
@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field};
-use futures::{Stream, StreamExt, future::BoxFuture, stream};
+use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
 use open_arrow_sink_core::{ExternalBlobMode, IoMetrics, RecordBatch, Result, SchemaRef};
 use open_arrow_sink_storage::{BlobDownload, BlobDownloader};
 
@@ -36,17 +36,42 @@ pub(crate) fn has_blobs(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|field| contains(field))
 }
 
-/// Ordered downloads run concurrently while sharing the same global budgets.
-pub(crate) fn rows<'a>(
-    batch: &'a RecordBatch,
-    schema: &'a SchemaRef,
-    downloader: &'a BlobDownloader,
+/// Bound ready + active rows together, and poll downloads while the SDK's input
+/// channel is full. Otherwise downloads could hold every shared HTTP permit while
+/// SDK uploads wait for one, with nobody left polling the download bodies.
+pub(crate) async fn send_rows(
+    batch: &RecordBatch,
+    schema: &SchemaRef,
+    downloader: &BlobDownloader,
     mode: ExternalBlobMode,
-    metrics: Option<&'a IoMetrics>,
-) -> impl Stream<Item = Result<RecordBatch>> + 'a {
-    stream::iter(0..batch.num_rows())
-        .map(move |row| materialize_row(batch, row, schema, downloader, mode, metrics))
-        .buffered(downloader.concurrency())
+    metrics: Option<&IoMetrics>,
+    sender: &tokio::sync::mpsc::Sender<crate::parallel::Message>,
+) -> Result<()> {
+    let mut rows = 0..batch.num_rows();
+    let mut active = FuturesOrdered::new();
+    let mut ready = VecDeque::new();
+    loop {
+        while active.len() + ready.len() < downloader.concurrency() {
+            let Some(row) = rows.next() else {
+                break;
+            };
+            active.push_back(materialize_row(
+                batch, row, schema, downloader, mode, metrics,
+            ));
+        }
+        if active.is_empty() && ready.is_empty() {
+            return Ok(());
+        }
+        tokio::select! {
+            row = active.next(), if !active.is_empty() => {
+                ready.push_back(row.unwrap()?);
+            }
+            permit = sender.reserve(), if !ready.is_empty() => {
+                permit.map_err(|_| crate::error::worker_stopped())?
+                    .send(crate::parallel::Message::Batch(ready.pop_front().unwrap()));
+            }
+        }
+    }
 }
 
 /// Process one row at a time so input batch length cannot multiply full-blob
@@ -241,42 +266,42 @@ fn materialize<'a>(
             let columns = fields
                 .iter()
                 .enumerate()
-                .map(|(index, field)| match field.name().as_str() {
-                    "data" => data.clone(),
-                    "uri" => uris.clone(),
-                    // Range metadata applies only to preserved URI references.
-                    _ => {
-                        let validity = arrow_buffer::NullBuffer::from(
-                            materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
-                        );
-                        let original = values.column(index).to_data();
-                        arrow_array::make_array(
-                            original
-                                .into_builder()
-                                .nulls(arrow_buffer::NullBuffer::union(
-                                    values.column(index).nulls(),
-                                    Some(&validity),
-                                ))
-                                .build()
-                                .expect("same array with additional nulls"),
-                        )
-                    }
+                .map(|(index, field)| -> Result<ArrayRef> {
+                    Ok(match field.name().as_str() {
+                        "data" => data.clone(),
+                        "uri" => uris.clone(),
+                        // Range metadata applies only to preserved URI references.
+                        _ => {
+                            let validity = arrow_buffer::NullBuffer::from(
+                                materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
+                            );
+                            let original = values.column(index).to_data();
+                            arrow_array::make_array(
+                                original
+                                    .into_builder()
+                                    .nulls(arrow_buffer::NullBuffer::union(
+                                        values.column(index).nulls(),
+                                        Some(&validity),
+                                    ))
+                                    .build()
+                                    .map_err(Error::backend)?,
+                            )
+                        }
+                    })
                 })
-                .collect();
-            return Ok(Arc::new(StructArray::new(
-                fields.clone(),
-                columns,
-                values.nulls().cloned(),
-            )) as ArrayRef);
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(Arc::new(
+                StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
+                    .map_err(Error::backend)?,
+            ) as ArrayRef);
         }
         let mut columns = Vec::with_capacity(fields.len());
         for (array, field) in values.columns().iter().zip(fields) {
             columns.push(materialize(array, field, group, mode, metrics).await?);
         }
-        Ok(Arc::new(StructArray::new(
-            fields.clone(),
-            columns,
-            values.nulls().cloned(),
-        )) as ArrayRef)
+        Ok(Arc::new(
+            StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
+                .map_err(Error::backend)?,
+        ) as ArrayRef)
     })
 }

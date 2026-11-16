@@ -280,13 +280,16 @@ Three downloader limits work together:
 
 - Download concurrency bounds active groups. A row's selected blobs share one
   group and are read sequentially; rows download concurrently, preserving row
-  order at handoff. All writers using the same downloader share admission.
+  order at handoff. Ready plus active rows are bounded together. Pending
+  downloads continue being polled while the SDK's input channel is full, so
+  sharing HTTP permits with destination uploads does not stall body consumption.
+  All writers using the same downloader share admission.
 - The HTTP storage's request limiter bounds requests through response-body EOF,
   failure, or cancellation. Its default equals download concurrency; install a
   shared `HttpConcurrencyLimitLayer` to share capacity with destination storage.
 - `max_buffered_bytes` bounds shared application reservations. Each group
-  atomically reserves `2 * payload_limit + chunk_limit`: complete payloads,
-  allocation/copy headroom, and scratch. All blob payloads in one row, including
+  atomically reserves `3 * payload_limit + chunk_limit`: complete payloads,
+  two copies of assembly/SDK headroom, and scratch. All blob payloads in one row, including
   nested blobs, must fit the payload limit. Oversized rows fail. A download never
   waits while holding only part of its reservation. Payload reservations follow
   shared Arrow buffers through the native writer's bounded queue and release
@@ -294,7 +297,7 @@ Three downloader limits work together:
 
 Without `with_download_limits`, each group reserves the shared budget divided
 by concurrency. Scratch is at most 2 MiB and one third of
-that reservation; half of the remainder is the payload limit. `with_defaults()`
+that reservation; one third of the remainder is the payload limit. `with_defaults()`
 uses 64 download slots and an 8 GiB shared budget. No environment override or
 process-wide singleton changes these limits. Cloned downloaders share budgets;
 newly constructed sinks have independent default budgets unless configured to
