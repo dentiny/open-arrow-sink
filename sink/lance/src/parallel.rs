@@ -8,13 +8,13 @@ use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::Stream;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, failed, worker_stopped},
+    error::{aborted, backend, worker_stopped},
     storage::NativeStorage,
 };
 
@@ -68,7 +68,7 @@ pub(crate) struct FragmentWriter {
     sender: Option<mpsc::Sender<Message>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
-    failed: bool,
+    state: Poison,
 }
 
 impl FragmentWriter {
@@ -98,7 +98,7 @@ impl FragmentWriter {
             sender: Some(sender),
             task: Some(task),
             rows: 0,
-            failed: false,
+            state: Poison::default(),
         })
     }
 }
@@ -110,8 +110,10 @@ impl DataWriter for FragmentWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_write_state(self.failed || self.sender.is_none())?;
-        self.failed = true;
+        self.state.begin()?;
+        if self.sender.is_none() {
+            return Err(open_arrow_sink_core::Error::Poisoned);
+        }
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch = writer_batch(batch, &self.encoding_schema)?;
@@ -122,19 +124,21 @@ impl DataWriter for FragmentWriter {
             .await
             .map_err(|_| worker_stopped())?;
         self.rows += rows;
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
     async fn finish(&mut self) -> Result<Output> {
-        crate::validation::validate_write_state(self.failed)?;
-        self.failed = true;
-        let sender = self.sender.take().ok_or_else(failed)?;
+        self.state.begin()?;
+        let sender = self
+            .sender
+            .take()
+            .ok_or(open_arrow_sink_core::Error::Poisoned)?;
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let transaction = self
             .task
             .take()
-            .ok_or_else(failed)?
+            .ok_or(open_arrow_sink_core::Error::Poisoned)?
             .await
             .map_err(backend)?
             .map_err(backend)?;

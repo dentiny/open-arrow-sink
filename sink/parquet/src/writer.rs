@@ -1,5 +1,5 @@
 use open_arrow_sink_core::{
-    DataWriter, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ pub(crate) struct ParquetDirectoryWriter {
     schema: SchemaRef,
     writer: Option<AsyncArrowWriter<FileWriter>>,
     options: WriteOptions,
-    active: bool,
+    state: Poison,
     properties: WriterProperties,
     rows_written: u64,
     files_created: usize,
@@ -31,9 +31,8 @@ impl DataWriter for ParquetDirectoryWriter {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_writer_active(self.active)?;
-        // A failed or cancelled write is terminal, but retain the upload for abort.
-        self.active = false;
+        // Retain upload ownership for abort, including after cancellation.
+        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.should_roll_file(self.writer.as_ref().ok_or_else(closed)?, batch.num_rows()) {
             self.writer
@@ -70,13 +69,12 @@ impl DataWriter for ParquetDirectoryWriter {
             writer.flush().await.map_err(backend)?;
         }
         self.rows_written += batch.num_rows() as u64;
-        self.active = true;
+        self.state.complete();
         Ok(())
     }
 
     async fn finish(&mut self) -> Result<u64> {
-        crate::validation::validate_writer_active(self.active)?;
-        self.active = false;
+        self.state.begin()?;
         self.writer
             .as_mut()
             .ok_or_else(closed)?
@@ -88,7 +86,7 @@ impl DataWriter for ParquetDirectoryWriter {
         Ok(self.rows_written)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        self.active = false;
+        self.state.poison();
         self.cleanup().await
     }
 }
@@ -107,7 +105,7 @@ impl ParquetDirectoryWriter {
             destination,
             schema,
             writer: Some(writer),
-            active: true,
+            state: Poison::default(),
             options,
             properties,
             rows_written: 0,

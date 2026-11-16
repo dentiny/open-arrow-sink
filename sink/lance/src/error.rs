@@ -22,10 +22,6 @@ pub(crate) fn aborted() -> ArrowError {
     )))
 }
 
-pub(crate) fn failed() -> Error {
-    backend(io::Error::other("writer failed; abort or drop it"))
-}
-
 pub(crate) fn worker_stopped() -> Error {
     backend(io::Error::other("Lance write worker stopped"))
 }
@@ -47,27 +43,35 @@ pub(crate) fn unsupported_index(
 pub(crate) fn index_creation(
     spec: &open_arrow_sink_core::IndexSpec,
     error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
 ) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!(
+    open_arrow_sink_core::IndexCommitError::new(
+        format!(
             "creating {:?} index on '{}': {error}",
             spec.index_type, spec.column
         ),
-    }
+        summary,
+    )
 }
 
-pub(crate) fn index_task(error: impl std::fmt::Display) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!("index construction task failed: {error}"),
-    }
+pub(crate) fn index_task(
+    error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
+) -> open_arrow_sink_core::IndexCommitError {
+    open_arrow_sink_core::IndexCommitError::new(
+        format!("index construction task failed: {error}"),
+        summary,
+    )
 }
 
 pub(crate) fn index_refresh(
     error: impl std::fmt::Display,
+    summary: open_arrow_sink_core::WriteSummary,
 ) -> open_arrow_sink_core::IndexCommitError {
-    open_arrow_sink_core::IndexCommitError {
-        message: format!("refreshing dataset after index construction: {error}"),
-    }
+    open_arrow_sink_core::IndexCommitError::new(
+        format!("refreshing dataset after index construction: {error}"),
+        summary,
+    )
 }
 
 pub(crate) fn destination_exists() -> Error {
@@ -98,9 +102,6 @@ pub(crate) fn invalid_blob(message: &'static str) -> Error {
 }
 pub(crate) fn invalid_blob_column(column: &str) -> Error {
     Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
-}
-pub(crate) fn blob_failed() -> Error {
-    invalid_blob("blob session failed; abort or drop it")
 }
 pub(crate) fn unfinished_blobs() -> Error {
     backend(io::Error::other(

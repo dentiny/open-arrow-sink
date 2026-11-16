@@ -99,21 +99,64 @@ A commit error may have an uncertain outcome; reconcile with the backend before
 starting another attempt. A successful summary reports committed rows, not files
 or bytes.
 
+## Recover from a failed commit
+
+`cleanup_on_error` defaults to `true` and requests **best-effort cleanup** of
+session-owned output. It does not guarantee rollback, removal of every orphan,
+or exactly-once delivery. Cleanup itself can fail; automatic cleanup before
+publication preserves the original commit error, so that error does not prove
+cleanup succeeded. Set the option to `false` to retain output for inspection.
+Dropping a writer, cancelling its commit future, or terminating the process
+cannot guarantee asynchronous cleanup.
+
+`commit(self)` consumes the writer even when it returns an error: there is no
+remaining writer on which to call `abort()`. Before commit, explicitly await
+`abort()` after an input/write error and record any cleanup error. During commit,
+a write/finish failure triggers best-effort abort of the data writers and session.
+Once the session committer takes ownership, publication-failure handling belongs
+to that backend; callers must not delete potentially committed files.
+
+After a commit error or cancellation:
+
+1. Stop writes to that destination and retain the error, destination, and any
+   known session paths or dataset/table versions for investigation.
+2. Inspect the backend's current state to determine whether publication took
+   effect. A timeout or other error can occur after publication succeeded. For
+   Lance, also distinguish `IndexCommitError`: its data is already committed,
+   and successful earlier indexes remain published. Do not replay those rows.
+3. Remove only output confirmed to be unreferenced and owned by the failed
+   session. For versioned datasets/tables, use backend-aware orphan maintenance
+   that respects retained versions/snapshots and active writers. Do not delete
+   a dataset/table prefix merely because `commit` returned an error.
+4. Open a fresh session only after reconciling the destination. Retrying an
+   Append without reconciliation can duplicate rows; Create can fail if a
+   reservation marker or orphan output still occupies the destination.
+
+### What the next overwrite does
+
+Overwrite is a new full replacement of the destination's current rows. It does
+not resume the failed commit, provide deduplication, or automatically collect
+leftovers from earlier sessions. Exclude concurrent destination mutations.
+
+| Backend | Next Overwrite after a failed commit |
+| --- | --- |
+| Parquet | Unsupported; rejected before writing. |
+| Lance | Requires an existing prefix to load as a valid dataset; a missing prefix can be created. A prefix containing only a failed Create's marker/fragments can therefore block Overwrite until confirmed uncommitted leftovers are cleaned. For a valid dataset, success publishes a new manifest replacing the current rows while retaining historical versions/files; it does not purge prior orphan files. |
+| Iceberg | Unsupported; rejected before writing. Reload/reconcile the table before opening another Append session. |
+
 ## Choose write options
 
 ```rust
 use open_arrow_sink::{Compression, CompressionOptions, Ordering, WriteMode, WriteOptions};
 
-let options = WriteOptions {
-    mode: WriteMode::Create,
-    ordering: Ordering::Unordered,
-    compression: CompressionOptions {
+let options = WriteOptions::default()
+    .with_mode(WriteMode::Create)
+    .with_ordering(Ordering::Unordered)
+    .with_compression(CompressionOptions {
         global: Some(Compression::Zstd { level: Some(9) }),
         ..Default::default()
-    },
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-};
+    })
+    .with_target_file_size(Some(256 * 1024 * 1024));
 ```
 
 With Parquet this needs `parquet-zstd`. Empty compression options preserve backend
@@ -122,7 +165,7 @@ replace the global codec and level, and use exact unique top-level field names.
 File size is a positive soft target, not a strict maximum or a total-output limit.
 
 Use `Append` only for existing destinations. `Overwrite` replaces all rows, not
-just affected partitions; Parquet supports it only on filesystem storage. Lance
+just affected partitions; Parquet and Iceberg do not support it. Lance
 retains historical dataset versions. Inspect capabilities and read the backend's
 publication rules before selecting a mode.
 
@@ -132,9 +175,11 @@ Configure a catalog and create a table outside the sink. Derive the input schema
 from table metadata so it contains the required Iceberg field IDs:
 
 ```rust,ignore
+use open_arrow_sink::{
+    Ordering, Sink, WriteMode, WriteOptions,
+    iceberg::{IcebergTableSink, iceberg},
+};
 use std::sync::Arc;
-use open_arrow_sink::{Ordering, Sink, WriteMode, WriteOptions,
-    iceberg::{IcebergTableSink, iceberg}};
 
 // catalog: Arc<dyn iceberg::Catalog>; identifier: iceberg::TableIdent
 let table = catalog.load_table(&identifier).await?;
@@ -142,11 +187,15 @@ let schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(
     table.metadata().current_schema(),
 )?);
 let sink = IcebergTableSink::new(catalog);
-let mut writer = sink.open(identifier, schema, WriteOptions {
-    mode: WriteMode::Append,
-    ordering: Ordering::Unordered,
-    ..WriteOptions::default()
-}).await?;
+let mut writer = sink
+    .open(
+        identifier,
+        schema,
+        WriteOptions::default()
+            .with_mode(WriteMode::Append)
+            .with_ordering(Ordering::Unordered),
+    )
+    .await?;
 // Build batches with this exact schema, write, then commit.
 ```
 

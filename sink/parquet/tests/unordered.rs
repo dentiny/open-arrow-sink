@@ -33,11 +33,9 @@ async fn unordered_commit_preserves_all_rows() {
         .open(
             directory.clone(),
             make_batch(0).schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                target_file_size: Some(1),
-                ..Default::default()
-            },
+            WriteOptions::default()
+                .with_ordering(Ordering::Unordered)
+                .with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -87,10 +85,7 @@ async fn unordered_commit_preserves_all_rows() {
             .open(
                 directory,
                 make_batch(0).schema(),
-                WriteOptions {
-                    ordering: Ordering::Unordered,
-                    ..Default::default()
-                }
+                WriteOptions::default().with_ordering(Ordering::Unordered)
             )
             .await
             .is_err()
