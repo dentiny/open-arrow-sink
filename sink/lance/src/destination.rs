@@ -82,9 +82,8 @@ impl LanceDestination {
             Err(error) => Err(Error::backend(error)),
         }
     }
-    /// Recognize the namespaces left by an unpublished Lance write. Never delete
-    /// them: another writer may still be using them. In particular, any version
-    /// metadata prevents treating a broken dataset as a fresh destination.
+    /// Recognize unpublished Lance files without deleting them. Published version
+    /// metadata and unrelated contents must still go through dataset validation.
     async fn only_uncommitted_files(&self) -> Result<bool> {
         let operator = self.storage.operator();
         let mut entries = operator
@@ -100,25 +99,19 @@ impl LanceDestination {
                 continue; // Directory marker returned by some backends.
             }
             let (namespace, name) = relative.split_once('/').unwrap_or((relative, ""));
-            let managed = if entry.metadata().is_dir() {
-                matches!(
-                    namespace,
-                    "data" | "_blobs" | "_transactions" | "_indices" | "_index_staging"
-                ) || relative == "_versions/"
-            } else {
-                match namespace {
-                    "data" => {
-                        name.ends_with(".lance")
-                            || name.ends_with(".lance-stage")
-                            || name.ends_with(".blob")
-                    }
-                    "_blobs" => name.ends_with(".blob"),
-                    "_transactions" => name.ends_with(".txn"),
-                    "_index_staging" => name.ends_with(".manifest"),
-                    // Index implementations own the files inside this namespace.
-                    "_indices" => !name.is_empty(),
-                    _ => false,
+            let managed = match (namespace, entry.metadata().is_dir()) {
+                ("data" | "_blobs" | "_transactions" | "_indices" | "_index_staging", true) => true,
+                ("_versions", true) => name.is_empty(),
+                ("data", false) => {
+                    name.ends_with(".lance")
+                        || name.ends_with(".lance-stage")
+                        || name.ends_with(".blob")
                 }
+                ("_blobs", false) => name.ends_with(".blob"),
+                ("_transactions", false) => name.ends_with(".txn"),
+                ("_index_staging", false) => name.ends_with(".manifest"),
+                ("_indices", false) => !name.is_empty(),
+                _ => false,
             };
             if !managed {
                 return Ok(false);

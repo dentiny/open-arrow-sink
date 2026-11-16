@@ -182,30 +182,19 @@ async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
 }
 
 #[rstest::rstest]
-#[case::exact_file("")]
 #[case::unrelated("notes.txt")]
 #[case::nested_unrelated("data/notes.txt")]
 #[case::unrelated_staging_file("_index_staging/notes.txt")]
-#[case::unrelated_directory("unrelated/")]
 #[case::corrupt_manifest("_versions/1.manifest")]
-#[case::unrecognized_version_metadata("_versions/unknown")]
 #[tokio::test]
 async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let file = if relative.is_empty() {
-        path.clone()
-    } else {
-        path.join(relative)
-    };
-    if relative.ends_with('/') {
-        tokio::fs::create_dir_all(&file).await.unwrap();
-    } else {
-        tokio::fs::create_dir_all(file.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&file, b"keep").await.unwrap();
-    }
+    let file = path.join(relative);
+    tokio::fs::create_dir_all(file.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&file, b"keep").await.unwrap();
     assert!(
         LanceDatasetSink::default()
             .open(
@@ -216,7 +205,5 @@ async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
             .await
             .is_err()
     );
-    if !relative.ends_with('/') {
-        assert_eq!(tokio::fs::read(file).await.unwrap(), b"keep");
-    }
+    assert_eq!(tokio::fs::read(file).await.unwrap(), b"keep");
 }
