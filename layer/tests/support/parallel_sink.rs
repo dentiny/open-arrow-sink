@@ -1,0 +1,278 @@
+//! Event-recording backend used only by the layer contract tests.
+#![allow(dead_code)] // Each integration-test binary uses a different fixture subset.
+
+use futures::channel::oneshot;
+use open_arrow_sink_core::{
+    DataWriter, Error, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter,
+    Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
+};
+use std::{
+    collections::HashSet,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Operation {
+    Open,
+    WriteStarted,
+    WriteCompleted,
+    Finish,
+    Abort,
+    CommitAttempt,
+    Commit,
+    SessionAbort,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Open(usize),
+    WriteStarted(usize),
+    WriteCompleted(usize),
+    Finish(usize),
+    Abort(usize),
+    RequestedOrdering(Ordering),
+    CommitAttempt,
+    Commit { rows: u64 },
+    SessionAbort,
+}
+impl Event {
+    fn operation(&self) -> Option<Operation> {
+        Some(match self {
+            Self::Open(_) => Operation::Open,
+            Self::WriteStarted(_) => Operation::WriteStarted,
+            Self::WriteCompleted(_) => Operation::WriteCompleted,
+            Self::Finish(_) => Operation::Finish,
+            Self::Abort(_) => Operation::Abort,
+            Self::CommitAttempt => Operation::CommitAttempt,
+            Self::Commit { .. } => Operation::Commit,
+            Self::SessionAbort => Operation::SessionAbort,
+            Self::RequestedOrdering(_) => return None,
+        })
+    }
+}
+
+/// Failure injection is separate from observations; multiple failures can coexist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Failure {
+    Write,
+    FirstFinish,
+    Abort,
+    Commit,
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum SessionDefect {
+    #[default]
+    None,
+    WrongCount,
+    WrongSchema,
+}
+
+pub struct Config {
+    pub failures: HashSet<Failure>,
+    pub defect: SessionDefect,
+    pub ordering: Ordering,
+    pub supports_blobs: bool,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            failures: HashSet::new(),
+            defect: SessionDefect::None,
+            ordering: Ordering::PreserveInput,
+            supports_blobs: false,
+        }
+    }
+}
+#[derive(Default)]
+pub struct State {
+    pub config: Config,
+    pub events: Vec<Event>,
+    pub gates: Vec<oneshot::Sender<()>>,
+}
+impl State {
+    pub fn failing(operations: impl IntoIterator<Item = Failure>) -> Self {
+        Self {
+            config: Config {
+                failures: operations.into_iter().collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+    pub fn count(&self, operation: Operation) -> usize {
+        self.events
+            .iter()
+            .filter(|event| event.operation() == Some(operation))
+            .count()
+    }
+    pub fn requested_ordering(&self) -> Option<Ordering> {
+        self.events.iter().find_map(|event| {
+            if let Event::RequestedOrdering(value) = event {
+                Some(*value)
+            } else {
+                None
+            }
+        })
+    }
+    pub fn committed_rows(&self) -> Option<u64> {
+        self.events.iter().find_map(|event| {
+            if let Event::Commit { rows } = event {
+                Some(*rows)
+            } else {
+                None
+            }
+        })
+    }
+}
+pub type SharedState = Arc<Mutex<State>>;
+pub struct TestSink(pub SharedState);
+struct TestWriter {
+    id: usize,
+    state: SharedState,
+    schema: SchemaRef,
+    gate: Option<oneshot::Receiver<()>>,
+    rows: u64,
+}
+fn failure() -> Error {
+    Error::Unsupported("injected failure".into())
+}
+
+#[async_trait]
+impl Sink for TestSink {
+    type Request = ();
+    fn capability(&self) -> SinkCapability {
+        let state = self.0.lock().unwrap();
+        SinkCapability {
+            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
+            ordering: state.config.ordering,
+            compression: Default::default(),
+            supported_partitions: vec![],
+            supports_blob_handle: state.config.supports_blobs,
+            supports_blob_streaming: state.config.supports_blobs,
+            supports_storage_version: false,
+            supported_indexes: &[],
+        }
+    }
+    async fn open(
+        &self,
+        request: (),
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<dyn Writer>> {
+        self.open_writers(request, schema, options, NonZeroUsize::MIN)
+            .await?
+            .into_writer()
+            .await
+    }
+}
+#[async_trait]
+impl ParallelSink for TestSink {
+    type Output = u64;
+    async fn open_writers(
+        &self,
+        _: (),
+        schema: SchemaRef,
+        options: WriteOptions,
+        writers: NonZeroUsize,
+    ) -> Result<WriteSession<u64>> {
+        open_arrow_sink_core::validation::validate_options(&schema, &options, self.capability())?;
+        let mut state = self.0.lock().unwrap();
+        state
+            .events
+            .push(Event::RequestedOrdering(options.ordering));
+        let count = if matches!(state.config.defect, SessionDefect::WrongCount) {
+            0
+        } else {
+            writers.get()
+        };
+        let mut result = Vec::new();
+        for id in 0..count {
+            let (sender, receiver) = oneshot::channel();
+            state.events.push(Event::Open(id));
+            state.gates.push(sender);
+            result.push(Box::new(TestWriter {
+                id,
+                state: self.0.clone(),
+                schema: if matches!(state.config.defect, SessionDefect::WrongSchema) {
+                    Arc::new(arrow_schema::Schema::empty())
+                } else {
+                    schema.clone()
+                },
+                gate: Some(receiver),
+                rows: 0,
+            }) as Box<dyn DataWriter<Output = u64>>);
+        }
+        Ok(WriteSession {
+            writers: result,
+            committer: Box::new(TestCommitter(self.0.clone())),
+        })
+    }
+}
+#[async_trait]
+impl DataWriter for TestWriter {
+    type Output = u64;
+    fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        self.state
+            .lock()
+            .unwrap()
+            .events
+            .push(Event::WriteStarted(self.id));
+        if let Some(gate) = self.gate.take() {
+            gate.await.unwrap();
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.config.failures.contains(&Failure::Write) {
+            return Err(failure());
+        }
+        state.events.push(Event::WriteCompleted(self.id));
+        self.rows += batch.num_rows() as u64;
+        Ok(())
+    }
+    async fn finish(&mut self) -> Result<u64> {
+        let mut state = self.state.lock().unwrap();
+        state.events.push(Event::Finish(self.id));
+        if state.config.failures.contains(&Failure::FirstFinish)
+            && state.count(Operation::Finish) == 1
+        {
+            return Err(failure());
+        }
+        Ok(self.rows)
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.events.push(Event::Abort(self.id));
+        if state.config.failures.contains(&Failure::Abort) {
+            return Err(failure());
+        }
+        Ok(())
+    }
+}
+struct TestCommitter(SharedState);
+#[async_trait]
+impl SessionCommitter<u64> for TestCommitter {
+    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {
+        let mut state = self.0.lock().unwrap();
+        assert_eq!(state.count(Operation::Finish), state.count(Operation::Open));
+        state.events.push(Event::CommitAttempt);
+        if state.config.failures.contains(&Failure::Commit) {
+            return Err(failure());
+        }
+        let rows = outputs.into_iter().sum();
+        state.events.push(Event::Commit { rows });
+        Ok(WriteSummary { rows_written: rows })
+    }
+    async fn abort(self: Box<Self>) -> Result<()> {
+        self.0.lock().unwrap().events.push(Event::SessionAbort);
+        Ok(())
+    }
+}
+pub fn release(state: &SharedState) {
+    for gate in state.lock().unwrap().gates.drain(..) {
+        let _ = gate.send(());
+    }
+}
