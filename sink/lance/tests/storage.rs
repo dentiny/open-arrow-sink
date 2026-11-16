@@ -6,7 +6,7 @@ use lance::{
 };
 use more_asserts::assert_gt;
 use open_arrow_sink_core::{
-    BlobHandleConfig, IndexSpec, IndexType, Sink, SinkExt, UploadConfig, WriteOptions,
+    BlobHandleConfig, IndexSpec, IndexType, ParallelSink, Sink, SinkExt, UploadConfig, WriteOptions,
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
@@ -148,47 +148,38 @@ async fn duplicate_index_reports_already_exists() {
     ));
 }
 
-#[rstest::rstest]
-#[case::cleanup(true)]
-#[case::keep(false)]
 #[tokio::test]
-async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
+async fn shared_operator_abort_preserves_output() {
     let storage = storage();
-    let sink = LanceDatasetSink::new(storage.clone())
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
+    let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("aborted/").unwrap();
-    let mut writer = sink
-        .open(
+    let mut session = sink
+        .open_writers(
             url.clone(),
             batch().schema(),
-            write_options().with_cleanup_on_error(cleanup_on_error),
+            write_options(),
+            NonZeroUsize::new(3).unwrap(),
         )
         .await
         .unwrap();
-    writer.write(batch()).await.unwrap();
-    // Accepted writes need not have produced an object yet. Seed partial output
-    // so both cleanup policies are observable without depending on a marker.
-    storage
-        .write(
-            &storage.resolve(&url.join("partial").unwrap()).unwrap(),
-            "partial".into(),
-        )
-        .await
-        .unwrap();
+    session.writers[0].write(batch()).await.unwrap();
+    session.writers[0].finish().await.unwrap();
+    let directory = storage.resolve(&url).unwrap();
+    let mut before = storage.list(&directory).await.unwrap();
+    before.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert!(!before.is_empty());
     let sibling = storage.url("keep").unwrap();
     storage
         .write(&storage.resolve(&sibling).unwrap(), "keep".into())
         .await
         .unwrap();
-    writer.abort().await.unwrap();
-    assert_eq!(
-        storage
-            .list(&storage.resolve(&url).unwrap())
-            .await
-            .unwrap()
-            .is_empty(),
-        cleanup_on_error
-    );
+    for writer in session.writers {
+        writer.abort().await.unwrap();
+    }
+    session.committer.abort().await.unwrap();
+    let mut retained = storage.list(&directory).await.unwrap();
+    retained.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(retained, before);
     assert_eq!(
         storage
             .read(&storage.resolve(&sibling).unwrap())

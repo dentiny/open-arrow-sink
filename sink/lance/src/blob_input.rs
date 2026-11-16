@@ -37,11 +37,11 @@ pub(crate) async fn send_rows(
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
     metrics: Option<&IoMetrics>,
-    sender: &tokio::sync::mpsc::Sender<RecordBatch>,
+    worker: &mut crate::worker::FragmentWorker,
 ) -> Result<()> {
     let mut rows = 0..batch.num_rows();
     let mut active = FuturesOrdered::new();
-    let mut ready = VecDeque::new();
+    let mut ready: VecDeque<RecordBatch> = VecDeque::new();
     loop {
         while active.len() + ready.len() < downloader.in_flight_limit() {
             let Some(row) = rows.next() else {
@@ -58,9 +58,9 @@ pub(crate) async fn send_rows(
             row = active.next(), if !active.is_empty() => {
                 ready.push_back(row.unwrap()?);
             }
-            permit = sender.reserve(), if !ready.is_empty() => {
-                permit.map_err(|_| crate::error::worker_stopped())?
-                    .send(ready.pop_front().unwrap());
+            result = async { worker.write(ready.front().unwrap().clone()).await }, if !ready.is_empty() => {
+                result?;
+                ready.pop_front();
             }
         }
     }

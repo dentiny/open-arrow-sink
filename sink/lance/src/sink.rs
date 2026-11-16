@@ -65,8 +65,7 @@ impl LanceDatasetSink {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
-        }
-        .with_write_options(options);
+        };
         let downloader = Arc::new(
             self.downloader
                 .as_ref()
@@ -75,7 +74,7 @@ impl LanceDatasetSink {
                 .with_primary_storage(storage.clone()),
         );
         let mut destination = LanceDestination::new(
-            storage,
+            storage.with_write_options(options),
             url,
             self.sources.clone(),
             options.io_metrics.as_ref(),

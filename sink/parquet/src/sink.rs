@@ -2,8 +2,8 @@ use open_arrow_sink_storage::{Storage, StorageConfig, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
-    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter,
-    Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
+    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
+    SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
 
 use crate::{
@@ -109,32 +109,20 @@ impl ParquetDirectorySink {
         .with_write_options(&options);
         let destination =
             Arc::new(Destination::open(storage, directory, &schema, options.mode).await?);
-        let committer = Box::new(ParquetCommitter {
-            destination: destination.clone(),
-            cleanup_on_error: options.cleanup_on_error,
-        });
+        let committer = Box::new(ParquetCommitter);
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
-            let opened = destination
+            let writer = destination
                 .open_writer(index, 0, schema.clone(), properties.clone())
-                .await;
-            match opened {
-                Ok(writer) => writers.push(ParquetDirectoryWriter::new(
-                    destination.clone(),
-                    schema.clone(),
-                    writer,
-                    options.target_file_size,
-                    properties.clone(),
-                    index,
-                )),
-                Err(error) => {
-                    for writer in writers {
-                        let _ = DataWriter::abort(Box::new(writer)).await;
-                    }
-                    let _ = committer.abort().await;
-                    return Err(error);
-                }
-            }
+                .await?;
+            writers.push(ParquetDirectoryWriter::new(
+                destination.clone(),
+                schema.clone(),
+                writer,
+                options.target_file_size,
+                properties.clone(),
+                index,
+            ));
         }
         Ok(WriteSession {
             writers: writers

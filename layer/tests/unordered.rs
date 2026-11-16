@@ -127,7 +127,7 @@ async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
 }
 
 #[tokio::test]
-async fn async_failure_aborts_every_writer_before_committing() {
+async fn async_failure_returns_without_abort_or_publication() {
     let state = Arc::new(Mutex::new(State::failing([Failure::Write])));
     let mut writer = sink(&state)
         .open((), batch().schema(), options())
@@ -139,11 +139,11 @@ async fn async_failure_aborts_every_writer_before_committing() {
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
     assert_eq!(state.count(|e| matches!(e, Event::Commit { .. })), 0);
-    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 2);
+    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
 }
 
 #[tokio::test]
-async fn cancelled_write_makes_commit_terminal_and_cleans_up() {
+async fn cancelled_write_makes_commit_terminal_without_aborting() {
     let state = Arc::new(Mutex::new(State::default()));
     let mut writer = sink(&state)
         .open((), batch().schema(), options())
@@ -157,7 +157,7 @@ async fn cancelled_write_makes_commit_terminal_and_cleans_up() {
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
     assert_eq!(state.count(|e| matches!(e, Event::Commit { .. })), 0);
-    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 2);
+    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
 }
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn schema_error_is_terminal_even_for_empty_batches() {
             .lock()
             .unwrap()
             .count(|e| matches!(e, Event::Abort(_))),
-        2
+        0
     );
 }
 
@@ -285,9 +285,7 @@ async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
 #[case::finish_failure(false)]
 #[case::finish_and_abort_failure(true)]
 #[tokio::test]
-async fn finish_failure_aborts_even_successfully_finished_writers_without_publication(
-    #[case] fail_abort: bool,
-) {
+async fn finish_failure_returns_without_abort_or_publication(#[case] fail_abort: bool) {
     let mut failures = vec![Failure::FirstFinish];
     if fail_abort {
         failures.push(Failure::Abort);
@@ -299,17 +297,17 @@ async fn finish_failure_aborts_even_successfully_finished_writers_without_public
         .unwrap();
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(state.count(|e| matches!(e, Event::Finish(_))), 2);
+    assert!(state.count(|e| matches!(e, Event::Finish(_))) > 0);
     assert_eq!(state.count(|e| matches!(e, Event::CommitAttempt)), 0);
-    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 2);
-    assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 1);
+    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
+    assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 0);
 }
 
 #[rstest::rstest]
 #[case::wrong_schema(false)]
 #[case::wrong_count(true)]
 #[tokio::test]
-async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted(
+async fn backend_session_contract_is_checked_and_invalid_sessions_are_rejected(
     #[case] wrong_count: bool,
 ) {
     let state = Arc::new(Mutex::new(State {
@@ -330,11 +328,8 @@ async fn backend_session_contract_is_checked_and_invalid_sessions_are_aborted(
             .is_err()
     );
     let state = state.lock().unwrap();
-    assert_eq!(
-        state.count(|e| matches!(e, Event::Abort(_))),
-        state.count(|e| matches!(e, Event::Open(_)))
-    );
-    assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 1);
+    assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
+    assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 0);
     assert_eq!(state.count(|e| matches!(e, Event::CommitAttempt)), 0);
 }
 

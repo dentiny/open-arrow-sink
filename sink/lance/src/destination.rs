@@ -16,7 +16,6 @@ pub(crate) struct LanceDestination {
     pub url: Url,
     pub path: ObjectPath,
     session: Arc<Session>,
-    new_destination: bool,
     pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
 impl LanceDestination {
@@ -31,8 +30,7 @@ impl LanceDestination {
         // Lance's native API requires a URL at its boundary.
         let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
-        let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
-        let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
+        let provider = Arc::new(Provider::new(storage.clone(), sources, metrics.cloned()));
         for scheme in provider.schemes() {
             session.store_registry().insert(&scheme, provider.clone());
         }
@@ -42,7 +40,6 @@ impl LanceDestination {
             url,
             path,
             session,
-            new_destination: false,
             encoding_buffer_size: None,
         })
     }
@@ -54,14 +51,7 @@ impl LanceDestination {
     ) -> Result<Option<lance::Dataset>> {
         let existing =
             crate::validation::validate_destination(self, schema, mode, storage_version).await?;
-        self.new_destination = existing.is_none();
         Ok(existing)
-    }
-    pub async fn cleanup(&self) -> Result<()> {
-        if self.new_destination {
-            self.storage.remove_all(&self.path).await?;
-        }
-        Ok(())
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {

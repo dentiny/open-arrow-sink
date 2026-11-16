@@ -51,9 +51,8 @@ Inside `open`/`open_writers`, before destination I/O:
    configuration, and all other backend-only parameters.
 3. Resolve/load the destination, then check existence, write mode, exact schema,
    native partition spec, and other destination-dependent constraints.
-4. Reserve output once. Record ownership so cleanup cannot remove another
-   session's data. If opening multiple writers fails partway, abort every opened
-   writer and clean up the session according to `cleanup_on_error`.
+4. Reserve output once and give each writer disjoint output names. If opening
+   multiple writers fails partway, return the error and leave output in place.
 
 Use `unique_column_index` for exact unique top-level names; dots are literal.
 An unknown or ambiguous column must not silently select another field.
@@ -67,7 +66,7 @@ Implement `DataWriter<Output = YourOutput>` with these responsibilities:
 | `schema()` | Original fixed input schema, even if internal encoding adds metadata |
 | `write(batch)` | Validate the exact schema; bounded buffering; errors/cancellation make this writer terminal |
 | `finish(&mut self)` | Called once after writes complete; close encoding, return owned metadata, do not publish table/dataset state |
-| `abort(self: Box<Self>)` | Stop I/O and best-effort cleanup of owned output, including after successful finish |
+| `abort(self: Box<Self>)` | Stop I/O and retain persisted output, including after successful finish |
 
 Use `Poison::begin` **before** any fallible or awaited write work and call
 `complete` only after a successful write. Errors and cancelled futures then leave
@@ -90,14 +89,14 @@ index training, or one writer per partition. Wrap native errors in
 ## 4. Implement publication separately
 
 `SessionCommitter<YourOutput>` receives all finished outputs exactly once. It
-owns native commit, the combined `WriteSummary`, and publication-failure cleanup.
-Before publication, abort can remove known owned output. After publication begins,
+owns native commit and the combined `WriteSummary`. Failures return directly;
+abort stops writing and retains output. After publication begins,
 an error or cancellation can leave the result uncertain: do not delete files
 that might already be referenced by a table or manifest. Document how callers
 reconcile the destination before retrying.
 
 `SessionCommitter::abort` runs after every data writer has been aborted, even if
-an individual abort failed; clean up remaining session resources too. Never
+an individual abort failed; release remaining session resources without deleting output. Never
 publish on drop or rely on drop for async cleanup.
 
 ## 5. Expose ordinary and parallel entry points
@@ -105,8 +104,8 @@ publish on drop or rely on drop for async cleanup.
 Build a `WriteSession { writers, committer }`. Ordinary `Sink::open` can delegate
 to the default `ParallelSink::open_writer(request, schema, options).await`, which
 requests one data writer and adapts the session with `into_writer`. The adapter
-handles poisoned writes, finish errors, and pre-publication aborts. It rejects
-invalid writer counts and aborts every returned writer and the committer.
+rejects poisoned writes and invalid writer counts, and returns finish errors
+without automatically aborting writers or deleting output.
 A backend can implement `Writer` directly for a specialized lifecycle, but must
 provide all equivalent failure, cancellation, consuming commit/abort, and optional
 blob-method behavior itself.
@@ -143,7 +142,7 @@ applicable. Add a backend README, a write/read example, and support-matrix entry
 Verify the behaviors users depend on: rejected options produce no output;
 readback matches row count and values; schema mismatches and cancelled writes
 cannot later commit; abort preserves unrelated and pre-existing data; finished
-writers still clean up after another finish fails; publication occurs once; and
+writers retain their output after another finish fails; publication occurs once; and
 ambiguous commits retain potentially referenced files. Exercise every advertised
 mode, compression scope, empty session, partition/index/blob restriction, and
 parallel path your implementation supports.

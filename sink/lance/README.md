@@ -31,8 +31,8 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish a new manifest version. `abort` stops the worker and removes the
-new destination when `cleanup_on_error` is enabled. Dropping closes the stream
+Lance to publish a new manifest version. `abort` stops the worker and retains
+persisted output. Dropping closes the stream
 with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
@@ -109,7 +109,7 @@ builds requested indexes one at a time to bound peak native build memory. Each t
 through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
 when one fails, and the original dataset handle is refreshed after they finish.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
-indexes and committed data remain visible regardless of `cleanup_on_error`.
+indexes and committed data remain visible after an error.
 `Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
@@ -262,9 +262,9 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
-create a missing dataset. Abort waits for workers to stop and removes only a
-new destination when `cleanup_on_error` is enabled. Existing
-datasets and files with an uncertain publication outcome are retained.
+create a missing dataset. Explicit abort waits for workers to stop and retains
+persisted output. Write and commit failures return directly without automatic
+abort, deletion, or rollback.
 
 Use `LanceDatasetSink::with_encoding_buffer_size(NonZeroUsize)` to set the SDK's
 total column-data cache per physical writer. This is separate from downloaded

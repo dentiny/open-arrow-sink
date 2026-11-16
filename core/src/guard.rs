@@ -6,8 +6,8 @@ use crate::{
 
 /// Enforce the writer lifecycle around validation, transformation, and I/O.
 /// Errors or cancellation of any write/blob-open operation are terminal. A
-/// poisoned commit aborts the inner writer; publication errors remain owned by
-/// the inner commit implementation. Blob lifetimes remain backend-owned.
+/// poisoned commit returns its error without aborting the inner writer.
+/// Publication errors remain owned by the inner commit implementation. Blob lifetimes remain backend-owned.
 pub struct GuardedWriter {
     inner: Box<dyn Writer>,
     state: Poison,
@@ -59,10 +59,7 @@ impl Writer for GuardedWriter {
     }
 
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.check() {
-            let _ = self.inner.abort().await;
-            return Err(error);
-        }
+        self.check()?;
         self.inner.commit().await
     }
 

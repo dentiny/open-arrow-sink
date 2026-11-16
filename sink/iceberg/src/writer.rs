@@ -1,18 +1,13 @@
-use iceberg::table::Table;
 use iceberg::writer::IcebergWriter;
 use open_arrow_sink_core::{
-    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
-    validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
 
 pub(crate) struct IcebergTableWriter {
-    table: Table,
     schema: SchemaRef,
-    prefix: String,
     inner: Box<dyn IcebergWriter>,
     rows: u64,
     state: Poison,
-    options: WriteOptions,
 }
 
 #[async_trait]
@@ -38,42 +33,17 @@ impl DataWriter for IcebergTableWriter {
         Ok((self.rows, files))
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        let Self {
-            table,
-            inner,
-            prefix,
-            options,
-            ..
-        } = *self;
-        drop(inner);
-        if options.cleanup_on_error {
-            table
-                .file_io()
-                .delete_prefix(prefix)
-                .await
-                .map_err(Error::backend)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
 impl IcebergTableWriter {
-    pub(crate) fn new(
-        table: Table,
-        schema: SchemaRef,
-        prefix: String,
-        inner: Box<dyn IcebergWriter>,
-        options: WriteOptions,
-    ) -> Self {
+    pub(crate) fn new(schema: SchemaRef, inner: Box<dyn IcebergWriter>) -> Self {
         Self {
-            table,
             schema,
-            prefix,
             inner,
             rows: 0,
             state: Poison::default(),
-            options,
         }
     }
 }

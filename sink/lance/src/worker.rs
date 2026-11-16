@@ -1,0 +1,72 @@
+//! Bounded native fragment input and ownership of its background task.
+use crate::{LanceFragments, destination::LanceDestination, error::worker_stopped};
+use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
+use futures::stream;
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
+use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
+use tokio::{sync::mpsc, task::JoinHandle};
+
+pub(crate) struct FragmentWorker {
+    rows: u64,
+    sender: Option<mpsc::Sender<RecordBatch>>,
+    task: Option<JoinHandle<lance::Result<Transaction>>>,
+}
+impl FragmentWorker {
+    pub fn new(schema: SchemaRef, destination: &LanceDestination, params: WriteParams) -> Self {
+        let (sender, receiver) = mpsc::channel(1);
+        // EOF only finishes fragments. Manifest publication belongs to the committer.
+        let batches = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|batch| (Ok(batch), receiver))
+        });
+        let stream =
+            Box::pin(RecordBatchStreamAdapter::new(schema, batches)) as SendableRecordBatchStream;
+        let params = destination.bind_write_params(params);
+        let uri = destination.url.to_string();
+        let task = tokio::spawn(async move {
+            InsertBuilder::new(uri.as_str())
+                .with_params(&params)
+                .execute_uncommitted_stream(stream)
+                .await
+        });
+        Self {
+            rows: 0,
+            sender: Some(sender),
+            task: Some(task),
+        }
+    }
+    pub async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        let rows = batch.num_rows() as u64;
+        self.sender
+            .as_ref()
+            .ok_or(Error::Poisoned)?
+            .send(batch)
+            .await
+            .map_err(|_| worker_stopped())?;
+        self.rows += rows;
+        Ok(())
+    }
+    pub async fn finish(&mut self) -> Result<LanceFragments> {
+        drop(self.sender.take());
+        // Keep ownership across cancellation so abort/drop can still stop the task.
+        let result = self.task.as_mut().ok_or(Error::Poisoned)?.await;
+        self.task.take();
+        Ok(LanceFragments {
+            rows_written: self.rows,
+            transaction: result.map_err(Error::backend)?.map_err(Error::backend)?,
+        })
+    }
+    pub async fn abort(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            drop(self.sender.take());
+            let _ = task.await;
+        }
+    }
+}
+impl Drop for FragmentWorker {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}

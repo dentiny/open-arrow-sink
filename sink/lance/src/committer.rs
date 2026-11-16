@@ -46,9 +46,6 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        if self.options.cleanup_on_error {
-            self.destination.cleanup().await?;
-        }
         Ok(())
     }
 }

@@ -121,14 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Some(error) = failure {
-        // Stop all workers before deleting any session-owned resources.
-        for writer in writers {
-            let _ = writer.abort().await;
-        }
-        let _ = session.committer.abort().await;
         return Err(error.into());
     }
-    // Once publication begins, the committer owns ambiguous-failure cleanup.
+    // Only publish after all writers finish successfully.
     let committed = session.committer.commit(outputs).await;
     drop(writers);
     let summary = committed?;

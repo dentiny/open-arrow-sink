@@ -8,6 +8,7 @@ mod error;
 mod provider;
 mod sink;
 mod validation;
+mod worker;
 mod write_options;
 
 pub use sink::LanceDatasetSink;
@@ -22,7 +23,6 @@ pub struct LanceFragments {
 }
 
 mod index;
-mod io_metrics;
 
 mod parallel;
 

@@ -70,7 +70,7 @@ async fn measures_one_commit_per_session_without_double_counting(#[case] placeme
 }
 
 #[tokio::test]
-async fn cancellation_and_abort_are_observable_and_terminal() {
+async fn cancellation_is_terminal_without_automatic_abort() {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
     let sink = sink(Behavior {
@@ -84,7 +84,7 @@ async fn cancellation_and_abort_are_observable_and_terminal() {
     assert!(writer.commit().await.is_err());
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot.sessions_committed, 0);
-    assert_eq!(snapshot.sessions_aborted, 1);
+    assert_eq!(snapshot.sessions_aborted, 0);
     assert_eq!(snapshot.rows_accepted, 0);
     assert_eq!(snapshot.failed_operations, 2);
     assert_eq!(snapshot.bytes_written, 10);

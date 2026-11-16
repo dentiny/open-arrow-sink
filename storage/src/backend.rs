@@ -32,6 +32,7 @@ pub enum DirectoryState {
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
     http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
@@ -52,6 +53,7 @@ impl Storage {
         let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
         Ok(Self {
             operator,
+            io_metrics: None,
             http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
@@ -153,9 +155,8 @@ impl Storage {
         self
     }
 
-    /// Apply session upload overrides, preserving storage defaults for unset fields.
-    /// Other sink write options do not affect storage. Configure a clone to keep
-    /// the original storage and other sessions unchanged.
+    /// Apply session upload overrides and byte observers, preserving unset defaults.
+    /// Configure a clone to keep the original storage and other sessions unchanged.
     pub fn with_write_options(mut self, options: &open_arrow_sink_core::WriteOptions) -> Self {
         if let Some(size) = options.upload.part_size {
             self.upload_part_size = Some(size);
@@ -163,6 +164,19 @@ impl Storage {
         if let Some(concurrency) = options.upload.concurrency {
             self.upload_concurrency = concurrency;
         }
+        if let Some(metrics) = &options.io_metrics {
+            self = self.with_io_metrics(metrics.clone());
+        }
+        self
+    }
+
+    /// Observe this namespace, including native adapters. Clones keep the handle;
+    /// configuring another clone leaves existing sessions unchanged.
+    pub fn with_io_metrics(mut self, metrics: open_arrow_sink_core::IoMetrics) -> Self {
+        self.io_metrics = Some(match self.io_metrics.take() {
+            Some(existing) => existing.combine(metrics),
+            None => metrics,
+        });
         self
     }
 
@@ -207,9 +221,14 @@ impl Storage {
         // independent inputs; every exposed operator wraps the provider once.
         let context = self.operator.base_context();
         let transport = self.http_limit.wrap(context.http_transport().clone());
-        self.operator
+        let operator = self
+            .operator
             .clone()
-            .with_context(context.with_http_transport(transport))
+            .with_context(context.with_http_transport(transport));
+        match &self.io_metrics {
+            Some(metrics) => operator.layer(crate::IoMetricsLayer(metrics.clone())),
+            None => operator,
+        }
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.

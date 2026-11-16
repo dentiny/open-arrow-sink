@@ -53,7 +53,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         vec![read_sorted(&dataset, "value").await]
     }
     async fn assert_aborted(&self) {
-        assert!(!tokio::fs::try_exists(&self.path).await.unwrap());
+        assert!(Dataset::open(self.path.to_str().unwrap()).await.is_err());
     }
 }
 
@@ -63,7 +63,7 @@ async fn shared_sink_contracts() {
 }
 
 #[tokio::test]
-async fn abort_removes_dataset_and_preserves_sibling_files() {
+async fn abort_does_not_publish_or_touch_sibling_files() {
     let temp = tempfile::tempdir().unwrap();
     let sibling = temp.path().join("keep.txt");
     tokio::fs::write(&sibling, "keep").await.unwrap();
@@ -79,7 +79,7 @@ async fn abort_removes_dataset_and_preserves_sibling_files() {
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!tokio::fs::try_exists(&path).await.unwrap());
+    assert!(Dataset::open(path.to_str().unwrap()).await.is_err());
     assert_eq!(tokio::fs::read_to_string(sibling).await.unwrap(), "keep");
 }
 

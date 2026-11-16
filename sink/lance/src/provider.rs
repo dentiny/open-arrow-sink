@@ -10,18 +10,18 @@ use std::sync::Arc;
 pub(crate) struct Provider {
     destination: Storage,
     sources: Arc<StorageResolver>,
-    io_tracker: Arc<crate::io_metrics::TrackedIo>,
+    metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 impl Provider {
     pub fn new(
         destination: Storage,
         sources: Arc<StorageResolver>,
-        io_tracker: Arc<crate::io_metrics::TrackedIo>,
+        metrics: Option<open_arrow_sink_core::IoMetrics>,
     ) -> Self {
         Self {
             destination,
             sources,
-            io_tracker,
+            metrics,
         }
     }
 
@@ -37,7 +37,12 @@ impl Provider {
         if self.destination.resolve(url).is_ok() {
             Ok(self.destination.clone())
         } else {
-            self.sources.resolve(url)
+            self.sources
+                .resolve(url)
+                .map(|storage| match &self.metrics {
+                    Some(metrics) => storage.with_io_metrics(metrics.clone()),
+                    None => storage,
+                })
         }
     }
 }
@@ -51,10 +56,6 @@ impl ObjectStoreProvider for Provider {
     ) -> lance::Result<ObjectStore> {
         let storage = self.resolve(&base_path).map_err(native)?;
         let object_store = storage.object_store();
-        use lance_io::object_store::WrappingObjectStore;
-        let object_store = self
-            .io_tracker
-            .wrap(storage.base_url().as_str(), object_store);
         let mut store = ObjectStore::new(
             object_store,
             base_path,

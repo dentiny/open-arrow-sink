@@ -20,31 +20,23 @@ fn options() -> WriteOptions {
         )
 }
 
-#[rstest::rstest]
-#[case::cleanup(true)]
-#[case::keep(false)]
 #[tokio::test]
-async fn shared_storage_abort_and_keep_policy(#[case] cleanup_on_error: bool) {
+async fn shared_storage_abort_preserves_output() {
     let storage = storage();
     let directory = storage.url("output/").unwrap();
     let mut writer = ParquetDirectorySink::new(storage.clone())
-        .open(
-            directory.clone(),
-            batch().schema(),
-            options().with_cleanup_on_error(cleanup_on_error),
-        )
+        .open(directory.clone(), batch().schema(), options())
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     writer.abort().await.unwrap();
-    assert_eq!(
-        storage
+    assert!(
+        !storage
             .list(&storage.resolve(&directory).unwrap())
             .await
             .unwrap()
-            .is_empty(),
-        cleanup_on_error
+            .is_empty()
     );
 }
 
@@ -64,7 +56,18 @@ async fn rolling_collision_is_preserved() {
         .await
         .unwrap();
     assert!(writer.write(batch()).await.is_err());
-    writer.abort().await.unwrap();
+    let completed = storage
+        .resolve(&directory.join("part-0-00000.parquet").unwrap())
+        .unwrap();
+    let bytes = storage.read(&completed).await.unwrap();
+    let path = storage.resolve(&directory).unwrap();
+    let mut paths = storage.list(&path).await.unwrap();
+    paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert!(writer.commit().await.is_err());
+    let mut retained = storage.list(&path).await.unwrap();
+    retained.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(retained, paths);
+    assert_eq!(storage.read(&completed).await.unwrap(), bytes);
     assert_eq!(
         storage
             .read(&storage.resolve(&collision).unwrap())
@@ -127,4 +130,21 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
         Err(open_arrow_sink_core::Error::Unsupported(_))
     ));
     assert_eq!(rows(&storage, &directory).await, 3);
+}
+
+#[tokio::test]
+async fn session_observer_counts_parquet_output() {
+    let storage = storage();
+    let metrics = open_arrow_sink_core::IoMetrics::default();
+    let mut writer = ParquetDirectorySink::new(storage.clone())
+        .open(
+            storage.url("measured/").unwrap(),
+            batch().schema(),
+            options().with_io_metrics(metrics.clone()),
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    assert!(metrics.snapshot().bytes_written > 0);
 }
