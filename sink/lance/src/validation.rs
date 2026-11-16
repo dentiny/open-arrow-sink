@@ -135,6 +135,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
+    storage_version: Option<&str>,
 ) -> Result<()> {
     let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
@@ -143,6 +144,14 @@ pub(crate) async fn validate_existing_dataset(
             | lance_file::version::ConcreteFileVersion::V2_3
     ) {
         return Err(error::unsupported_storage_version(
+            dataset.manifest().data_storage_format.version,
+        ));
+    }
+    if let Some(requested) = parse_storage_version(storage_version)?
+        && requested.resolve() != dataset.manifest().data_storage_format.version
+    {
+        return Err(error::storage_version_mismatch(
+            requested,
             dataset.manifest().data_storage_format.version,
         ));
     }

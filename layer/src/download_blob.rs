@@ -52,10 +52,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     fn capability(&self) -> SinkCapability {
         // This writer consumes native streams internally but does not expose
         // create_blob/write_with_blobs to its caller.
-        SinkCapability {
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        self.inner.capability().with_supports_blob_streaming(false)
     }
     async fn open(
         &self,
@@ -85,7 +82,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
         let output_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let pool = match &self.config.download_pool {
             Some(pool) => pool.clone(),
-            None => DownloadPool::global()?,
+            None => Arc::new(DownloadPool::with_defaults()?),
         };
         let io_metrics = options.io_metrics.clone();
         let inner = self

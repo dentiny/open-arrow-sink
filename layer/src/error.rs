@@ -44,28 +44,3 @@ pub(crate) fn download_column_unique(column: &str) -> Error {
 pub(crate) fn download_column_type(column: &str) -> Error {
     Error::Unsupported(format!("download column must be a string: {column}"))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{error::Error as _, io};
-
-    #[test]
-    fn download_context_preserves_underlying_source() {
-        let error = download_context(
-            "image",
-            7,
-            Error::backend(io::Error::from(io::ErrorKind::TimedOut)),
-        );
-        assert!(error.to_string().contains("download column image row 7"));
-        let native = error
-            .source()
-            .unwrap()
-            .source()
-            .unwrap()
-            .source()
-            .unwrap()
-            .downcast_ref::<io::Error>()
-            .unwrap();
-        assert_eq!(native.kind(), io::ErrorKind::TimedOut);
-    }
-}

@@ -97,6 +97,8 @@ impl Storage {
 
     /// Configure the request budget shared by subsequent clones and operators.
     /// Existing clones and operators retain their previous budget.
+    /// Upload parts, reads, and metadata requests share this aggregate cap;
+    /// size it together with writer and multipart concurrency. The default is 64.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
         let context = self
             .operator
@@ -231,7 +233,6 @@ impl Storage {
             inner: Some(writer),
             bytes_written: 0,
             state: Poison::default(),
-            filesystem: operator.info().scheme() == "fs",
             path,
         })
     }
@@ -310,7 +311,6 @@ pub struct StorageWriter {
     inner: Option<opendal::Writer>,
     bytes_written: u64,
     state: Poison,
-    filesystem: bool,
     path: String,
 }
 impl StorageWriter {
@@ -340,7 +340,7 @@ impl StorageWriter {
     pub async fn abort(&mut self) -> Result<()> {
         self.state.poison();
         if let Some(mut writer) = self.inner.take() {
-            error::abort_result(&self.path, writer.abort().await, self.filesystem)?;
+            error::abort_result(&self.path, writer.abort().await)?;
         }
         Ok(())
     }

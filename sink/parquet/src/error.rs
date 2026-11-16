@@ -11,9 +11,7 @@ pub(crate) fn parquet_backend(error: Error) -> parquet::errors::ParquetError {
 }
 
 pub(crate) fn not_directory() -> Error {
-    Error::backend(io::Error::other(
-        "destination must be a directory, not a file or symlink",
-    ))
+    Error::backend(io::Error::other("destination must be a directory"))
 }
 pub(crate) fn missing_directory() -> Error {
     Error::backend(io::Error::new(
@@ -22,7 +20,5 @@ pub(crate) fn missing_directory() -> Error {
     ))
 }
 pub(crate) fn overwrite_unsupported() -> Error {
-    Error::Unsupported(
-        "Parquet staged overwrite requires a filesystem backend with directory rename".into(),
-    )
+    Error::Unsupported("Parquet directory sink does not support Overwrite".into())
 }
