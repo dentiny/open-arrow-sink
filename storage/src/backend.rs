@@ -406,13 +406,14 @@ pub struct StorageWriter {
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
         self.state.begin()?;
+        let len = bytes.len() as u64;
         self.inner
             .as_mut()
             .ok_or(Error::Poisoned)?
-            .write(bytes.clone())
+            .write(bytes)
             .await
             .map_err(|error| map_error("write", &self.path, error))?;
-        self.bytes_written += bytes.len() as u64;
+        self.bytes_written += len;
         self.state.complete();
         Ok(())
     }
