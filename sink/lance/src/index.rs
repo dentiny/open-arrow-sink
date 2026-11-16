@@ -215,7 +215,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
 }
 
 pub(crate) async fn validate_index_requests(
-    destination: &crate::storage::NativeStorage,
+    destination: &crate::destination::LanceDestination,
     options: &crate::config::SessionOptions,
 ) -> Result<()> {
     if options.mode == WriteMode::Append && !options.indexes.is_empty() {

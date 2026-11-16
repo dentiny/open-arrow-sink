@@ -9,23 +9,21 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    compression::writer_batch,
+    destination::LanceDestination,
     error::{backend, worker_stopped},
     index::build_indexes,
     parallel::{ChannelReader, Message},
-    storage::NativeStorage,
 };
 
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
     encoding_schema: SchemaRef,
-    storage_schema: SchemaRef,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<Message>>,
     task: JoinHandle<lance::Result<Dataset>>,
     rows: u64,
     failed: bool,
-    destination: NativeStorage,
+    destination: LanceDestination,
     options: SessionOptions,
 }
 
@@ -58,8 +56,7 @@ impl Writer for BlobDatasetWriter {
         validation::validate_batch(&self.schema, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch =
-            crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
+            crate::blob::storage_batch(batch, &self.encoding_schema, blobs, &self.blob_session)?;
         self.sender
             .as_ref()
             .unwrap()
@@ -111,9 +108,8 @@ impl Writer for BlobDatasetWriter {
 impl BlobDatasetWriter {
     pub(crate) fn new(
         schema: SchemaRef,
-        storage_schema: SchemaRef,
         encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        destination: LanceDestination,
         options: SessionOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
@@ -128,7 +124,6 @@ impl BlobDatasetWriter {
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
         Self {
             schema,
-            storage_schema,
             encoding_schema,
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),

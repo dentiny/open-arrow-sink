@@ -6,7 +6,7 @@ use open_arrow_sink_core::{
     Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{storage::NativeStorage, validation::validate_options, write_options};
+use crate::{destination::LanceDestination, validation::validate_options, write_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -39,12 +39,12 @@ impl LanceDatasetSink {
         &self,
         url: Url,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
-    ) -> Result<NativeStorage> {
+    ) -> Result<LanceDestination> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         };
-        NativeStorage::new(storage, url, self.sources.clone(), metrics)
+        LanceDestination::new(storage, url, self.sources.clone(), metrics)
     }
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
@@ -79,8 +79,7 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        let storage_schema = crate::blob::storage_schema(&schema)?;
-        if storage_schema != schema {
+        if crate::blob::requires_streaming_writer(&schema) {
             let options = self.options.session(options);
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
@@ -91,7 +90,6 @@ impl Sink for LanceDatasetSink {
             crate::index::validate_index_requests(&destination, &options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
-                storage_schema,
                 encoding_schema,
                 destination,
                 options,

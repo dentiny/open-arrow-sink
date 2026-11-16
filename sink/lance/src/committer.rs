@@ -2,12 +2,12 @@ use crate::config::SessionOptions;
 use lance::dataset::transaction::Transaction;
 use open_arrow_sink_core::{Result, SessionCommitter, WriteSummary, async_trait};
 
-use crate::{error::backend, index::build_indexes, storage::NativeStorage};
+use crate::{destination::LanceDestination, error::backend, index::build_indexes};
 
 type Output = (u64, Transaction);
 
 pub(crate) struct LanceCommitter {
-    pub destination: NativeStorage,
+    pub destination: LanceDestination,
     pub options: SessionOptions,
 }
 

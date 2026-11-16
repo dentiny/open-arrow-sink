@@ -1,5 +1,4 @@
 use crate::provider::Provider;
-use crate::storage_router::StorageRouter;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
@@ -9,15 +8,16 @@ use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
+/// Dataset location, native session, and owned publication reservation.
 #[derive(Clone)]
-pub(crate) struct NativeStorage {
+pub(crate) struct LanceDestination {
     pub storage: Storage,
     pub url: Url,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
 }
-impl NativeStorage {
+impl LanceDestination {
     pub fn new(
         storage: Storage,
         url: Url,
@@ -27,11 +27,8 @@ impl NativeStorage {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
         let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
-        let provider = Arc::new(Provider {
-            storage: StorageRouter::new(storage.clone(), sources),
-            io_tracker: io_tracker.clone(),
-        });
-        for scheme in provider.storage.schemes() {
+        let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
+        for scheme in provider.schemes() {
             session.store_registry().insert(&scheme, provider.clone());
         }
         Ok(Self {
@@ -114,7 +111,7 @@ mod tests {
         )
         .unwrap();
         let url = destination.url("dataset/").unwrap();
-        let native = NativeStorage::new(destination, url, sources, None).unwrap();
+        let native = LanceDestination::new(destination, url, sources, None).unwrap();
         let registry = native.session.store_registry();
         assert!(registry.get_provider("destination-only").is_some());
         let provider = registry.get_provider(source_url.scheme()).unwrap();
