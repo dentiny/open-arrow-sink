@@ -141,7 +141,6 @@ impl Sink for TestSink {
             .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
             .with_ordering(state.config.ordering)
             .with_supports_blob_handle(state.config.supports_blobs)
-            .with_supports_blob_streaming(state.config.supports_blobs)
     }
     async fn open(
         &self,

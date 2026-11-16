@@ -47,10 +47,7 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
 
     fn capability(&self) -> SinkCapability {
         // DataWriter has no native-blob interface to forward.
-        self.inner
-            .capability()
-            .with_ordering(Ordering::Unordered)
-            .with_supports_blob_streaming(false)
+        self.inner.capability().with_ordering(Ordering::Unordered)
     }
 
     async fn open(

@@ -145,7 +145,6 @@ impl Sink for LanceDatasetSink {
             )
             .with_supported_partitions(vec![])
             .with_supports_blob_handle(true)
-            .with_supports_blob_streaming(false)
             .with_supports_upload_options(true)
             .with_supports_storage_version(true)
             .with_supported_indexes(&[

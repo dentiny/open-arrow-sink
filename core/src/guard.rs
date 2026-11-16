@@ -1,13 +1,12 @@
 //! Reusable terminal-state enforcement for writer decorators.
 use crate::{
-    BlobPlacement, BlobWriter, DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteSummary,
-    Writer, async_trait,
+    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteSummary, Writer, async_trait,
 };
 
 /// Enforce the writer lifecycle around validation, transformation, and I/O.
-/// Errors or cancellation of any write/blob-open operation are terminal. A
+/// Errors or cancellation of any write operation are terminal. A
 /// poisoned commit returns its error without aborting the inner writer.
-/// Publication errors remain owned by the inner commit implementation. Blob lifetimes remain backend-owned.
+/// Publication errors remain owned by the inner commit implementation.
 pub struct GuardedWriter {
     inner: Box<dyn Writer>,
     state: Poison,
@@ -37,24 +36,6 @@ impl Writer for GuardedWriter {
         self.inner.write(batch).await?;
         self.state.complete();
         Ok(())
-    }
-
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        self.state.begin()?;
-        self.inner.write_with_blobs(batch, blobs).await?;
-        self.state.complete();
-        Ok(())
-    }
-
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.state.begin()?;
-        let blob = self.inner.create_blob().await?;
-        self.state.complete();
-        Ok(blob)
     }
 
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {

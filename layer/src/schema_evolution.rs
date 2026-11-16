@@ -135,7 +135,7 @@ impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
     }
 
     fn capability(&self) -> SinkCapability {
-        self.inner.capability().with_supports_blob_streaming(false)
+        self.inner.capability()
     }
 
     fn prepare(&self, schema: &mut SchemaRef, _options: &mut WriteOptions) -> Result<Plan> {

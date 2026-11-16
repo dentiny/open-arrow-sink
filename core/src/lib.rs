@@ -34,9 +34,7 @@ pub use sink::{ParallelSink, Sink};
 pub use writer::Writer;
 
 mod blob;
-pub use blob::{
-    BlobChunk, BlobHandle, BlobHandleConfig, BlobPlacement, BlobWriter, ExternalBlobMode,
-};
+pub use blob::{BlobChunk, BlobHandleConfig, ExternalBlobMode};
 
 /// Field metadata marking blob inputs: binary payloads or explicitly selected URL strings.
 pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";

@@ -1,9 +1,8 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
 use crate::decorate::{Decorator, impl_sink};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, Error, GuardedDataWriter, Layer, RecordBatch, Result,
-    SchemaRef, SessionCommitter, Sink, WriteOptions, WriteSession, WriteSummary, Writer,
-    async_trait,
+    DataWriter, Error, GuardedDataWriter, Layer, RecordBatch, Result, SchemaRef, SessionCommitter,
+    Sink, WriteOptions, WriteSession, WriteSummary, Writer, async_trait,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -21,7 +20,7 @@ pub struct MetricsSnapshot {
     pub batches_accepted: u64,
     pub rows_accepted: u64,
     pub rows_committed: u64,
-    /// Failed or cancelled open/write/finish/commit/abort/blob-open operations.
+    /// Failed or cancelled open/write/finish/commit/abort operations.
     /// Rejected operations returning `Error::Poisoned` are excluded.
     pub failed_operations: u64,
     /// Measured payload bytes across all observed sessions, including failures.
@@ -209,17 +208,10 @@ struct MetricsWriter {
     metrics: WriteMetrics,
 }
 impl MetricsWriter {
-    async fn accept(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Option<Vec<BlobPlacement>>,
-    ) -> Result<()> {
+    async fn accept(&mut self, batch: RecordBatch) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
-        let result = match blobs {
-            Some(blobs) => self.inner.write_with_blobs(batch, blobs).await,
-            None => self.inner.write(batch).await,
-        };
+        let result = self.inner.write(batch).await;
         observation.complete(result)?;
         self.metrics.accepted(rows);
         Ok(())
@@ -231,18 +223,7 @@ impl Writer for MetricsWriter {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.accept(batch, None).await
-    }
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        self.accept(batch, Some(blobs)).await
-    }
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        observation.complete(self.inner.create_blob().await)
+        self.accept(batch).await
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);

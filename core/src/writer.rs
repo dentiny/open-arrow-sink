@@ -1,42 +1,19 @@
-use crate::{BlobPlacement, BlobWriter, RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
+use crate::{RecordBatch, Result, SchemaRef, WriteSummary, async_trait};
 
 /// One write session. Drop never commits; callers explicitly commit or abort.
 /// After a write error or cancellation, callers must abort or drop the writer.
 #[async_trait]
 pub trait Writer: Send {
     /// Return the fixed input schema established when this session was opened.
-    /// Every batch passed to [`Self::write`] or [`Self::write_with_blobs`] must
+    /// Every batch passed to [`Self::write`] must
     /// match this schema, including batches with no rows.
     fn schema(&self) -> &SchemaRef;
 
     /// Validate the batch against the session schema before accepting it.
     /// Success means accepted, not committed. Buffering must be bounded.
+    /// Native blob payloads are ordinary batch values; the backend SDK owns
+    /// their physical storage layout and publication.
     async fn write(&mut self, batch: RecordBatch) -> Result<()>;
-
-    /// Start a native blob. Dropping an unfinished blob or encountering destination
-    /// I/O failure poisons the session. A successful explicit [`BlobWriter::abort`]
-    /// of a healthy blob leaves the session usable.
-    /// Sinks advertise this interface with `SinkCapability.supports_blob_streaming`.
-    async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Err(crate::Error::Unsupported(
-            "sink does not support streaming blobs".into(),
-        ))
-    }
-
-    /// Attach native blobs to empty, non-null cells of blob-marked binary columns.
-    /// Handles from other sessions and duplicate placements must be rejected.
-    async fn write_with_blobs(
-        &mut self,
-        batch: RecordBatch,
-        blobs: Vec<BlobPlacement>,
-    ) -> Result<()> {
-        if blobs.is_empty() {
-            return self.write(batch).await;
-        }
-        Err(crate::Error::Unsupported(
-            "sink does not support streaming blobs".into(),
-        ))
-    }
 
     /// Finish buffered writes and commit using the backend's documented semantics.
     /// Consumes the writer even on failure; no automatic cleanup or retry is provided.
