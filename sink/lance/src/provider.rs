@@ -34,7 +34,7 @@ impl Provider {
 
     /// The destination owns its namespace, even with a more specific source.
     pub fn resolve(&self, url: &Url) -> Result<Storage> {
-        if self.destination.path(url).is_ok() {
+        if self.destination.resolve(url).is_ok() {
             Ok(self.destination.clone())
         } else {
             self.sources.resolve(url)
@@ -76,8 +76,9 @@ impl ObjectStoreProvider for Provider {
         Ok(Path::from(
             self.resolve(url)
                 .map_err(native)?
-                .path(url)
-                .map_err(native)?,
+                .resolve(url)
+                .map_err(native)?
+                .as_str(),
         ))
     }
     fn calculate_object_store_prefix(

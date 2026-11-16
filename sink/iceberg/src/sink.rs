@@ -1,7 +1,6 @@
-use iceberg::table::Table;
 use std::{num::NonZeroUsize, sync::Arc};
 
-use iceberg::spec::{PartitionKey, Struct, TableProperties};
+use iceberg::spec::TableProperties;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
@@ -11,14 +10,15 @@ use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, TableIdent};
 use open_arrow_sink_core::{
-    Compression, CompressionCapability, CompressionCodec, DataWriter, Error, Ordering,
-    ParallelSink, PartitionType, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
-    WriteSession, Writer, async_trait,
+    CompressionCapability, CompressionCodec, DataWriter, Error, Ordering, ParallelSink,
+    PartitionType, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
+    async_trait,
 };
 
 use crate::{
     committer::IcebergCommitter,
-    partition::PartitionWriterAdapter,
+    compression::apply_compression,
+    partition::{PartitionWriterAdapter, WriterKind},
     validation::{validate_options, validate_table},
     writer::IcebergTableWriter,
 };
@@ -81,10 +81,7 @@ impl Sink for IcebergTableSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        self.open_writers(request, schema, options, NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(request, schema, options).await
     }
 }
 
@@ -105,12 +102,71 @@ impl ParallelSink for IcebergTableSink {
             .await
             .map_err(Error::backend)?;
         validate_table(&table, &schema, options.partition)?;
+        let metadata = table.metadata();
+        let kind = WriterKind::new(
+            metadata.default_partition_spec().clone(),
+            metadata.current_schema().clone(),
+        );
+        let mut properties = metadata.properties().clone();
+        apply_compression(&mut properties, options.compression.global);
+        let properties = TableProperties::new(&properties);
+        let parquet = ParquetWriterBuilder::from_table_properties(
+            &properties,
+            metadata.current_schema().clone(),
+        )
+        .map_err(Error::backend)?;
+        let target_file_size = match options.target_file_size {
+            Some(size) => size,
+            None => properties
+                .write_target_file_size_bytes()
+                .map_err(Error::backend)?,
+        };
+        let location = DefaultLocationGenerator::new(metadata).map_err(Error::backend)?;
         let mut writers: Vec<Box<dyn DataWriter<Output = Self::Output>>> = Vec::new();
         for _ in 0..count.get() {
-            match self
-                .create_writer(table.clone(), schema.clone(), options.clone())
-                .await
-            {
+            let writer = async {
+                // A private prefix lets abort remove only this writer's files.
+                let id = uuid::Uuid::new_v4().to_string();
+                let prefix = format!(
+                    "{}/",
+                    location.generate_location(None, &format!("open-arrow-sink-{id}"))
+                );
+                let rolling = RollingFileWriterBuilder::new(
+                    parquet.clone(),
+                    target_file_size,
+                    table.file_io().clone(),
+                    DefaultLocationGenerator::with_data_location(
+                        prefix.trim_end_matches('/').to_owned(),
+                    ),
+                    DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
+                );
+                let builder = DataFileWriterBuilder::new(rolling);
+                let inner: Box<dyn IcebergWriter> = match &kind {
+                    WriterKind::Fanout(spec) => Box::new(
+                        PartitionWriterAdapter::try_new(
+                            builder,
+                            metadata.current_schema().clone(),
+                            spec.clone(),
+                        )
+                        .map_err(Error::backend)?,
+                    ),
+                    WriterKind::Fixed(key) => Box::new(
+                        builder
+                            .build(Some(key.clone()))
+                            .await
+                            .map_err(Error::backend)?,
+                    ),
+                };
+                Ok::<_, Error>(Box::new(IcebergTableWriter::new(
+                    table.clone(),
+                    schema.clone(),
+                    prefix,
+                    inner,
+                    options.clone(),
+                )))
+            }
+            .await;
+            match writer {
                 Ok(writer) => writers.push(writer),
                 Err(error) => {
                     for writer in writers {
@@ -127,101 +183,5 @@ impl ParallelSink for IcebergTableSink {
                 table,
             }),
         })
-    }
-}
-
-impl IcebergTableSink {
-    async fn create_writer(
-        &self,
-        table: Table,
-        schema: SchemaRef,
-        options: WriteOptions,
-    ) -> Result<Box<IcebergTableWriter>> {
-        let metadata = table.metadata();
-        // A private session prefix lets abort remove only this writer's files.
-        let id = uuid::Uuid::new_v4().to_string();
-        let prefix = format!(
-            "{}/",
-            DefaultLocationGenerator::new(metadata)
-                .map_err(Error::backend)?
-                .generate_location(None, &format!("open-arrow-sink-{id}"))
-        );
-        let mut properties = metadata.properties().clone();
-        if let Some(codec) = options.compression.global {
-            let value = match codec {
-                Compression::Uncompressed => "uncompressed",
-                Compression::Snappy => "snappy",
-                Compression::Gzip => "gzip",
-                Compression::Zstd { .. } => "zstd",
-                Compression::Lz4Raw => "lz4_raw",
-            };
-            properties.insert(
-                TableProperties::PROPERTY_PARQUET_COMPRESSION_CODEC.into(),
-                value.into(),
-            );
-            // An explicit codec replaces the table's old codec and level.
-            properties.remove(TableProperties::PROPERTY_PARQUET_COMPRESSION_LEVEL);
-            if let Compression::Zstd { level: Some(level) } = codec {
-                properties.insert(
-                    TableProperties::PROPERTY_PARQUET_COMPRESSION_LEVEL.into(),
-                    level.to_string(),
-                );
-            }
-        }
-        let properties = TableProperties::new(&properties);
-        let parquet = ParquetWriterBuilder::from_table_properties(
-            &properties,
-            metadata.current_schema().clone(),
-        )
-        .map_err(Error::backend)?;
-        let target_file_size = match options.target_file_size {
-            Some(size) => size,
-            None => properties
-                .write_target_file_size_bytes()
-                .map_err(Error::backend)?,
-        };
-        let rolling = RollingFileWriterBuilder::new(
-            parquet,
-            target_file_size,
-            table.file_io().clone(),
-            DefaultLocationGenerator::with_data_location(prefix.trim_end_matches('/').to_owned()),
-            DefaultFileNameGenerator::new(id, None, iceberg::spec::DataFileFormat::Parquet),
-        );
-        let builder = DataFileWriterBuilder::new(rolling);
-        let inner: Box<dyn IcebergWriter> = if options.partition.is_some()
-            && !metadata.default_partition_spec().is_unpartitioned()
-        {
-            Box::new(
-                PartitionWriterAdapter::try_new(
-                    builder,
-                    metadata.current_schema().clone(),
-                    metadata.default_partition_spec().clone(),
-                )
-                .map_err(Error::backend)?,
-            )
-        } else {
-            let partition = PartitionKey::new(
-                metadata.default_partition_spec().as_ref().clone(),
-                metadata.current_schema().clone(),
-                // All-void specs are unpartitioned to the SDK, but their file
-                // metadata must retain one null value per partition field.
-                Struct::from_iter(
-                    metadata
-                        .default_partition_spec()
-                        .fields()
-                        .iter()
-                        .map(|_| None),
-                ),
-            );
-            Box::new(
-                builder
-                    .build(Some(partition))
-                    .await
-                    .map_err(Error::backend)?,
-            )
-        };
-        Ok(Box::new(IcebergTableWriter::new(
-            table, schema, prefix, inner, options,
-        )))
     }
 }
