@@ -33,8 +33,8 @@ fn write_options() -> WriteOptions {
         .with_ordering(Ordering::Unordered)
         .with_upload(
             UploadConfig::default()
-                .with_part_size(NonZeroUsize::new(16 * 1024))
-                .with_concurrency(NonZeroUsize::new(2)),
+                .with_part_size(NonZeroUsize::new(16 * 1024).unwrap())
+                .with_concurrency(NonZeroUsize::new(2).unwrap()),
         )
 }
 
@@ -46,7 +46,7 @@ async fn shared_operator_commit_indexes_and_read_back() {
     let url = storage.url("雪 output%20/").unwrap();
     let io = open_arrow_sink_core::IoMetrics::default();
     let options = write_options()
-        .with_io_metrics(Some(io.clone()))
+        .with_io_metrics(io.clone())
         .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
     let mut writer = sink
         .clone()
@@ -144,7 +144,7 @@ async fn explicit_storage_version() {
             .open(
                 url.clone(),
                 batch().schema(),
-                write_options().with_storage_version(Some(version.into())),
+                write_options().with_storage_version(version.into()),
             )
             .await
             .unwrap();
@@ -160,7 +160,7 @@ async fn explicit_storage_version() {
         sink.open(
             storage.url("unsupported/").unwrap(),
             batch().schema(),
-            write_options().with_storage_version(Some("2.1".into()))
+            write_options().with_storage_version("2.1".into())
         )
         .await,
         Err(open_arrow_sink_core::Error::Unsupported(_))
@@ -194,11 +194,11 @@ async fn ingests_blob_with_configured_layout(
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let options = write_options().with_blob_handle(Some(BlobHandleConfig {
+    let options = write_options().with_blob_handle(BlobHandleConfig {
         inline_size_threshold: Some(1),
         dedicated_size_threshold: NonZeroUsize::new(2),
         ..Default::default()
-    }));
+    });
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("ingested/").unwrap();
     let mut writer = if parallel {
@@ -297,7 +297,7 @@ async fn io_metrics_are_isolated_per_session() {
             .open(
                 store.url(name).unwrap(),
                 batch().schema(),
-                write_options().with_io_metrics(Some(io.clone())),
+                write_options().with_io_metrics(io.clone()),
             )
             .await
             .unwrap();

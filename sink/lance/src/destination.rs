@@ -53,14 +53,15 @@ impl LanceDestination {
         schema: &SchemaRef,
         mode: WriteMode,
         storage_version: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Option<lance::Dataset>> {
         if mode == WriteMode::Append {
             return crate::validation::validate_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
                 storage_version,
             )
-            .await;
+            .await
+            .map(Some);
         }
         if self.storage.inspect_directory(&self.path).await? != DirectoryState::Missing {
             return match mode {
@@ -68,25 +69,12 @@ impl LanceDestination {
                 _ => {
                     crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
                         .await
+                        .map(Some)
                 }
             };
         }
         self.new_destination = true;
-        Ok(())
-    }
-    pub async fn validate_index_requests(
-        &self,
-        options: &open_arrow_sink_core::WriteOptions,
-    ) -> Result<()> {
-        if options.mode == WriteMode::Append && !options.indexes.is_empty() {
-            let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(Error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
-        }
-        Ok(())
+        Ok(None)
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.new_destination {

@@ -40,7 +40,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            options().with_io_metrics(Some(io.clone())),
+            options().with_io_metrics(io.clone()),
         )
         .await
         .unwrap();
@@ -207,7 +207,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
         .open(
             storage.url("io-failure").unwrap(),
             input().schema(),
-            options().with_io_metrics(Some(io.clone())),
+            options().with_io_metrics(io.clone()),
         )
         .await
         .unwrap();

@@ -153,11 +153,11 @@ use std::num::NonZeroUsize;
 
 let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
-    .with_blob_handle(Some(BlobHandleConfig {
+    .with_blob_handle(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
-    }));
+    });
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with

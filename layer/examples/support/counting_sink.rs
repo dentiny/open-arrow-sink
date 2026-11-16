@@ -36,10 +36,7 @@ impl Sink for CountingSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        self.open_writers(request, schema, options, std::num::NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(request, schema, options).await
     }
 }
 

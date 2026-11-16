@@ -100,14 +100,19 @@ impl Sink for LanceDatasetSink {
             validate_options(&schema, &options, self.capability())?;
             let schemas = write_options::LanceSchemas::new(schema, &options)?;
             let mut destination = self.resolve(url, &options)?;
-            destination
+            let existing = destination
                 .prepare(
                     &schemas.logical,
                     options.mode,
                     options.storage_version.as_deref(),
                 )
                 .await?;
-            destination.validate_index_requests(&options).await?;
+            if options.mode == WriteMode::Append
+                && !options.indexes.is_empty()
+                && let Some(dataset) = existing.as_ref()
+            {
+                crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
+            }
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schemas,
                 destination,
@@ -115,10 +120,7 @@ impl Sink for LanceDatasetSink {
             )?));
         }
         // Use the same fragment writing and publication path for every session.
-        self.open_writers(url, schema, options, NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(url, schema, options).await
     }
 }
 
@@ -136,14 +138,19 @@ impl ParallelSink for LanceDatasetSink {
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let mut destination = self.resolve(url, &options)?;
-        destination
+        let existing = destination
             .prepare(
                 &schemas.logical,
                 options.mode,
                 options.storage_version.as_deref(),
             )
             .await?;
-        destination.validate_index_requests(&options).await?;
+        if options.mode == WriteMode::Append
+            && !options.indexes.is_empty()
+            && let Some(dataset) = existing.as_ref()
+        {
+            crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
+        }
         let writers = (0..count.get())
             .map(|_| {
                 Ok(Box::new(crate::parallel::FragmentWriter::new(
