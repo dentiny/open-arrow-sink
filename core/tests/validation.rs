@@ -26,17 +26,23 @@ fn batch_contract_includes_metadata_and_nullability() {
 
 #[test]
 fn column_resolution_is_literal_and_rejects_ambiguity() {
-    let schema = Schema::new(vec![
-        Field::new("a.b", DataType::Int64, true),
-        Field::new("a", DataType::Int64, true),
-    ]);
-    assert_eq!(validation::unique_column_index(&schema, "a.b"), Some(0));
-    assert_eq!(validation::unique_column_index(&schema, "missing"), None);
-    let ambiguous = Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("id", DataType::Int64, true),
-    ]);
-    assert_eq!(validation::unique_column_index(&ambiguous, "id"), None);
+    let field = |name| Field::new(name, DataType::Int64, true);
+    for (names, name, expected) in [
+        (vec![], "id", None),
+        (vec!["a.b", "a"], "a.b", Some(0)),
+        (vec!["a.b", "a"], "a", Some(1)),
+        (vec!["id"], "missing", None),
+        (vec!["id", "id"], "id", None),
+        (vec!["id", "other", "id"], "id", None),
+        (vec!["id", "id", "other"], "other", Some(2)),
+    ] {
+        let schema = Schema::new(names.into_iter().map(field).collect::<Vec<_>>());
+        assert_eq!(validation::unique_column_index(&schema, name), expected);
+        assert_eq!(
+            validation::unique_field_index(schema.fields(), name),
+            expected
+        );
+    }
 }
 
 #[test]

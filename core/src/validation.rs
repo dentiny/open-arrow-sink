@@ -5,7 +5,7 @@ use crate::{
     CompressionCapability, CompressionOptions, Error, IndexSpec, IndexType, Ordering,
     PartitionOptions, PartitionType, RecordBatch, Result, SinkCapability, WriteOptions,
 };
-use arrow_schema::Schema;
+use arrow_schema::{Fields, Schema};
 
 /// Check declared capabilities and compression column names before destination I/O.
 /// Backends must additionally validate codec-specific parameters, such as Zstd levels.
@@ -171,8 +171,14 @@ pub fn validate_batch(schema: &Schema, batch: &RecordBatch) -> Result<()> {
 /// Return `None` for missing or ambiguous names. Callers can add operation-specific
 /// error context before using the returned index.
 pub fn unique_column_index(schema: &Schema, name: &str) -> Option<usize> {
-    let mut matches = schema
-        .fields()
+    unique_field_index(schema.fields(), name)
+}
+
+/// Resolve an exact, unique name among sibling fields, including struct children.
+/// Dots are literal characters, not path separators. Return `None` for missing
+/// or ambiguous names; callers retain their operation-specific error context.
+pub fn unique_field_index(fields: &Fields, name: &str) -> Option<usize> {
+    let mut matches = fields
         .iter()
         .enumerate()
         .filter(|(_, field)| field.name() == name);
@@ -222,11 +228,7 @@ pub fn nested_field<'a>(schema: &'a Schema, path: &[String]) -> Option<&'a arrow
         fields: &'a arrow_schema::Fields,
         path: &[String],
     ) -> Option<&'a arrow_schema::Field> {
-        let mut matches = fields.iter().filter(|f| f.name() == &path[0]);
-        let field = matches.next()?;
-        if matches.next().is_some() {
-            return None;
-        }
+        let field = &fields[unique_field_index(fields, &path[0])?];
         if path.len() == 1 {
             return Some(field);
         }

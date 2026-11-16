@@ -298,16 +298,9 @@ pub(crate) fn nested_compression_field<'a, 'p>(
     let (name, rest) = path
         .split_first()
         .ok_or_else(|| error::invalid_compression_path(path))?;
-    let mut matches = fields
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| field.name() == name);
-    let (index, field) = matches
-        .next()
+    let index = validation::unique_field_index(fields, name)
         .ok_or_else(|| error::invalid_compression_path(path))?;
-    if matches.next().is_some() {
-        return Err(error::invalid_compression_path(path));
-    }
+    let field = &fields[index];
     Ok((index, field, rest))
 }
 
