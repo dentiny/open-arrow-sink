@@ -1,9 +1,28 @@
 use iceberg::Result;
 use iceberg::arrow::RecordBatchPartitionSplitter;
-use iceberg::spec::{DataFile, PartitionSpecRef, SchemaRef};
+use iceberg::spec::{DataFile, PartitionKey, PartitionSpecRef, SchemaRef, Struct};
 use iceberg::writer::partitioning::{PartitioningWriter, fanout_writer::FanoutWriter};
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use open_arrow_sink_core::{RecordBatch, async_trait};
+
+/// The partition writer strategy for a validated table.
+pub(crate) enum WriterKind {
+    Fanout(PartitionSpecRef),
+    Fixed(PartitionKey),
+}
+
+impl WriterKind {
+    pub(crate) fn new(spec: PartitionSpecRef, schema: SchemaRef) -> Self {
+        if spec.is_unpartitioned() {
+            // All-void specs are unpartitioned to the SDK, but their file
+            // metadata must retain one null value per partition field.
+            let values = Struct::from_iter(spec.fields().iter().map(|_| None));
+            Self::Fixed(PartitionKey::new(spec.as_ref().clone(), schema, values))
+        } else {
+            Self::Fanout(spec)
+        }
+    }
+}
 
 /// Adapt the SDK's keyed partition writer to its RecordBatch writer interface.
 /// The schema/spec are pinned at open; the SDK computes keys and file metadata.
