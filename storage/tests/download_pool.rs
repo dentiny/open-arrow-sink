@@ -1,11 +1,11 @@
-#![cfg(feature = "http")]
-
 use std::{sync::Arc, time::Duration};
 
 use futures::{TryStreamExt, poll, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
-use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, opendal};
+use open_arrow_sink_storage::{
+    DownloadPool, HttpConcurrencyLimitLayer, RetryConfig, StorageConfig, opendal,
+};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
 
@@ -36,10 +36,23 @@ impl HttpTransport for Transport {
     }
 }
 
-fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+fn pool_with(
+    concurrency: usize,
+    bytes: usize,
+    config: StorageConfig,
+    transport: impl HttpTransport,
+) -> DownloadPool {
+    let http = DownloadPool::http_storage(config)
+        .unwrap()
+        .with_http_transport(HttpTransporter::new(transport));
     DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
         .unwrap()
-        .with_http_transport(HttpTransporter::new(Transport))
+        .with_http_storage(http)
+        .unwrap()
+}
+
+fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+    pool_with(concurrency, bytes, StorageConfig::default(), Transport)
 }
 
 // Consume chunks promptly so a payload larger than the budget can make progress.
@@ -101,7 +114,7 @@ async fn invalid_sources_release_budgets() {
 }
 
 #[tokio::test]
-async fn replacing_transport_preserves_retry_policy() {
+async fn http_storage_applies_retry_policy_around_custom_transport() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Transient(Arc<AtomicUsize>);
     impl HttpTransport for Transient {
@@ -114,15 +127,16 @@ async fn replacing_transport_preserves_retry_policy() {
         }
     }
     let attempts = Arc::new(AtomicUsize::new(0));
-    let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
-        .unwrap()
-        .with_layer(
-            opendal::layers::RetryLayer::default()
-                .with_min_delay(Duration::from_millis(1))
-                .with_max_delay(Duration::from_millis(1))
-                .with_max_times(1),
-        )
-        .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
+    let config = StorageConfig {
+        retry: Some(RetryConfig {
+            max_retries: 1,
+            min_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            ..RetryConfig::default()
+        }),
+        ..StorageConfig::default()
+    };
+    let retrying = pool_with(2, 8, config, Transient(attempts.clone()));
     assert_eq!(read_body(&retrying, URL).await, BODY);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
@@ -156,10 +170,14 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
     timeout(Duration::from_secs(5), async {
         let shared = HttpConcurrencyLimitLayer::new(1).unwrap();
         let make_pool = |concurrency| {
+            let http = DownloadPool::http_storage(StorageConfig::default())
+                .unwrap()
+                .with_http_concurrency_limit(shared.clone())
+                .with_http_transport(HttpTransporter::new(HeldBody));
             DownloadPool::new(concurrency, 8.try_into().unwrap())
                 .unwrap()
-                .with_layer(shared.clone())
-                .with_http_transport(HttpTransporter::new(HeldBody))
+                .with_http_storage(http)
+                .unwrap()
         };
         let first = make_pool(2.try_into().unwrap());
         let second = make_pool(3.try_into().unwrap());
