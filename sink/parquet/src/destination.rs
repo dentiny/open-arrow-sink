@@ -36,7 +36,9 @@ impl Destination {
         let prefix = match mode {
             WriteMode::Create => {
                 if storage.inspect_directory(&directory).await? != DirectoryState::Missing {
-                    return Err(Error::DestinationExists);
+                    return Err(Error::AlreadyExists(
+                        storage.url(directory.as_str())?.to_string(),
+                    ));
                 }
                 "part-".into()
             }
