@@ -135,6 +135,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
+    storage_version: Option<&str>,
 ) -> Result<()> {
     let dataset = builder.load().await.map_err(error::backend)?;
     if !matches!(
@@ -143,6 +144,14 @@ pub(crate) async fn validate_existing_dataset(
             | lance_file::version::ConcreteFileVersion::V2_3
     ) {
         return Err(error::unsupported_storage_version(
+            dataset.manifest().data_storage_format.version,
+        ));
+    }
+    if let Some(requested) = parse_storage_version(storage_version)?
+        && requested.resolve() != dataset.manifest().data_storage_format.version
+    {
+        return Err(error::storage_version_mismatch(
+            requested,
             dataset.manifest().data_storage_format.version,
         ));
     }
@@ -168,13 +177,6 @@ pub(crate) fn validate_transaction_compatibility(
             | (Operation::Append { .. }, Operation::Append { .. })
     ) {
         return Err(error::invalid_create_fragments());
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
-    if failed {
-        return Err(error::failed());
     }
     Ok(())
 }
@@ -222,16 +224,22 @@ pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_blob_state(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if failed || session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(error::blob_failed());
+pub(crate) fn validate_blob_state(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    state.check()?;
+    if session.failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(open_arrow_sink_core::Error::Poisoned);
     }
     Ok(())
 }
-pub(crate) fn validate_blob_commit(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0
-        || validate_blob_state(failed, session).is_err()
-    {
+pub(crate) fn validate_blob_commit(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    validate_blob_state(state, session)?;
+    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
         return Err(error::unfinished_blobs());
     }
     Ok(())

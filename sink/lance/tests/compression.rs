@@ -66,12 +66,10 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
         .open(
             url.clone(),
             input.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                storage_version: Some("2.2".into()),
-                target_file_size: Some(1),
-                ..Default::default()
-            },
+            WriteOptions::default()
+                .with_ordering(Ordering::Unordered)
+                .with_storage_version(Some("2.2".into()))
+                .with_target_file_size(Some(1)),
         )
         .await
         .unwrap();
@@ -189,12 +187,10 @@ async fn append_compares_effective_structural_encoding_schema() {
             .open(
                 url.clone(),
                 input.schema(),
-                WriteOptions {
-                    ordering: Ordering::Unordered,
-                    compression: policy(),
-                    mode,
-                    ..Default::default()
-                },
+                WriteOptions::default()
+                    .with_ordering(Ordering::Unordered)
+                    .with_compression(policy())
+                    .with_mode(mode),
             )
             .await
             .unwrap();
@@ -207,12 +203,10 @@ async fn append_compares_effective_structural_encoding_schema() {
         sink.open(
             url,
             input.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                compression: changed,
-                mode: WriteMode::Append,
-                ..Default::default()
-            }
+            WriteOptions::default()
+                .with_ordering(Ordering::Unordered)
+                .with_compression(changed)
+                .with_mode(WriteMode::Append)
         )
         .await,
         Err(open_arrow_sink_core::Error::SchemaMismatch)
@@ -226,9 +220,9 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
     let input = batch(64);
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    let options = WriteOptions {
-        ordering: Ordering::Unordered,
-        compression: CompressionOptions {
+    let options = WriteOptions::default()
+        .with_ordering(Ordering::Unordered)
+        .with_compression(CompressionOptions {
             global: Some(Compression::Zstd { level: Some(3) }),
             nested_columns: [(
                 vec!["nested".into(), "text".into()],
@@ -236,9 +230,7 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
             )]
             .into(),
             ..Default::default()
-        },
-        ..Default::default()
-    };
+        });
     let sink = LanceDatasetSink::default();
     let mut writer = sink
         .open(

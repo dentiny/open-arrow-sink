@@ -1,6 +1,6 @@
 #[path = "support/parallel_sink.rs"]
 mod parallel_sink;
-use open_arrow_sink_core::{RecordBatch, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_core::{RecordBatch, Sink, SinkExt};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_test_support::unordered_options as options;
 use parallel_sink::{Config, Operation, State, TestSink};
@@ -37,10 +37,7 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
     sink.open(
         (),
         input.schema(),
-        WriteOptions {
-            blob_handle: Some(Default::default()),
-            ..options()
-        },
+        options().with_blob_handle(Some(Default::default())),
     )
     .await
     .unwrap()
