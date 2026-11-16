@@ -138,14 +138,16 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
 async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
-    std::fs::create_dir(&path).unwrap();
+    tokio::fs::create_dir(&path).await.unwrap();
     for relative in &paths {
         let file = path.join(relative);
         if relative.ends_with('/') {
-            std::fs::create_dir_all(file).unwrap();
+            tokio::fs::create_dir_all(file).await.unwrap();
         } else {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(file, b"orphan").unwrap();
+            tokio::fs::create_dir_all(file.parent().unwrap())
+                .await
+                .unwrap();
+            tokio::fs::write(file, b"orphan").await.unwrap();
         }
     }
     let url = Url::from_directory_path(&path).unwrap();
@@ -172,7 +174,10 @@ async fn overwrite_unpublished_directory(#[case] paths: Vec<&str>) {
     assert_eq!(dataset.version().version, 1);
     assert_eq!(dataset.scan().try_into_batch().await.unwrap(), batch());
     for relative in paths.into_iter().filter(|path| !path.ends_with('/')) {
-        assert_eq!(std::fs::read(path.join(relative)).unwrap(), b"orphan");
+        assert_eq!(
+            tokio::fs::read(path.join(relative)).await.unwrap(),
+            b"orphan"
+        );
     }
 }
 
@@ -194,10 +199,12 @@ async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
         path.join(relative)
     };
     if relative.ends_with('/') {
-        std::fs::create_dir_all(&file).unwrap();
+        tokio::fs::create_dir_all(&file).await.unwrap();
     } else {
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, b"keep").unwrap();
+        tokio::fs::create_dir_all(file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&file, b"keep").await.unwrap();
     }
     assert!(
         LanceDatasetSink::default()
@@ -210,6 +217,6 @@ async fn overwrite_rejects_non_lance_contents(#[case] relative: &str) {
             .is_err()
     );
     if !relative.ends_with('/') {
-        assert_eq!(std::fs::read(file).unwrap(), b"keep");
+        assert_eq!(tokio::fs::read(file).await.unwrap(), b"keep");
     }
 }
