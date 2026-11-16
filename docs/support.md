@@ -59,5 +59,8 @@ unsupported concurrent destination mutation and reconcile uncertain commits
 before retrying. No general upsert, automatic schema evolution, sorting, or
 session-level retry is supplied.
 
+For reconciliation, manual cleanup, and subsequent Overwrite behavior, see
+[recover from a failed commit](usage.md#recover-from-a-failed-commit).
+
 Details: [Parquet](../sink/parquet/README.md),
 [Iceberg](../sink/iceberg/README.md), [Lance](../sink/lance/README.md).
