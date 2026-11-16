@@ -104,15 +104,12 @@ async fn overwrite_replaces_older_storage_formats(
     let sink = LanceDatasetSink::default();
     // Relaxing Overwrite must not also expand the supported append formats.
     assert!(matches!(
-        sink.open(
-            url.clone(),
-            original.schema(),
-            WriteOptions {
-                mode: WriteMode::Append,
-                ..options()
-            },
-        )
-        .await,
+        sink.open(url.clone(), original.schema(), {
+            let mut review_options = options();
+            review_options.mode = WriteMode::Append;
+            review_options
+        },)
+            .await,
         Err(Error::Unsupported(_))
     ));
     // Full replacement is allowed to change the schema as well as the format.
@@ -121,10 +118,11 @@ async fn overwrite_replaces_older_storage_formats(
         Arc::new(Int64Array::from(vec![7, 8])) as ArrayRef,
     )])
     .unwrap();
-    let options = WriteOptions {
-        mode: WriteMode::Overwrite,
-        storage_version: storage_version.map(str::to_owned),
-        ..options()
+    let options = {
+        let mut review_options = options();
+        review_options.mode = WriteMode::Overwrite;
+        review_options.storage_version = storage_version.map(str::to_owned);
+        review_options
     };
     let mut writer = if parallel {
         sink.layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
