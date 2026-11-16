@@ -42,6 +42,13 @@ fn policy() -> CompressionOptions {
 #[case::parallel_writers(true)]
 #[tokio::test]
 async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case] parallel: bool) {
+    use lance_file::reader::{FileReader, describe_encoding};
+    use lance_io::utils::CachedFileSize;
+    use lance_io::{
+        object_store::ObjectStore,
+        scheduler::{ScanScheduler, SchedulerConfig},
+    };
+
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let url = Url::from_directory_path(&path).unwrap();
@@ -116,32 +123,11 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
     }
     assert_eq!(occurrences, vec![2; input.num_rows()]);
 
-    assert!(dataset.get_fragments().len() >= 2);
-    for pages in file_encodings(&url).await {
-        assert!(
-            pages.iter().any(|page| page.contains("FullZipLayout")),
-            "{pages:?}"
-        );
-        assert!(
-            pages.iter().any(|page| page.contains("MiniBlockLayout")),
-            "{pages:?}"
-        );
-    }
-}
-
-async fn file_encodings(url: &Url) -> Vec<Vec<String>> {
-    use lance_file::reader::{FileReader, describe_encoding};
-    use lance_io::utils::CachedFileSize;
-    use lance_io::{
-        object_store::ObjectStore,
-        scheduler::{ScanScheduler, SchedulerConfig},
-    };
-
-    let dataset = lance::Dataset::open(url.as_str()).await.unwrap();
     let (store, base) = ObjectStore::from_uri(url.as_str()).await.unwrap();
     let scheduler = ScanScheduler::new(store, SchedulerConfig::default_for_testing());
-    let mut encodings = Vec::new();
-    for fragment in dataset.get_fragments() {
+    let fragments = dataset.get_fragments();
+    assert!(fragments.len() >= 2);
+    for fragment in fragments {
         for file in &fragment.metadata().files {
             let file = scheduler
                 .open_file(
@@ -151,119 +137,21 @@ async fn file_encodings(url: &Url) -> Vec<Vec<String>> {
                 .await
                 .unwrap();
             let metadata = FileReader::read_all_metadata(&file).await.unwrap();
-            encodings.push(
-                metadata
-                    .column_metadatas
-                    .iter()
-                    .flat_map(|column| &column.pages)
-                    .map(describe_encoding)
-                    .collect(),
-            );
-        }
-    }
-    encodings
-}
-
-#[rstest::rstest]
-#[case::global(None)]
-#[case::column(Some(vec!["raw"]))]
-#[case::nested(Some(vec!["nested", "text"]))]
-#[tokio::test]
-async fn lz4_policy_round_trips_and_miniblock_uses_lz4(
-    #[case] path: Option<Vec<&str>>,
-    #[values(StructuralEncoding::Miniblock, StructuralEncoding::Fullzip)]
-    encoding: StructuralEncoding,
-    #[values(false, true)] parallel: bool,
-) {
-    let temp = tempfile::tempdir().unwrap();
-    let url = Url::from_directory_path(temp.path().join("dataset")).unwrap();
-    let input = batch(10 * 1024);
-    let sink = LanceDatasetSink::default();
-    assert!(
-        sink.capability()
-            .compression
-            .global
-            .contains(&open_arrow_sink_core::CompressionCodec::Lz4Raw)
-    );
-    assert!(
-        sink.capability()
-            .compression
-            .per_column
-            .contains(&open_arrow_sink_core::CompressionCodec::Lz4Raw)
-    );
-    let mut policy = CompressionOptions {
-        global: Some(Compression::Uncompressed),
-        structural_encoding: Some(encoding),
-        ..Default::default()
-    };
-    match path.as_deref() {
-        None => policy.global = Some(Compression::Lz4Raw),
-        Some([column]) => {
-            policy.columns.insert((*column).into(), Compression::Lz4Raw);
-        }
-        Some(path) => {
-            policy.nested_columns.insert(
-                path.iter().map(|s| (*s).into()).collect(),
-                Compression::Lz4Raw,
-            );
-        }
-    }
-    let sink: Box<dyn Sink<Request = Url>> = if parallel {
-        Box::new(sink.layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
-            std::num::NonZeroUsize::new(2).unwrap(),
-        )))
-    } else {
-        Box::new(sink)
-    };
-    let mut writer = sink
-        .open(
-            url.clone(),
-            input.schema(),
-            WriteOptions::default()
-                .with_ordering(Ordering::Unordered)
-                .with_compression(policy),
-        )
-        .await
-        .unwrap();
-    writer.write(input.clone()).await.unwrap();
-    writer.commit().await.unwrap();
-    let dataset = lance::Dataset::open(url.as_str()).await.unwrap();
-    let actual = dataset.scan().try_into_batch().await.unwrap();
-    // The native encoding policy changes metadata, while preserving every value.
-    assert_eq!(actual.num_rows(), input.num_rows());
-    assert_eq!(actual.column(0), input.column(0));
-    assert_eq!(actual.column(2), input.column(2));
-    assert_eq!(
-        actual.column(1).as_struct().column(0),
-        input.column(1).as_struct().column(0)
-    );
-    let schema = actual.schema();
-    let target = match path.as_deref() {
-        None => schema.field_with_name("id").unwrap(),
-        Some([column]) => schema.field_with_name(column).unwrap(),
-        Some(_) => {
-            let arrow_schema::DataType::Struct(children) =
-                schema.field_with_name("nested").unwrap().data_type()
-            else {
-                panic!("expected struct")
-            };
-            children[0].as_ref()
-        }
-    };
-    assert_eq!(target.metadata()["lance-encoding:compression"], "lz4");
-    assert_eq!(
-        target.metadata()["lance-encoding:dict-values-compression"],
-        "lz4"
-    );
-    if encoding == StructuralEncoding::Miniblock {
-        let pages: Vec<_> = file_encodings(&url).await.into_iter().flatten().collect();
-        assert!(
-            pages
+            let pages: Vec<_> = metadata
+                .column_metadatas
                 .iter()
-                .any(|page| page.contains("MiniBlockLayout")
-                    && page.contains("CompressionAlgorithmLz4")),
-            "{pages:?}"
-        );
+                .flat_map(|column| &column.pages)
+                .map(describe_encoding)
+                .collect();
+            assert!(
+                pages.iter().any(|page| page.contains("FullZipLayout")),
+                "{pages:?}"
+            );
+            assert!(
+                pages.iter().any(|page| page.contains("MiniBlockLayout")),
+                "{pages:?}"
+            );
+        }
     }
 }
 

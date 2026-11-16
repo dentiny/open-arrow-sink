@@ -116,7 +116,7 @@ impl Sink for LanceDatasetSink {
                     storage_version,
                 )
                 .await?;
-            destination.validate_index_requests(&options).await?;
+            crate::validation::validate_index_requests(&destination, &options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
                 encoding_schema,
@@ -151,7 +151,7 @@ impl ParallelSink for LanceDatasetSink {
         destination
             .prepare(&encoding_schema, options.mode, storage_version)
             .await?;
-        destination.validate_index_requests(&options).await?;
+        crate::validation::validate_index_requests(&destination, &options).await?;
         let writers = (0..count.get())
             .map(|_| {
                 Box::new(crate::parallel::FragmentWriter::new(

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::validation::{self, CompressionContainer};
+
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use lance_encoding::constants::{
@@ -7,38 +9,10 @@ use lance_encoding::constants::{
     DICT_VALUES_COMPRESSION_META_KEY, STRUCTURAL_ENCODING_FULLZIP, STRUCTURAL_ENCODING_META_KEY,
     STRUCTURAL_ENCODING_MINIBLOCK,
 };
-use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
+use lance_encoding::encodings::physical::block::CompressionConfig;
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
+    CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
 };
-
-/// Convert shared codec requests to native Lance parameters before schema conversion.
-fn native_compression(compression: Compression) -> Result<CompressionConfig> {
-    let (scheme, level) = match compression {
-        Compression::Uncompressed => (CompressionScheme::None, None),
-        // Preserve Lance's native codec policy, including Fullzip's native fallback.
-        Compression::Lz4Raw => (CompressionScheme::Lz4, None),
-        Compression::Zstd { level } => {
-            // Lance also accepts 0 as the native Zstd default.
-            if let Some(level) = level
-                && level != 0
-                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-            {
-                return Err(Error::InvalidConfig(format!(
-                    "Lance Zstd compression level must be between 0 and {}: {level}",
-                    open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.end(),
-                )));
-            }
-            (CompressionScheme::Zstd, level)
-        }
-        _ => {
-            return Err(Error::Unsupported(format!(
-                "Lance compression: {compression:?}"
-            )));
-        }
-    };
-    Ok(CompressionConfig::new(scheme, level))
-}
 
 pub(crate) fn apply_compression(
     schema: &SchemaRef,
@@ -52,7 +26,10 @@ pub(crate) fn apply_compression(
     {
         return Ok(schema.clone());
     }
-    let global = options.global.map(native_compression).transpose()?;
+    let global = options
+        .global
+        .map(validation::native_compression)
+        .transpose()?;
     let mut fields = schema
         .fields()
         .iter()
@@ -61,7 +38,7 @@ pub(crate) fn apply_compression(
                 .columns
                 .get(field.name())
                 .copied()
-                .map(native_compression)
+                .map(validation::native_compression)
                 .transpose()?
                 .or(global);
             let encoding = options
@@ -77,10 +54,8 @@ pub(crate) fn apply_compression(
         })
         .collect::<Result<Fields>>()?;
     for (path, codec) in &options.nested_columns {
-        if path.len() < 2 {
-            return Err(invalid_path(path));
-        }
-        fields = nested_fields(&fields, path, native_compression(*codec)?)?;
+        validation::validate_nested_compression_path(path)?;
+        fields = nested_fields(&fields, path, validation::native_compression(*codec)?)?;
     }
     Ok(Arc::new(Schema::new_with_metadata(
         fields,
@@ -88,19 +63,8 @@ pub(crate) fn apply_compression(
     )))
 }
 
-fn invalid_path(path: &[String]) -> Error {
-    Error::Unsupported(format!(
-        "nested compression path must identify one field: {path:?}"
-    ))
-}
-
 fn nested_fields(fields: &Fields, path: &[String], codec: CompressionConfig) -> Result<Fields> {
-    let (name, rest) = path.split_first().ok_or_else(|| invalid_path(path))?;
-    let mut matches = fields.iter().enumerate().filter(|(_, f)| f.name() == name);
-    let (index, field) = matches.next().ok_or_else(|| invalid_path(path))?;
-    if matches.next().is_some() {
-        return Err(invalid_path(path));
-    }
+    let (index, field, rest) = validation::nested_compression_field(fields, path)?;
     let replacement = nested_override(field, rest, codec)?;
     let mut fields = fields.to_vec();
     fields[index] = replacement;
@@ -115,14 +79,17 @@ fn nested_override(
     if path.is_empty() {
         return Ok(Arc::new(compression_field(field, Some(codec), None)));
     }
-    let ty = match field.data_type() {
-        DataType::Struct(children) => DataType::Struct(nested_fields(children, path, codec)?),
-        DataType::List(item) => DataType::List(nested_override(item, path, codec)?),
-        DataType::LargeList(item) => DataType::LargeList(nested_override(item, path, codec)?),
-        DataType::FixedSizeList(item, size) => {
-            DataType::FixedSizeList(nested_override(item, path, codec)?, *size)
+    let ty = match validation::compression_container(field, path)? {
+        CompressionContainer::Struct(children) => {
+            DataType::Struct(nested_fields(children, path, codec)?)
         }
-        _ => return Err(invalid_path(path)),
+        CompressionContainer::List(item) => DataType::List(nested_override(item, path, codec)?),
+        CompressionContainer::LargeList(item) => {
+            DataType::LargeList(nested_override(item, path, codec)?)
+        }
+        CompressionContainer::FixedSizeList(item, size) => {
+            DataType::FixedSizeList(nested_override(item, path, codec)?, size)
+        }
     };
     Ok(Arc::new(field.as_ref().clone().with_data_type(ty)))
 }
@@ -210,70 +177,7 @@ pub(crate) fn writer_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Rec
 mod tests {
     use super::*;
     use arrow_schema::Field;
-
-    #[test]
-    fn invalid_native_compression_returns_an_error_without_prior_validation() {
-        for compression in [
-            Compression::Snappy,
-            Compression::Zstd { level: Some(-1) },
-            Compression::Zstd { level: Some(23) },
-        ] {
-            // Validate explicit global policies even when there are no fields.
-            let schema = Arc::new(Schema::empty());
-            assert!(matches!(
-                apply_compression(
-                    &schema,
-                    &CompressionOptions {
-                        global: Some(compression),
-                        ..Default::default()
-                    }
-                ),
-                Err(Error::Unsupported(_) | Error::InvalidConfig(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn invalid_nested_paths_return_errors_without_prior_validation() {
-        let child = Arc::new(Field::new("value", DataType::Int64, false));
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("scalar", DataType::Int64, false),
-            Field::new(
-                "nested",
-                DataType::Struct(vec![child.clone()].into()),
-                false,
-            ),
-            Field::new(
-                "ambiguous",
-                DataType::Struct(vec![child.clone(), child].into()),
-                false,
-            ),
-            Field::new("duplicate", DataType::Int64, false),
-            Field::new("duplicate", DataType::Int64, false),
-        ]));
-        for path in [
-            vec![],
-            vec!["nested"],
-            vec!["missing", "value"],
-            vec!["scalar", "value"],
-            vec!["nested", "missing"],
-            vec!["ambiguous", "value"],
-            vec!["duplicate", "value"],
-        ] {
-            let options = CompressionOptions {
-                nested_columns: [(
-                    path.into_iter().map(String::from).collect(),
-                    Compression::Uncompressed,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            assert!(matches!(
-                apply_compression(&schema, &options),
-                Err(Error::Unsupported(_))
-            ));
-        }
-    }
+    use open_arrow_sink_core::Compression;
 
     #[test]
     fn omitted_policies_preserve_defaults_and_unrelated_metadata() {

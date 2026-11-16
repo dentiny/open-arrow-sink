@@ -4,8 +4,8 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, StorageResolver, Url};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
+use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and owned publication reservation.
@@ -45,38 +45,8 @@ impl LanceDestination {
         mode: WriteMode,
         storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<()> {
-        if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
-                self.dataset_builder(),
-                Some(schema),
-                storage_version,
-            )
-            .await;
-        }
-        if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
-            return match mode {
-                WriteMode::Create => Err(Error::DestinationExists),
-                _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
-                        .await
-                }
-            };
-        }
-        self.new_destination = true;
-        Ok(())
-    }
-    pub async fn validate_index_requests(
-        &self,
-        options: &open_arrow_sink_core::WriteOptions,
-    ) -> Result<()> {
-        if options.mode == WriteMode::Append && !options.indexes.is_empty() {
-            let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(Error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
-        }
+        self.new_destination =
+            crate::validation::validate_destination(self, schema, mode, storage_version).await?;
         Ok(())
     }
     pub async fn cleanup(&self) -> Result<()> {
