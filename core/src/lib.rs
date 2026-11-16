@@ -38,7 +38,7 @@ pub use blob::{
     BlobChunk, BlobHandle, BlobHandleConfig, BlobPlacement, BlobWriter, ExternalBlobMode,
 };
 
-/// Field metadata marking binary values that backends may map to native blobs.
+/// Field metadata marking blob inputs: binary payloads or explicitly selected URL strings.
 pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";
 
 /// Metadata value enabling native blob handling for a field.
@@ -51,3 +51,8 @@ pub fn is_blob_field(field: &arrow_schema::Field) -> bool {
 }
 
 pub use session::{DataWriter, SessionCommitter, WriteSession};
+
+mod download_metrics;
+pub use download_metrics::{
+    DownloadFailurePolicy, DownloadMetrics, DownloadRecovery, DownloadSnapshot,
+};

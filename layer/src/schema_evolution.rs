@@ -67,11 +67,11 @@ impl<S: Sink> Layer<S> for SchemaEvolutionLayer {
 #[derive(Clone)]
 pub(crate) struct Plan {
     source: SchemaRef,
-    target: SchemaRef,
+    pub(crate) target: SchemaRef,
     steps: Vec<(usize, FieldRemap)>,
 }
 impl Plan {
-    fn new(source: &SchemaRef, remaps: &[FieldRemap]) -> Result<Self> {
+    pub(crate) fn new(source: &SchemaRef, remaps: &[FieldRemap]) -> Result<Self> {
         let mut fields = source.fields().to_vec();
         let mut seen = HashSet::new();
         let mut steps = Vec::new();
@@ -145,16 +145,29 @@ impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
     }
 
     fn wrap_writer(&self, output: Plan, inner: Box<dyn Writer>) -> Box<dyn Writer> {
-        Box::new(GuardedWriter::new(Box::new(EvolutionWriter {
-            inner,
-            schema: output.source.clone(),
-            output,
-        })))
+        output.wrap_writer(inner)
     }
 
     fn wrap_session<T: Send + 'static>(
         &self,
         output: Plan,
+        session: WriteSession<T>,
+    ) -> WriteSession<T> {
+        output.wrap_session(session)
+    }
+}
+
+impl Plan {
+    pub(crate) fn wrap_writer(self, inner: Box<dyn Writer>) -> Box<dyn Writer> {
+        Box::new(GuardedWriter::new(Box::new(EvolutionWriter {
+            inner,
+            schema: self.source.clone(),
+            output: self,
+        })))
+    }
+
+    pub(crate) fn wrap_session<T: Send + 'static>(
+        self,
         session: WriteSession<T>,
     ) -> WriteSession<T> {
         WriteSession {
@@ -164,8 +177,8 @@ impl<S: Sink> Decorator for SchemaEvolutionSink<S> {
                 .map(|inner| {
                     Box::new(GuardedDataWriter::new(Box::new(EvolutionDataWriter {
                         inner,
-                        schema: output.source.clone(),
-                        output: output.clone(),
+                        schema: self.source.clone(),
+                        output: self.clone(),
                     }))) as Box<dyn DataWriter<Output = T>>
                 })
                 .collect(),

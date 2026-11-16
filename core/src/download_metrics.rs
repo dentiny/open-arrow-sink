@@ -21,13 +21,13 @@ impl DownloadMetrics {
         self.lock().clone()
     }
 
-    pub(crate) fn failure(&self, new_row: bool) {
+    pub fn failure(&self, new_row: bool) {
         let mut snapshot = self.lock();
         snapshot.blobs_failed += 1;
         snapshot.rows_failed_blobs += u64::from(new_row);
     }
 
-    pub(crate) fn skipped(&self, rows: usize) {
+    pub fn skipped(&self, rows: usize) {
         self.lock().rows_skipped += rows as u64;
     }
 
@@ -36,4 +36,31 @@ impl DownloadMetrics {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+impl PartialEq for DownloadMetrics {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for DownloadMetrics {}
+
+/// Treatment of selected source URLs that cannot be downloaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DownloadFailurePolicy {
+    #[default]
+    Fail,
+    /// Drop the whole input row, retaining the order of surviving rows.
+    SkipRow,
+    /// Replace only failed selected blobs with null.
+    Null,
+}
+
+/// Source recovery configured by a URL-selection layer and consumed by a backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadRecovery {
+    pub columns: std::collections::HashSet<String>,
+    pub policy: DownloadFailurePolicy,
+    pub metrics: DownloadMetrics,
 }

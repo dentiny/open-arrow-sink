@@ -41,6 +41,22 @@ impl HttpConcurrencyLimitLayer {
         })
     }
 
+    /// Hold this guard until the custom client's HTTP response body is consumed
+    /// or dropped, including error and cancellation paths.
+    pub async fn acquire(&self) -> HttpRequestPermit {
+        HttpRequestPermit {
+            _permit: self
+                .semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("private semaphore is never closed"),
+        }
+    }
+    pub(crate) fn shares_budget(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.semaphore, &other.semaphore)
+    }
+
     /// Wrap a provider transport using the same budget as layered operators.
     /// Put retries outside this transport so each attempt obtains its own permit.
     pub fn wrap(&self, inner: HttpTransporter) -> HttpTransporter {
@@ -104,4 +120,9 @@ impl<S: Stream<Item = opendal::Result<Buffer>> + Unpin> Stream for PermitStream<
         }
         result
     }
+}
+
+/// One request slot for a custom HTTP client. Drop returns capacity.
+pub struct HttpRequestPermit {
+    _permit: OwnedSemaphorePermit,
 }

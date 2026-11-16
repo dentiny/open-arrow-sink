@@ -93,9 +93,8 @@ Wrap each transformed writer with `GuardedDataWriter::new` to enforce terminal
 writes and one-shot finish while retaining abort ownership. Give independent
 parallel writers independent guards; finishing one must not disable the others.
 Preserve the requested writer count, schemas, output ownership, and single
-committer. Blob transformation currently does not support the concurrent path;
-[DownloadBlobLayer](../layer/src/download_blob.rs) is a useful schema-transform
-reference with that restriction.
+committer. [SchemaEvolutionLayer](../layer/src/schema_evolution.rs) provides a
+schema-transform reference that wraps both single and parallel writers.
 
 ## 5. Document composition and integrate
 

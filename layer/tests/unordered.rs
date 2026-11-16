@@ -229,17 +229,18 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     // Free the writer that actually received the first batch.
-    let mut state_guard = state.lock().unwrap();
-    let first = state_guard
-        .events
-        .iter()
-        .find_map(|event| match event {
-            Event::WriteStarted(id) => Some(*id),
-            _ => None,
-        })
-        .unwrap();
-    state_guard.gates.remove(first).send(()).unwrap();
-    drop(state_guard);
+    {
+        let mut state_guard = state.lock().unwrap();
+        let first = state_guard
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Event::WriteStarted(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        state_guard.gates.remove(first).send(()).unwrap();
+    }
     assert!(writer.write(batch()).now_or_never().unwrap().is_ok());
     assert_eq!(
         state

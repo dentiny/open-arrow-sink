@@ -170,6 +170,11 @@ impl Storage {
         self
     }
 
+    pub(crate) fn without_io_metrics(mut self) -> (Self, Option<open_arrow_sink_core::IoMetrics>) {
+        let metrics = self.io_metrics.take();
+        (self, metrics)
+    }
+
     /// Observe this namespace, including native adapters. Clones keep the handle;
     /// configuring another clone leaves existing sessions unchanged.
     pub fn with_io_metrics(mut self, metrics: open_arrow_sink_core::IoMetrics) -> Self {
@@ -212,6 +217,10 @@ impl Storage {
     }
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
+    pub fn http_concurrency_limit(&self) -> HttpConcurrencyLimitLayer {
+        self.http_limit.clone()
+    }
+
     pub fn operator(&self) -> Operator {
         // Keep the stored operator free of our limiter. Both HTTP setters update
         // independent inputs; every exposed operator wraps the provider once.

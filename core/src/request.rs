@@ -86,9 +86,11 @@ impl UploadConfig {
 /// use open_arrow_sink_core::{WriteMode, WriteOptions};
 /// let options = WriteOptions { mode: WriteMode::Append, ..WriteOptions::default() };
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WriteOptions {
+    /// Recovery for selected source URLs; destination and budget errors remain terminal.
+    pub download_recovery: Option<crate::DownloadRecovery>,
     /// Optional shared I/O observer. Layers forward it; instrumented backends
     /// record measured payloads independently of commit success.
     pub io_metrics: Option<crate::IoMetrics>,
@@ -115,23 +117,6 @@ pub struct WriteOptions {
     /// Backend data-file format version. None preserves the backend default.
     /// Currently supported only by Lance; values use the backend version syntax.
     pub storage_version: Option<String>,
-}
-
-impl Default for WriteOptions {
-    fn default() -> Self {
-        Self {
-            io_metrics: None,
-            blob_handle: None,
-            mode: WriteMode::default(),
-            ordering: Ordering::default(),
-            compression: CompressionOptions::default(),
-            partition: None,
-            indexes: Vec::new(),
-            upload: UploadConfig::default(),
-            target_file_size: None,
-            storage_version: None,
-        }
-    }
 }
 
 impl WriteOptions {
