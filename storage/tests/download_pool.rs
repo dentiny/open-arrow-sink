@@ -80,53 +80,59 @@ async fn streaming_limits_and_cleanup() {
         assert_eq!(first.buffered_bytes(), 0);
         assert_eq!(other.buffered_bytes(), 0);
 
-        let mut download = first.stream(url).await.unwrap();
-        let mut body = Vec::new();
-        while let Some(chunk) = download.try_next().await.unwrap() {
-            assert_le!(chunk.as_ref().len(), 8);
-            body.extend_from_slice(chunk.as_ref());
+        {
+            let mut download = first.stream(url).await.unwrap();
+            let mut body = Vec::new();
+            while let Some(chunk) = download.try_next().await.unwrap() {
+                assert_le!(chunk.as_ref().len(), 8);
+                body.extend_from_slice(chunk.as_ref());
+            }
+            assert_eq!(body, BODY);
         }
-        drop(download);
-        assert_eq!(body, BODY);
         for source in ["not a URL", "unsupported:///tmp/blob"] {
             assert!(first.stream(source).await.is_err());
         }
-        let mut missing = first.stream(&format!("{url}/missing")).await.unwrap();
-        assert!(missing.try_next().await.is_err());
-        drop(missing);
+        {
+            let mut missing = first.stream(&format!("{url}/missing")).await.unwrap();
+            assert!(missing.try_next().await.is_err());
+        }
         assert_eq!(first.buffered_bytes(), 0);
         assert!(first.stream(url).await.is_ok());
 
-        // Replacing the transport after layering preserves retry policy.
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        struct Transient(Arc<AtomicUsize>);
-        impl HttpTransport for Transient {
-            async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
-                let mut response = Transport.fetch(request).await?;
-                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        {
+            // Replacing the transport after layering preserves retry policy.
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            struct Transient(Arc<AtomicUsize>);
+            impl HttpTransport for Transient {
+                async fn fetch(
+                    &self,
+                    request: Request<Buffer>,
+                ) -> opendal::Result<Response<HttpBody>> {
+                    let mut response = Transport.fetch(request).await?;
+                    if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                    }
+                    Ok(response)
                 }
-                Ok(response)
             }
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
+                .unwrap()
+                .with_layer(
+                    opendal::layers::RetryLayer::default()
+                        .with_min_delay(Duration::from_millis(1))
+                        .with_max_delay(Duration::from_millis(1))
+                        .with_max_times(1),
+                )
+                .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
+            let mut retried = retrying.stream(url).await.unwrap();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = retried.try_next().await.unwrap() {
+                bytes.extend_from_slice(chunk.as_ref());
+            }
+            assert_eq!(bytes, BODY);
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
         }
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
-            .unwrap()
-            .with_layer(
-                opendal::layers::RetryLayer::default()
-                    .with_min_delay(Duration::from_millis(1))
-                    .with_max_delay(Duration::from_millis(1))
-                    .with_max_times(1),
-            )
-            .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
-        let mut retried = retrying.stream(url).await.unwrap();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = retried.try_next().await.unwrap() {
-            bytes.extend_from_slice(chunk.as_ref());
-        }
-        assert_eq!(bytes, BODY);
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        drop(retried);
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("source.bin");
         tokio::fs::write(&file, BODY).await.unwrap();
