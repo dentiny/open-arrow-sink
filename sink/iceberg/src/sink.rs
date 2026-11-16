@@ -18,8 +18,8 @@ use open_arrow_sink_core::{
 use crate::{
     committer::IcebergCommitter,
     compression::apply_compression,
-    partition::PartitionWriterAdapter,
-    validation::{WriterKind, validate_options, validate_table},
+    partition::{PartitionWriterAdapter, WriterKind},
+    validation::{validate_options, validate_table},
     writer::IcebergTableWriter,
 };
 
@@ -104,8 +104,12 @@ impl ParallelSink for IcebergTableSink {
             .load_table(&request)
             .await
             .map_err(Error::backend)?;
-        let kind = validate_table(&table, &schema, options.partition)?;
+        validate_table(&table, &schema, options.partition)?;
         let metadata = table.metadata();
+        let kind = WriterKind::new(
+            metadata.default_partition_spec().clone(),
+            metadata.current_schema().clone(),
+        );
         let mut properties = metadata.properties().clone();
         apply_compression(&mut properties, options.compression.global);
         let properties = TableProperties::new(&properties);
