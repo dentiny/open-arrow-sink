@@ -138,3 +138,8 @@ pub(crate) fn storage_version_mismatch(
         "Lance append storage version {requested} does not match existing dataset version {existing}"
     ))
 }
+
+/// Dataset destinations must not claim or clean up an entire operator root.
+pub(crate) fn root_destination() -> open_arrow_sink_core::Error {
+    open_arrow_sink_core::Error::InvalidConfig("destination must not be the storage root".into())
+}

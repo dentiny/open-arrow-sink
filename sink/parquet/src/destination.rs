@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
@@ -10,7 +10,7 @@ const RESERVATION: &str = ".open-arrow-sink";
 /// Session-owned parts in a destination directory.
 pub(crate) struct Destination {
     storage: Storage,
-    directory: Url,
+    directory: ObjectPath,
     prefix: String,
     // Create owns the destination. Append shares an existing directory and must
     // preserve its reservation. Only owners create/remove the reservation and
@@ -26,7 +26,10 @@ impl Destination {
         mode: WriteMode,
         cleanup_on_error: bool,
     ) -> Result<Self> {
-        let directory = storage.directory_url(&directory)?;
+        let directory = storage.resolve(&directory)?.as_dir();
+        if directory.is_root() {
+            return Err(crate::error::root_destination());
+        }
         let (prefix, owns_directory) = match mode {
             WriteMode::Create => ("part-".into(), true),
             WriteMode::Append => {
@@ -47,10 +50,10 @@ impl Destination {
         }
         Ok(destination)
     }
-    fn child(&self, name: &str) -> Url {
+    fn child(&self, name: &str) -> ObjectPath {
         self.directory.join(name).unwrap()
     }
-    fn file(&self, index: usize) -> Url {
+    fn file(&self, index: usize) -> ObjectPath {
         self.child(&format!("{}{index:05}.parquet", self.prefix))
     }
     async fn reserve(&self) -> Result<()> {

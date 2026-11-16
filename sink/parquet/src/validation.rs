@@ -1,6 +1,6 @@
 use futures::{TryStreamExt, stream};
 use open_arrow_sink_core::Result;
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage};
 
 use crate::error;
 
@@ -9,11 +9,10 @@ const APPEND_SCHEMA_CONCURRENCY: usize = 32;
 
 pub(crate) async fn validate_append_directory(
     storage: &Storage,
-    directory: &Url,
+    directory: &ObjectPath,
     schema: &open_arrow_sink_core::SchemaRef,
 ) -> Result<()> {
-    let mut exact = directory.clone();
-    exact.path_segments_mut().unwrap().pop_if_empty();
+    let exact = directory.as_object();
     let metadata = storage.stat_optional(&exact).await?;
     if metadata.as_ref().is_some_and(|metadata| !metadata.is_dir()) {
         return Err(error::not_directory());
@@ -27,8 +26,8 @@ pub(crate) async fn validate_append_directory(
     stream::iter(files.into_iter().map(Ok))
         .try_for_each_concurrent(APPEND_SCHEMA_CONCURRENCY, |file| async move {
             if file
-                .path()
-                .strip_prefix(directory.path())
+                .as_str()
+                .strip_prefix(directory.as_str())
                 .is_some_and(|relative| !relative.contains('/') && relative.ends_with(".parquet"))
             {
                 let actual = crate::reader::schema(storage.clone(), file).await?;

@@ -6,13 +6,14 @@ use lance::{
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct NativeStorage {
     pub storage: Storage,
     pub url: Url,
+    pub path: ObjectPath,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
@@ -24,7 +25,12 @@ impl NativeStorage {
         sources: StorageResolver,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
-        let url = storage.directory_url(&url)?;
+        let path = storage.resolve(&url)?.as_dir();
+        if path.is_root() {
+            return Err(crate::error::root_destination());
+        }
+        // Lance's native API requires a URL at its boundary.
+        let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
         let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
         let provider = Arc::new(Provider {
@@ -37,6 +43,7 @@ impl NativeStorage {
         Ok(Self {
             storage,
             url,
+            path,
             session,
             io_tracker,
             reserved: false,
@@ -56,7 +63,7 @@ impl NativeStorage {
             )
             .await;
         }
-        if self.storage.prefix_exists(&self.url).await? {
+        if self.storage.prefix_exists(&self.path).await? {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {
@@ -66,7 +73,7 @@ impl NativeStorage {
             };
         }
         self.storage
-            .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
+            .create(&self.path.join(".open-arrow-sink").unwrap(), "".into())
             .await?;
         self.reserved = true;
         Ok(())
@@ -87,7 +94,7 @@ impl NativeStorage {
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.reserved {
-            self.storage.remove_all(&self.url).await?;
+            self.storage.remove_all(&self.path).await?;
         }
         Ok(())
     }
@@ -126,7 +133,10 @@ mod tests {
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();
         source
-            .write(&source_url, "custom backend".into())
+            .write(
+                &source.resolve(&source_url).unwrap(),
+                "custom backend".into(),
+            )
             .await
             .unwrap();
         let destination = Storage::new(

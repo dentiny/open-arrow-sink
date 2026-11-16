@@ -120,7 +120,10 @@ impl DownloadPool {
             (operator.with_context(context), "blob".to_owned())
         } else {
             let storage = self.sources.resolve(&url)?;
-            (storage.operator(), storage.path(&url)?)
+            (
+                storage.operator(),
+                storage.resolve(&url)?.as_str().to_owned(),
+            )
         };
         let reader = operator
             .reader(&path)

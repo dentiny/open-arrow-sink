@@ -18,3 +18,8 @@ pub(crate) fn missing_directory() -> Error {
 pub(crate) fn overwrite_unsupported() -> Error {
     Error::Unsupported("Parquet directory sink does not support Overwrite".into())
 }
+
+/// Dataset destinations must not claim or clean up an entire operator root.
+pub(crate) fn root_destination() -> open_arrow_sink_core::Error {
+    open_arrow_sink_core::Error::InvalidConfig("destination must not be the storage root".into())
+}

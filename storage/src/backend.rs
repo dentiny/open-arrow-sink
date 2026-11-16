@@ -8,7 +8,7 @@ use opendal::{HttpTransporter, Operator};
 use url::Url;
 
 use crate::{
-    HttpConcurrencyLimitLayer, StorageConfig,
+    HttpConcurrencyLimitLayer, ObjectPath, StorageConfig,
     error::{self, map_error},
     validation,
 };
@@ -77,23 +77,12 @@ impl Storage {
         Self::new(operator, base)
     }
 
-    /// Validate a non-root destination and give it directory URL semantics.
-    pub fn directory_url(&self, url: &Url) -> Result<Url> {
-        self.nonroot_path(url)?;
-        let mut directory = url.clone();
-        if !directory.path().ends_with('/') {
-            directory.path_segments_mut().unwrap().push("");
-        }
-        Ok(directory)
-    }
-
     /// Check for an exact object, an empty directory, or any objects under a prefix.
     /// This is a preflight check; callers must use conditional creation to claim it.
-    pub async fn prefix_exists(&self, url: &Url) -> Result<bool> {
-        let directory = self.directory_url(url)?;
-        let mut exact = directory.clone();
-        exact.path_segments_mut().unwrap().pop_if_empty();
-        Ok(self.exists(&exact).await?
+    pub async fn prefix_exists(&self, path: &ObjectPath) -> Result<bool> {
+        path.require_nonroot()?;
+        let directory = path.as_dir();
+        Ok(self.exists(&path.as_object()).await?
             || self.exists(&directory).await?
             || self.has_files(&directory).await?)
     }
@@ -182,10 +171,11 @@ impl Storage {
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
-    pub fn path(&self, url: &Url) -> Result<String> {
-        validation::relative_path(&self.base_url, &self.base_path, url)
+    pub fn resolve(&self, url: &Url) -> Result<ObjectPath> {
+        validation::relative_path(&self.base_url, &self.base_path, url).map(ObjectPath::new)
     }
 
+    /// Encode a decoded relative path as a URL for an external API.
     pub fn url(&self, path: &str) -> Result<Url> {
         validation::validate_path(path)?;
         let mut url = self.base_url.clone();
@@ -208,151 +198,151 @@ impl Storage {
         Ok(url)
     }
 
-    pub async fn exists(&self, url: &Url) -> Result<bool> {
-        let path = self.path(url)?;
+    pub async fn exists(&self, path: &ObjectPath) -> Result<bool> {
+        let path = path.as_str();
         self.operator()
-            .exists(&path)
+            .exists(path)
             .await
-            .map_err(|error| map_error("exists", &path, error))
+            .map_err(|error| map_error("exists", path, error))
     }
     /// Read metadata once, returning `None` only when the object is not found.
-    pub async fn stat_optional(&self, url: &Url) -> Result<Option<opendal::Metadata>> {
-        let path = self.path(url)?;
-        match self.operator().stat(&path).await {
+    pub async fn stat_optional(&self, path: &ObjectPath) -> Result<Option<opendal::Metadata>> {
+        let path = path.as_str();
+        match self.operator().stat(path).await {
             Ok(metadata) => Ok(Some(metadata)),
             Err(error) if error.kind() == opendal::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(map_error("stat", &path, error)),
+            Err(error) => Err(map_error("stat", path, error)),
         }
     }
-    pub async fn stat(&self, url: &Url) -> Result<opendal::Metadata> {
-        let path = self.path(url)?;
+    pub async fn stat(&self, path: &ObjectPath) -> Result<opendal::Metadata> {
+        let path = path.as_str();
         self.operator()
-            .stat(&path)
+            .stat(path)
             .await
-            .map_err(|error| map_error("stat", &path, error))
+            .map_err(|error| map_error("stat", path, error))
     }
-    pub async fn read(&self, url: &Url) -> Result<Bytes> {
-        let path = self.path(url)?;
+    pub async fn read(&self, path: &ObjectPath) -> Result<Bytes> {
+        let path = path.as_str();
         self.operator()
-            .read(&path)
+            .read(path)
             .await
             .map(|buffer| buffer.to_bytes())
-            .map_err(|error| map_error("read", &path, error))
+            .map_err(|error| map_error("read", path, error))
     }
-    pub async fn read_range(&self, url: &Url, range: Range<u64>) -> Result<Bytes> {
-        let path = self.path(url)?;
+    pub async fn read_range(&self, path: &ObjectPath, range: Range<u64>) -> Result<Bytes> {
+        let path = path.as_str();
         validation::validate_range(&range)?;
         if range.is_empty() {
             return Ok(Bytes::new());
         }
         self.operator()
-            .read_with(&path)
+            .read_with(path)
             .range(range)
             .await
             .map(|buffer| buffer.to_bytes())
-            .map_err(|error| map_error("read", &path, error))
+            .map_err(|error| map_error("read", path, error))
     }
-    pub async fn write(&self, url: &Url, bytes: Bytes) -> Result<()> {
-        let path = self.nonroot_path(url)?;
+    pub async fn write(&self, path: &ObjectPath, bytes: Bytes) -> Result<()> {
+        path.require_nonroot()?;
+        let path = path.as_str();
         self.operator()
-            .write(&path, bytes)
+            .write(path, bytes)
             .await
             .map(|_| ())
-            .map_err(|error| map_error("write", &path, error))
+            .map_err(|error| map_error("write", path, error))
     }
     /// Atomic conditional creation. Unsupported backends fail instead of overwriting.
-    pub async fn create(&self, url: &Url, bytes: Bytes) -> Result<()> {
-        let path = self.nonroot_path(url)?;
+    pub async fn create(&self, path: &ObjectPath, bytes: Bytes) -> Result<()> {
+        path.require_nonroot()?;
+        let path = path.as_str();
         self.operator()
-            .write_with(&path, bytes)
+            .write_with(path, bytes)
             .if_not_exists(true)
             .await
             .map(|_| ())
-            .map_err(|error| map_error("create", &path, error))
+            .map_err(|error| map_error("create", path, error))
     }
-    pub async fn writer(&self, url: &Url) -> Result<StorageWriter> {
-        let path = self.nonroot_path(url)?;
+    pub async fn writer(&self, path: &ObjectPath) -> Result<StorageWriter> {
+        path.require_nonroot()?;
+        let path = path.as_str();
         let operator = self.operator();
         let writer = operator
-            .writer_options(&path, self.upload_options(Default::default()))
+            .writer_options(path, self.upload_options(Default::default()))
             .await
-            .map_err(|error| map_error("open", &path, error))?;
+            .map_err(|error| map_error("open", path, error))?;
         Ok(StorageWriter {
             inner: Some(writer),
             bytes_written: 0,
             state: Poison::default(),
-            path,
+            path: path.to_owned(),
         })
     }
-    pub async fn list(&self, url: &Url) -> Result<Vec<Url>> {
-        let path = directory_path(&self.path(url)?);
-        let mut entries = self.lister(&path).await?;
-        let mut urls = Vec::new();
+    pub async fn list(&self, path: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        let directory = path.as_dir();
+        let path = directory.as_str();
+        let mut entries = self.lister(&directory).await?;
+        let mut paths = Vec::new();
         while let Some(entry) = entries
             .try_next()
             .await
-            .map_err(|error| map_error("list", &path, error))?
+            .map_err(|error| map_error("list", path, error))?
         {
             if entry.metadata().is_file() {
-                urls.push(self.url(entry.path())?);
+                validation::validate_path(entry.path())?;
+                paths.push(ObjectPath::new(entry.path().to_owned()));
             }
         }
-        Ok(urls)
+        Ok(paths)
     }
-    pub async fn delete(&self, url: &Url) -> Result<()> {
-        let path = self.nonroot_path(url)?;
-        error::delete_result(&path, self.operator().delete(&path).await)
+    pub async fn delete(&self, path: &ObjectPath) -> Result<()> {
+        path.require_nonroot()?;
+        let path = path.as_str();
+        error::delete_result(path, self.operator().delete(path).await)
     }
     /// Remove a session-owned namespace. The caller must own every object beneath it.
     /// Refuse to remove an entire operator root.
-    pub async fn remove_all(&self, url: &Url) -> Result<()> {
-        let path = directory_path(&self.nonroot_path(url)?);
+    pub async fn remove_all(&self, path: &ObjectPath) -> Result<()> {
+        path.require_nonroot()?;
+        let directory = path.as_dir();
+        let path = directory.as_str();
         self.operator()
-            .delete_with(&path)
+            .delete_with(path)
             .recursive(true)
             .await
-            .map_err(|error| map_error("delete_prefix", &path, error))
+            .map_err(|error| map_error("delete_prefix", path, error))
     }
     /// Delete a directory only when it is empty. Never recursively remove its contents.
-    pub async fn remove_empty_directory(&self, url: &Url) -> Result<()> {
-        if self.has_files(url).await? {
+    pub async fn remove_empty_directory(&self, path: &ObjectPath) -> Result<()> {
+        path.require_nonroot()?;
+        if self.has_files(path).await? {
             return Ok(());
         }
-        let path = directory_path(&self.nonroot_path(url)?);
+        let directory = path.as_dir();
+        let path = directory.as_str();
         self.operator()
-            .delete(&path)
+            .delete(path)
             .await
-            .map_err(|error| map_error("delete", &path, error))
+            .map_err(|error| map_error("delete", path, error))
     }
-    async fn lister(&self, path: &str) -> Result<opendal::Lister> {
+    async fn lister(&self, path: &ObjectPath) -> Result<opendal::Lister> {
+        let path = path.as_str();
         self.operator()
             .lister_with(path)
             .recursive(true)
             .await
             .map_err(|error| map_error("list", path, error))
     }
-    async fn has_files(&self, url: &Url) -> Result<bool> {
-        let path = directory_path(&self.path(url)?);
-        self.lister(&path)
+    async fn has_files(&self, path: &ObjectPath) -> Result<bool> {
+        let directory = path.as_dir();
+        let path = directory.as_str();
+        self.lister(&directory)
             .await?
             .try_any(|entry| futures::future::ready(entry.metadata().is_file()))
             .await
-            .map_err(|error| map_error("list", &path, error))
-    }
-    fn nonroot_path(&self, url: &Url) -> Result<String> {
-        let path = self.path(url)?;
-        validation::validate_nonroot_path(&path)?;
-        Ok(path)
+            .map_err(|error| map_error("list", path, error))
     }
 }
 
-fn directory_path(path: &str) -> String {
-    if path.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", path.trim_end_matches('/'))
-    }
-}
 /// A streaming byte writer with explicit close/abort and terminal failure semantics.
 /// Drop never commits or performs async cleanup.
 pub struct StorageWriter {

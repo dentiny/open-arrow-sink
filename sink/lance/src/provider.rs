@@ -47,8 +47,9 @@ impl ObjectStoreProvider for Provider {
             self.storage
                 .resolve(url)
                 .map_err(native)?
-                .path(url)
-                .map_err(native)?,
+                .resolve(url)
+                .map_err(native)?
+                .as_str(),
         ))
     }
     fn calculate_object_store_prefix(

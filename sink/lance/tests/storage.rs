@@ -77,7 +77,14 @@ async fn shared_operator_commit_indexes_and_read_back() {
     assert_eq!(values, vec![1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
     assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
     // Data and the reservation must resolve to the same physical namespace.
-    assert_gt!(storage.list(&url).await.unwrap().len(), 1);
+    assert_gt!(
+        storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         sink.open(url, batch().schema(), write_options())
             .await
@@ -104,13 +111,26 @@ async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
         .unwrap();
     writer.write(batch()).await.unwrap();
     let sibling = storage.url("keep").unwrap();
-    storage.write(&sibling, "keep".into()).await.unwrap();
+    storage
+        .write(&storage.resolve(&sibling).unwrap(), "keep".into())
+        .await
+        .unwrap();
     writer.abort().await.unwrap();
     assert_eq!(
-        storage.list(&url).await.unwrap().is_empty(),
+        storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
         cleanup_on_error
     );
-    assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&sibling).unwrap())
+            .await
+            .unwrap(),
+        "keep"
+    );
 }
 
 #[tokio::test]
@@ -161,7 +181,10 @@ async fn ingests_blob_with_configured_layout(
     let storage = storage();
     let source = storage.url("source.bin").unwrap();
     storage
-        .write(&source, payload.as_bytes().to_vec().into())
+        .write(
+            &storage.resolve(&source).unwrap(),
+            payload.as_bytes().to_vec().into(),
+        )
         .await
         .unwrap();
     let mut values = BlobArrayBuilder::new(1);
@@ -189,7 +212,10 @@ async fn ingests_blob_with_configured_layout(
     .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    storage.delete(&source).await.unwrap();
+    storage
+        .delete(&storage.resolve(&source).unwrap())
+        .await
+        .unwrap();
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let blobs = Arc::new(dataset)
         .take_blobs_by_indices(&[0], "blob")
@@ -216,7 +242,10 @@ async fn external_blobs_resolve_independent_buckets() {
     for (storage, bytes) in [(&first, "first"), (&second, "second")] {
         let uri = storage.url("same-key").unwrap();
         storage
-            .write(&uri, bytes.as_bytes().to_vec().into())
+            .write(
+                &storage.resolve(&uri).unwrap(),
+                bytes.as_bytes().to_vec().into(),
+            )
             .await
             .unwrap();
         values.push_uri(uri.as_str()).unwrap();
@@ -236,9 +265,12 @@ async fn external_blobs_resolve_independent_buckets() {
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    first.delete(&first.url("same-key").unwrap()).await.unwrap();
+    first
+        .delete(&first.resolve(&first.url("same-key").unwrap()).unwrap())
+        .await
+        .unwrap();
     second
-        .delete(&second.url("same-key").unwrap())
+        .delete(&second.resolve(&second.url("same-key").unwrap()).unwrap())
         .await
         .unwrap();
     let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());

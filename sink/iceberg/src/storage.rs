@@ -16,13 +16,13 @@ use iceberg::{
     },
 };
 use open_arrow_sink_core::async_trait;
-use open_arrow_sink_storage::{Storage, StorageWriter, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 use uuid::Uuid;
 
 type SharedWriter = Arc<futures::lock::Mutex<StorageWriter>>;
 
 struct Upload {
-    path: String,
+    path: ObjectPath,
     writer: SharedWriter,
 }
 
@@ -52,16 +52,36 @@ pub struct OpenDalStorageFactory {
     // Iceberg's FileWrite has no abort method. Retain unfinished native handles
     // across FileWrite drop so explicit prefix cleanup can still abort them.
     uploads: Arc<Uploads>,
+    // FileIO retains a string location; file handles retain its resolved path
+    // here so subsequent reads/writes do not revalidate the same URL.
+    resolved: Option<(Arc<str>, ObjectPath)>,
 }
 impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage,
             uploads: Arc::default(),
+            resolved: None,
         }
     }
     pub fn file_io(&self) -> iceberg::io::FileIO {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
+    }
+
+    fn resolve(&self, path: &str) -> Result<ObjectPath> {
+        if let Some((location, resolved)) = &self.resolved
+            && location.as_ref() == path
+        {
+            return Ok(resolved.clone());
+        }
+        self.storage.resolve(&location(path)?).map_err(backend)
+    }
+
+    fn for_location(&self, path: &str) -> Result<Self> {
+        let resolved = self.resolve(path)?;
+        let mut storage = self.clone();
+        storage.resolved = Some((Arc::from(path), resolved));
+        Ok(storage)
     }
 }
 
@@ -88,36 +108,44 @@ impl StorageFactory for OpenDalStorageFactory {
 #[typetag::serde(name = "open-arrow-sink-opendal")]
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
-        self.storage.exists(&location(path)?).await.map_err(backend)
+        self.storage
+            .exists(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
-        let metadata = self.storage.stat(&location(path)?).await.map_err(backend)?;
+        let metadata = self
+            .storage
+            .stat(&self.resolve(path)?)
+            .await
+            .map_err(backend)?;
         Ok(FileMetadata {
             size: metadata.content_length(),
         })
     }
     async fn read(&self, path: &str) -> Result<Bytes> {
-        self.storage.read(&location(path)?).await.map_err(backend)
+        self.storage
+            .read(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
-        let url = location(path)?;
-        self.storage.path(&url).map_err(backend)?;
+        let path = self.resolve(path)?;
         Ok(Box::new(OpenDalReader {
             storage: self.storage.clone(),
-            url,
+            path,
         }))
     }
     async fn write(&self, path: &str, bytes: Bytes) -> Result<()> {
         self.storage
-            .write(&location(path)?, bytes)
+            .write(&self.resolve(path)?, bytes)
             .await
             .map_err(backend)
     }
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
-        let url = location(path)?;
-        let path = self.storage.path(&url).map_err(backend)?;
+        let path = self.resolve(path)?;
         let writer = Arc::new(futures::lock::Mutex::new(
-            self.storage.writer(&url).await.map_err(backend)?,
+            self.storage.writer(&path).await.map_err(backend)?,
         ));
         let id = Uuid::new_v4();
         self.uploads.lock().insert(
@@ -134,22 +162,24 @@ impl IcebergStorage for OpenDalStorageFactory {
         }))
     }
     async fn delete(&self, path: &str) -> Result<()> {
-        self.storage.delete(&location(path)?).await.map_err(backend)
+        self.storage
+            .delete(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn delete_prefix(&self, path: &str) -> Result<()> {
-        let url = location(path)?;
-        let path = self.storage.path(&url).map_err(backend)?;
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path.trim_end_matches('/'))
-        };
+        let path = self.resolve(path)?;
+        // Reject the operator root before aborting any active upload.
+        if path.is_root() {
+            return self.storage.remove_all(&path).await.map_err(backend);
+        }
+        let prefix = path.as_dir();
         // Never hold the registry's synchronous mutex across storage I/O.
         let uploads: Vec<_> = self
             .uploads
             .lock()
             .iter()
-            .filter(|(_, upload)| upload.path.starts_with(&prefix))
+            .filter(|(_, upload)| upload.path.as_str().starts_with(prefix.as_str()))
             .map(|(id, upload)| (*id, upload.writer.clone()))
             .collect();
         let mut first_error = None;
@@ -159,7 +189,7 @@ impl IcebergStorage for OpenDalStorageFactory {
             }
             self.uploads.lock().remove(&id);
         }
-        if let Err(error) = self.storage.remove_all(&url).await {
+        if let Err(error) = self.storage.remove_all(&path).await {
             first_error.get_or_insert_with(|| backend(error));
         }
         first_error.map_or(Ok(()), Err)
@@ -171,23 +201,27 @@ impl IcebergStorage for OpenDalStorageFactory {
         Ok(())
     }
     fn new_input(&self, path: &str) -> Result<InputFile> {
-        self.storage.path(&location(path)?).map_err(backend)?;
-        Ok(InputFile::new(Arc::new(self.clone()), path.to_owned()))
+        Ok(InputFile::new(
+            Arc::new(self.for_location(path)?),
+            path.to_owned(),
+        ))
     }
     fn new_output(&self, path: &str) -> Result<OutputFile> {
-        self.storage.path(&location(path)?).map_err(backend)?;
-        Ok(OutputFile::new(Arc::new(self.clone()), path.to_owned()))
+        Ok(OutputFile::new(
+            Arc::new(self.for_location(path)?),
+            path.to_owned(),
+        ))
     }
 }
 struct OpenDalReader {
     storage: Storage,
-    url: Url,
+    path: ObjectPath,
 }
 #[async_trait]
 impl FileRead for OpenDalReader {
     async fn read(&self, range: Range<u64>) -> Result<Bytes> {
         self.storage
-            .read_range(&self.url, range)
+            .read_range(&self.path, range)
             .await
             .map_err(backend)
     }
@@ -257,6 +291,14 @@ mod tests {
             .await
             .unwrap();
         keep_writer.write("keep".into()).await.unwrap();
+        // Reject root cleanup before aborting or unregistering any upload.
+        assert!(
+            file_io
+                .delete_prefix(storage.base_url().as_str())
+                .await
+                .is_err()
+        );
+        assert_eq!(factory.uploads.lock().len(), 3);
         // A factory clone and a new FileIO must share the unfinished-upload registry.
         factory
             .clone()
@@ -276,12 +318,28 @@ mod tests {
         assert_eq!(factory.uploads.lock().len(), 1);
         assert!(active_writer.write("more".into()).await.is_err());
         assert!(active_writer.close().await.is_err());
-        assert!(!storage.exists(&abandoned).await.unwrap());
-        assert!(!storage.exists(&active).await.unwrap());
+        assert!(
+            !storage
+                .exists(&storage.resolve(&abandoned).unwrap())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .exists(&storage.resolve(&active).unwrap())
+                .await
+                .unwrap()
+        );
         keep_writer.write(" more".into()).await.unwrap();
         keep_writer.close().await.unwrap();
         assert!(factory.uploads.lock().is_empty());
-        assert_eq!(storage.read(&keep).await.unwrap(), "keep more");
+        assert_eq!(
+            storage
+                .read(&storage.resolve(&keep).unwrap())
+                .await
+                .unwrap(),
+            "keep more"
+        );
         // Successful close also removes a new upload from the registry.
         let mut completed = file_io
             .new_output(abandoned.as_str())
@@ -297,7 +355,12 @@ mod tests {
             .delete_prefix(storage.url("session-a/").unwrap().as_str())
             .await
             .unwrap();
-        assert!(!storage.exists(&abandoned).await.unwrap());
+        assert!(
+            !storage
+                .exists(&storage.resolve(&abandoned).unwrap())
+                .await
+                .unwrap()
+        );
         // Repeated abort cleanup is harmless.
         file_io
             .delete_prefix(storage.url("session-a/").unwrap().as_str())

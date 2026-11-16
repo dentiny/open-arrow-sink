@@ -58,13 +58,6 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_nonroot_path(path: &str) -> Result<()> {
-    if path.trim_matches('/').is_empty() {
-        return Err(error::empty_path());
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_range(range: &Range<u64>) -> Result<()> {
     if range.start > range.end {
         return Err(error::invalid_read_range());
