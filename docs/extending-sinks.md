@@ -146,3 +146,11 @@ Reference implementations:
 [committer](../sink/iceberg/src/committer.rs),
 [Lance sink](../sink/lance/src/sink.rs) and
 [committer](../sink/lance/src/committer.rs).
+
+For workspace backends, implement the dev-only
+[`SinkFixture`](../test-support/src/conformance.rs) and run
+`assert_conforms::<YourFixture>().await` against a fresh factory. The shared suite
+checks round trips, readable empty commits, abort, and schema-error termination.
+It deliberately leaves storage-specific publication and cleanup assertions in
+the fixture/backend tests. `core/tests/session.rs` independently exercises the
+adapter's cancellation and publication boundaries without a backend.

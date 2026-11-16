@@ -18,50 +18,48 @@ async fn read_sorted(dataset: &Dataset, key: &str) -> RecordBatch {
     sort_batch(&dataset.scan().try_into_batch().await.unwrap(), &[key]).unwrap()
 }
 
-#[tokio::test]
-async fn commit_round_trips_multiple_batches() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("dataset");
-    let expected = batch();
-    let mut writer = LanceDatasetSink::default()
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            expected.schema(),
-            options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(writer.schema(), &expected.schema());
-    writer.write(expected.slice(0, 1)).await.unwrap();
-    writer.write(expected.slice(1, 3)).await.unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 4);
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(
-        read_sorted(&dataset, "value").await,
-        sort_batch(&expected, &["value"]).unwrap()
-    );
+struct ConformanceFixture {
+    _temp: tempfile::TempDir,
+    path: std::path::PathBuf,
+    sink: LanceDatasetSink,
+}
+
+#[open_arrow_sink_core::async_trait]
+impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixture {
+    type Sink = LanceDatasetSink;
+    async fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("dataset");
+        Self {
+            _temp: temp,
+            path,
+            sink: LanceDatasetSink::default(),
+        }
+    }
+    fn sink(&self) -> &Self::Sink {
+        &self.sink
+    }
+    fn request(&self) -> Url {
+        Url::from_directory_path(&self.path).unwrap()
+    }
+    fn batch(&self) -> RecordBatch {
+        batch()
+    }
+    fn options(&self) -> WriteOptions {
+        options()
+    }
+    async fn read(&self) -> Vec<RecordBatch> {
+        let dataset = Dataset::open(self.path.to_str().unwrap()).await.unwrap();
+        vec![read_sorted(&dataset, "value").await]
+    }
+    async fn assert_aborted(&self) {
+        assert!(!tokio::fs::try_exists(&self.path).await.unwrap());
+    }
 }
 
 #[tokio::test]
-async fn empty_commit_produces_readable_dataset() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("dataset");
-    let schema = batch().schema();
-    let writer = LanceDatasetSink::default()
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            schema.clone(),
-            options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(writer.commit().await.unwrap().rows_written, 0);
-    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
-    assert_eq!(dataset.count_rows(None).await.unwrap(), 0);
-    assert_eq!(
-        dataset.scan().try_into_batch().await.unwrap().schema(),
-        schema
-    );
+async fn shared_sink_contracts() {
+    open_arrow_sink_test_support::conformance::assert_conforms::<ConformanceFixture>().await;
 }
 
 #[tokio::test]
