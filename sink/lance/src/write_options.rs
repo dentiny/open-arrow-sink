@@ -23,7 +23,7 @@ pub(crate) struct LanceSchemas {
 impl LanceSchemas {
     pub fn new(input: SchemaRef, options: &WriteOptions) -> Result<Self> {
         crate::validation::validate_blob_schema(&input)?;
-        let compressed = crate::compression::apply_compression(&input, &options.compression);
+        let compressed = crate::compression::apply_compression(&input, &options.compression)?;
         let mut logical_fields = Vec::with_capacity(compressed.fields().len());
         let mut encoded_fields = Vec::with_capacity(compressed.fields().len());
         let mut has_blobs = false;
@@ -80,18 +80,19 @@ impl LanceSchemas {
     }
 }
 
-pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
+pub(crate) fn write_params(
+    options: &WriteOptions,
+    storage_version: Option<lance_file::version::LanceFileVersion>,
+) -> WriteParams {
     let defaults = WriteParams::default();
     let default_blob = BlobHandleConfig::default();
     let blob = options.blob_handle.as_ref().unwrap_or(&default_blob);
-    Ok(WriteParams {
+    WriteParams {
         external_blob_mode: match blob.external_blob_mode {
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
         },
-        data_storage_version: crate::validation::parse_storage_version(
-            options.storage_version.as_deref(),
-        )?,
+        data_storage_version: storage_version,
         mode: match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
             WriteMode::Append => LanceWriteMode::Append,
@@ -101,7 +102,7 @@ pub(crate) fn write_params(options: &WriteOptions) -> Result<WriteParams> {
             .target_file_size
             .unwrap_or(defaults.max_bytes_per_file),
         ..defaults
-    })
+    }
 }
 
 /// Apply per-write layout options to top-level native logical or prepared blob fields.
