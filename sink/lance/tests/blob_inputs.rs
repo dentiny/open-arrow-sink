@@ -149,3 +149,107 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
     let bytes = lists.value(row);
     assert_eq!(bytes.as_binary::<i64>().value(0), b"ok");
 }
+
+#[tokio::test]
+async fn sliced_nested_blobs_preserve_sibling_columns_across_writes() {
+    use arrow_array::{Array, Int32Array, ListArray, StringArray, StructArray};
+    use arrow_buffer::OffsetBuffer;
+    use lance::blob::{BlobArrayBuilder, blob_field};
+
+    let mut blobs = BlobArrayBuilder::new(3);
+    blobs.push_uri("memory://missing/outside-slice").unwrap();
+    blobs.push_bytes(b"first").unwrap();
+    blobs.push_bytes(b"second").unwrap();
+    let blob = Arc::new(blob_field("item", true));
+    let lists = ListArray::new(
+        blob.clone(),
+        OffsetBuffer::from_lengths([1, 1, 1]),
+        blobs.finish().unwrap(),
+        None,
+    );
+    let fields = vec![
+        Arc::new(Field::new("left", DataType::Int32, false)),
+        Arc::new(Field::new("items", DataType::List(blob), true)),
+        Arc::new(Field::new("right", DataType::Utf8, true)),
+    ];
+    let parent = StructArray::new(
+        fields.into(),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 10, 20])),
+            Arc::new(lists),
+            Arc::new(StringArray::from(vec![Some("outside"), None, Some("kept")])),
+        ],
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("before", DataType::Int32, false),
+        Field::new("parent", parent.data_type().clone(), true),
+        Field::new("after", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2])),
+            Arc::new(parent),
+            Arc::new(Int32Array::from(vec![0, 100, 200])),
+        ],
+    )
+    .unwrap();
+    let destination = storage();
+    let url = destination
+        .url(&ObjectPath::parse("sliced/").unwrap())
+        .unwrap();
+    let sink = LanceDatasetSink::new(destination);
+    let mut writer = sink.open(url.clone(), schema, options()).await.unwrap();
+    for row in 1..3 {
+        writer.write(batch.slice(row, 1)).await.unwrap();
+    }
+    writer.commit().await.unwrap();
+    let output = sink
+        .dataset_builder(url)
+        .unwrap()
+        .load()
+        .await
+        .unwrap()
+        .scan()
+        .blob_handling(lance::datatypes::BlobHandling::AllBinary)
+        .try_into_batch()
+        .await
+        .unwrap();
+    assert_eq!(output.num_rows(), 2);
+    let parent = output.column(1).as_struct();
+    for row in 0..output.num_rows() {
+        let id = output
+            .column(0)
+            .as_primitive::<arrow_array::types::Int32Type>()
+            .value(row);
+        assert_eq!(
+            parent
+                .column(0)
+                .as_primitive::<arrow_array::types::Int32Type>()
+                .value(row),
+            id * 10
+        );
+        assert_eq!(
+            output
+                .column(2)
+                .as_primitive::<arrow_array::types::Int32Type>()
+                .value(row),
+            id * 100
+        );
+        let expected: &[u8] = if id == 1 { b"first" } else { b"second" };
+        assert_eq!(
+            parent
+                .column(1)
+                .as_list::<i32>()
+                .value(row)
+                .as_binary::<i64>()
+                .value(0),
+            expected
+        );
+        assert_eq!(
+            parent.column(2).as_string::<i32>().iter().nth(row).unwrap(),
+            (id == 2).then_some("kept")
+        );
+    }
+}

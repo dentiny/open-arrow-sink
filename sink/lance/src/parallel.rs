@@ -17,6 +17,7 @@ pub(crate) struct FragmentWriter {
     worker: FragmentTask,
     /// Prevents reuse after an error, cancellation, or finish.
     state: Poison,
+    blob_plan: crate::blob_input::BlobInputPlan,
     /// Shared downloader that bounds blob download concurrency and buffered bytes.
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
     /// Whether external blob URIs stay as references or their bytes are ingested.
@@ -35,8 +36,10 @@ impl FragmentWriter {
         options: &WriteOptions,
     ) -> Self {
         let worker = FragmentTask::new(schemas.logical.clone(), destination, params);
+        let blob_plan = crate::blob_input::BlobInputPlan::new(schemas.logical.clone());
         Self {
             schemas,
+            blob_plan,
             worker,
             state: Poison::default(),
             downloader: destination.downloader.clone(),
@@ -60,10 +63,10 @@ impl DataWriter for FragmentWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
         validation::validate_batch(&self.schemas.input, &batch)?;
-        if crate::blob_input::has_blobs(&self.schemas.logical) {
+        if !self.blob_plan.is_empty() {
             crate::blob_input::send_rows(
                 &batch,
-                &self.schemas.logical,
+                &self.blob_plan,
                 &self.downloader,
                 self.blob_mode,
                 self.io_metrics.as_ref(),
