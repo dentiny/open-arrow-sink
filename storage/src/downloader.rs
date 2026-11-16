@@ -93,7 +93,8 @@ impl BlobDownloader {
         self
     }
 
-    /// Add source namespaces while retaining this downloader's shared budgets.
+    /// Replace source namespaces and share their URL-derived cache while retaining
+    /// this downloader's transfer budgets.
     pub fn with_source_resolver(mut self, sources: Arc<crate::StorageResolver>) -> Self {
         self.sources = sources;
         self

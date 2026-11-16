@@ -103,6 +103,12 @@ async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
+    // Accepted writes need not have produced an object yet. Seed partial output
+    // so both cleanup policies are observable without depending on a marker.
+    storage
+        .write(&url.join("partial").unwrap(), "partial".into())
+        .await
+        .unwrap();
     let sibling = storage.url("keep").unwrap();
     storage.write(&sibling, "keep".into()).await.unwrap();
     writer.abort().await.unwrap();
