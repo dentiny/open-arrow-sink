@@ -46,7 +46,9 @@ async fn specific_roots_win_regardless_of_registration_order() {
 async fn explicit_configuration_overrides_url_cache_without_changing_other_clones() {
     let temp = tempfile::tempdir().unwrap();
     let url = Url::from_file_path(temp.path().join("key")).unwrap();
-    std::fs::write(temp.path().join("key"), "filesystem").unwrap();
+    tokio::fs::write(temp.path().join("key"), "filesystem")
+        .await
+        .unwrap();
     let original = StorageResolver::default();
     assert_eq!(
         original.resolve(&url).unwrap().read(&url).await.unwrap(),
