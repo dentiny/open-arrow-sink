@@ -107,6 +107,22 @@ adds no I/O, second payload buffer, or separate budget. Complete bytes go to the
 SDK for inline, packed, or dedicated layout selection. Native logical blob inputs
 can still be supplied directly without the layer.
 
+
+Download failures default to terminal (`DownloadFailurePolicy::Fail`). Use
+`DownloadBlobLayer::with_failure_policy(DownloadFailurePolicy::SkipRow)` to omit
+an entire row if any selected source fails, or `DownloadFailurePolicy::Null` to
+replace only failed selected blobs with null. Null makes selected output fields
+nullable. Recovery runs inside the backend's bounded blob materialization, before
+SDK writes; destination errors, memory/chunk limits, and cancellation remain
+terminal. Other blob fields retain their default behavior.
+
+`layer.metrics().snapshot()` reports observed `blobs_failed`, unique
+`rows_failed_blobs` per input batch, and `rows_skipped` after survivors are handed
+to the SDK. Handles aggregate cloned layers and sessions. Input nulls, destination
+errors, and budget failures do not count as failed sources. General `MetricsLayer`
+row counters observe accepted input rows; the backend write summary counts output
+rows after filtering.
+
 To build your own decorator, follow [extend a layer](../docs/extending-layers.md).
 
 ## Write metrics

@@ -317,12 +317,23 @@ impl BlobDownload {
         source: &str,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<bytes::Bytes> {
+        let source_error = |error| Error::backend(crate::SourceDownloadError(error));
         let mut reader = self
             .downloader
             .open(source, self.downloader.chunk_bytes, metrics)
-            .await?;
+            .await
+            .map_err(source_error)?;
+        let initial_total = self.total;
         let mut data = Vec::new();
-        while let Some(chunk) = reader.try_next().await? {
+        loop {
+            let chunk = match reader.try_next().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(error) => {
+                    self.total = initial_total;
+                    return Err(source_error(error));
+                }
+            };
             validate_chunk(&chunk, self.downloader.chunk_bytes)?;
             if let Some(metrics) = metrics {
                 metrics.record_read(chunk.len() as u64);

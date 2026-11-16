@@ -111,9 +111,11 @@ pub(crate) async fn send_rows(
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
     metrics: Option<&IoMetrics>,
+    recovery: Option<&open_arrow_sink_core::DownloadRecovery>,
     worker: &mut crate::worker::FragmentWorker,
 ) -> Result<()> {
     let mut next = 0;
+    let mut skipped = 0;
     let mut active = FuturesOrdered::new();
     let mut ready: VecDeque<RecordBatch> = VecDeque::new();
     loop {
@@ -124,15 +126,19 @@ pub(crate) async fn send_rows(
             let range = next_range(batch, next, mode, downloader.max_download_bytes());
             next = range.end;
             active.push_back(materialize_batch(
-                batch, range, schema, downloader, mode, metrics,
+                batch, range, schema, downloader, mode, metrics, recovery,
             ));
         }
         if active.is_empty() && ready.is_empty() {
+            if let Some(config) = recovery {
+                config.metrics.skipped(skipped);
+            }
             return Ok(());
         }
         tokio::select! {
             row = active.next(), if !active.is_empty() => {
-                ready.push_back(row.unwrap()?);
+                let row = row.unwrap()?;
+                if row.num_rows() == 0 { skipped += 1; } else { ready.push_back(row); }
             }
             result = async { worker.write(ready.front().unwrap().clone()).await }, if !ready.is_empty() => {
                 result?;
@@ -151,16 +157,37 @@ async fn materialize_batch(
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
     metrics: Option<&IoMetrics>,
+    recovery: Option<&open_arrow_sink_core::DownloadRecovery>,
 ) -> Result<RecordBatch> {
     let input = crate::blob::logical_batch(batch.slice(range.start, range.len()), schema)?;
     let mut group = downloader.begin().await?;
     let mut columns = Vec::with_capacity(input.num_columns());
+    let mut failed = false;
     for (array, field) in input.columns().iter().zip(schema.fields()) {
-        columns.push(
-            materialize(array, field, &mut group, mode, metrics, None)
-                .await
-                .map_err(|error| crate::error::blob_input(field.name(), range.start, error))?,
-        );
+        let result = materialize(array, field, &mut group, mode, metrics, None).await;
+        match result {
+            Ok(array) => columns.push(array),
+            Err(error) => {
+                let recover = recovery.filter(|config| config.columns.contains(field.name()));
+                let source_error = matches!(&error, Error::Backend(source) if source.is::<open_arrow_sink_storage::SourceDownloadError>());
+                if let Some(config) = recover.filter(|_| source_error) {
+                    config.metrics.failure(!failed);
+                    failed = true;
+                    if config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail {
+                        columns.push(arrow_array::new_null_array(field.data_type(), range.len()));
+                        continue;
+                    }
+                }
+                return Err(crate::error::blob_input(field.name(), range.start, error));
+            }
+        }
+    }
+    if failed
+        && recovery.is_some_and(|config| {
+            config.policy == open_arrow_sink_core::DownloadFailurePolicy::SkipRow
+        })
+    {
+        return Ok(RecordBatch::new_empty(schema.clone()));
     }
     RecordBatch::try_new_with_options(
         schema.clone(),

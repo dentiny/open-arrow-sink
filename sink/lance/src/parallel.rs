@@ -15,6 +15,7 @@ pub(crate) struct FragmentWriter {
     state: Poison,
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
     blob_mode: open_arrow_sink_core::ExternalBlobMode,
+    recovery: Option<open_arrow_sink_core::DownloadRecovery>,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 
@@ -37,6 +38,7 @@ impl FragmentWriter {
                 .map(|config| config.external_blob_mode)
                 .unwrap_or_default(),
             io_metrics: options.io_metrics.clone(),
+            recovery: options.download_recovery.clone(),
         }
     }
 }
@@ -57,6 +59,7 @@ impl DataWriter for FragmentWriter {
                 &self.downloader,
                 self.blob_mode,
                 self.io_metrics.as_ref(),
+                self.recovery.as_ref(),
                 &mut self.worker,
             )
             .await?;

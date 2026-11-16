@@ -51,3 +51,8 @@ pub fn is_blob_field(field: &arrow_schema::Field) -> bool {
 }
 
 pub use session::{DataWriter, SessionCommitter, WriteSession};
+
+mod download_metrics;
+pub use download_metrics::{
+    DownloadFailurePolicy, DownloadMetrics, DownloadRecovery, DownloadSnapshot,
+};

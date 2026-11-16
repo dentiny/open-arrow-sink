@@ -90,6 +90,8 @@ impl UploadConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WriteOptions {
+    /// Recovery for selected source URLs; destination and budget errors remain terminal.
+    pub download_recovery: Option<crate::DownloadRecovery>,
     /// Optional shared I/O observer. Layers forward it; instrumented backends
     /// record measured payloads independently of commit success.
     pub io_metrics: Option<crate::IoMetrics>,

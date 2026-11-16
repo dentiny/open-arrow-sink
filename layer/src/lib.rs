@@ -21,3 +21,5 @@ pub use schema_evolution::{FieldRemap, SchemaEvolutionLayer, SchemaEvolutionSink
 
 mod download_blob;
 pub use download_blob::{DownloadBlobLayer, DownloadBlobSink};
+
+pub use open_arrow_sink_core::{DownloadFailurePolicy, DownloadMetrics, DownloadSnapshot};

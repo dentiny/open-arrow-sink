@@ -3,8 +3,9 @@ use std::{collections::HashSet, sync::Arc};
 
 use arrow_schema::DataType;
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BLOB_METADATA_VALUE, Error, Layer, Result, SchemaRef, Sink, SinkCapability,
-    WriteOptions, WriteSession, Writer, validation,
+    BLOB_METADATA_KEY, BLOB_METADATA_VALUE, DownloadFailurePolicy, DownloadMetrics,
+    DownloadRecovery, Error, Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
+    WriteSession, Writer, validation,
 };
 
 use crate::{
@@ -18,12 +19,23 @@ use crate::{
 #[derive(Clone)]
 pub struct DownloadBlobLayer {
     columns: Arc<HashSet<String>>,
+    failure_policy: DownloadFailurePolicy,
+    metrics: DownloadMetrics,
 }
 
 impl DownloadBlobLayer {
+    pub fn with_failure_policy(mut self, policy: DownloadFailurePolicy) -> Self {
+        self.failure_policy = policy;
+        self
+    }
+    pub fn metrics(&self) -> DownloadMetrics {
+        self.metrics.clone()
+    }
     pub fn new(columns: HashSet<String>) -> Self {
         Self {
             columns: Arc::new(columns),
+            failure_policy: DownloadFailurePolicy::Fail,
+            metrics: DownloadMetrics::default(),
         }
     }
 }
@@ -31,6 +43,8 @@ impl DownloadBlobLayer {
 pub struct DownloadBlobSink<S> {
     inner: S,
     columns: Arc<HashSet<String>>,
+    failure_policy: DownloadFailurePolicy,
+    metrics: DownloadMetrics,
 }
 
 impl<S: Sink> Layer<S> for DownloadBlobLayer {
@@ -40,6 +54,8 @@ impl<S: Sink> Layer<S> for DownloadBlobLayer {
         DownloadBlobSink {
             inner,
             columns: self.columns.clone(),
+            failure_policy: self.failure_policy,
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -58,10 +74,15 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
         self.inner.capability().with_supports_blob_streaming(false)
     }
 
-    fn prepare(&self, schema: &mut SchemaRef, _: &mut WriteOptions) -> Result<Plan> {
+    fn prepare(&self, schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<Plan> {
         if !self.columns.is_empty() && !self.inner.capability().supports_blob_handle {
             return Err(Error::Unsupported("blob URL inputs".into()));
         }
+        options.download_recovery = Some(DownloadRecovery {
+            columns: self.columns.as_ref().clone(),
+            policy: self.failure_policy,
+            metrics: self.metrics.clone(),
+        });
         let mut remaps = Vec::with_capacity(self.columns.len());
         for name in self.columns.iter() {
             let index = validation::unique_column_index(schema, name).ok_or_else(|| {
@@ -80,7 +101,12 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
             metadata.insert(BLOB_METADATA_KEY.into(), BLOB_METADATA_VALUE.into());
             remaps.push(FieldRemap::new(
                 name,
-                field.clone().with_metadata(metadata),
+                field
+                    .clone()
+                    .with_nullable(
+                        field.is_nullable() || self.failure_policy == DownloadFailurePolicy::Null,
+                    )
+                    .with_metadata(metadata),
                 Ok,
             ));
         }

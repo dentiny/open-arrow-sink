@@ -345,6 +345,22 @@ implementation boundary.
 Dropping a pending write cancels its downloads and poisons the writer. Commit
 then returns the error without publishing partial data or deleting persisted output. Lance accepts logical blob inputs; its former streaming-handle API is unsupported.
 
+
+Download failures default to terminal (`DownloadFailurePolicy::Fail`). Use
+`DownloadBlobLayer::with_failure_policy(DownloadFailurePolicy::SkipRow)` to omit
+an entire row if any selected source fails, or `DownloadFailurePolicy::Null` to
+replace only failed selected blobs with null. Null makes selected output fields
+nullable. Recovery runs inside the backend's bounded blob materialization, before
+SDK writes; destination errors, memory/chunk limits, and cancellation remain
+terminal. Other blob fields retain their default behavior.
+
+`layer.metrics().snapshot()` reports observed `blobs_failed`, unique
+`rows_failed_blobs` per input batch, and `rows_skipped` after survivors are handed
+to the SDK. Handles aggregate cloned layers and sessions. Input nulls, destination
+errors, and budget failures do not count as failed sources. General `MetricsLayer`
+row counters observe accepted input rows; the backend write summary counts output
+rows after filtering.
+
 ## Observing sessions with MetricsLayer
 
 Compose `sink.layer(MetricsLayer::default())` for backend-independent observation.

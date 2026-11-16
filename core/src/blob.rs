@@ -97,5 +97,8 @@ pub trait BlobWriter: Send {
     /// Consume the chunk before returning, retaining its accounting guard until then.
     async fn write(&mut self, chunk: BlobChunk) -> Result<()>;
     async fn finish(self: Box<Self>) -> Result<BlobHandle>;
+    /// Discard this upload. A successful explicit abort of a healthy blob must
+    /// leave the enclosing session usable; cancellation/drop or destination I/O
+    /// failures may still make that session terminal. Never clear another failure.
     async fn abort(self: Box<Self>) -> Result<()>;
 }
