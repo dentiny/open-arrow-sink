@@ -10,28 +10,25 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    LanceFragments, committer::LanceCommitter, compression::writer_batch, error::worker_stopped,
-    storage::NativeStorage,
+    LanceFragments, committer::LanceCommitter, destination::LanceDestination, error::worker_stopped,
 };
 
 pub(crate) struct BlobDatasetWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
-    storage_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     blob_session: Arc<crate::blob::BlobSession>,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     logical: bool,
     rows: u64,
     state: Poison,
-    destination: NativeStorage,
+    destination: LanceDestination,
     options: WriteOptions,
 }
 
 #[async_trait]
 impl Writer for BlobDatasetWriter {
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
@@ -41,9 +38,9 @@ impl Writer for BlobDatasetWriter {
             return self.write_with_blobs(batch, Vec::new()).await;
         }
         self.state.poison();
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
-        let schema = crate::blob::logical_schema(&self.encoding_schema);
+        let schema = self.schemas.logical.clone();
         crate::blob_input::send_rows(
             &batch,
             &schema,
@@ -71,7 +68,7 @@ impl Writer for BlobDatasetWriter {
         }
         self.state.poison();
         let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+            crate::blob::create_blob(&self.destination.path, self.blob_session.clone()).await?;
         self.state.complete();
         Ok(blob)
     }
@@ -91,11 +88,10 @@ impl Writer for BlobDatasetWriter {
             return Err(crate::error::mixed_blob_inputs());
         }
         self.state.poison();
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
         let batch =
-            crate::blob::storage_batch(batch, &self.storage_schema, blobs, &self.blob_session)?;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
+            crate::blob::storage_batch(batch, &self.schemas.encoded, blobs, &self.blob_session)?;
         self.sender
             .as_ref()
             .unwrap()
@@ -163,9 +159,9 @@ impl BlobDatasetWriter {
         }
         let (sender, receiver) = mpsc::channel(1);
         let schema = if logical {
-            crate::blob::logical_schema(&self.encoding_schema)
+            self.schemas.logical.clone()
         } else {
-            self.encoding_schema.clone()
+            self.schemas.encoded.clone()
         };
         let batches = stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
@@ -189,19 +185,15 @@ impl BlobDatasetWriter {
     }
 
     pub(crate) fn new(
-        schema: SchemaRef,
-        storage_schema: SchemaRef,
-        encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        schemas: crate::write_options::LanceSchemas,
+        destination: LanceDestination,
         options: WriteOptions,
     ) -> Result<Self> {
         Ok(Self {
-            schema,
-            storage_schema,
-            encoding_schema,
+            schemas,
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
-                &destination.url,
+                &destination.path,
                 destination.io_tracker.clone(),
             )),
             sender: None,

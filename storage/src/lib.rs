@@ -5,6 +5,7 @@ mod backend;
 mod config;
 mod error;
 mod http_limit;
+mod object_path;
 mod resolver;
 mod validation;
 pub use resolver::StorageResolver;
@@ -12,6 +13,7 @@ pub use resolver::StorageResolver;
 pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
 pub use http_limit::HttpConcurrencyLimitLayer;
+pub use object_path::ObjectPath;
 pub use opendal;
 pub use url::Url;
 

@@ -1,6 +1,5 @@
 //! Composable sink decorators.
 mod decorate;
-mod error;
 mod options;
 pub use options::{OptionsLayer, OptionsSink};
 mod ordering;

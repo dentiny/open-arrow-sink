@@ -8,13 +8,12 @@ use open_arrow_sink_core::{
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    LanceFragments, compression::writer_batch, error::worker_stopped, storage::NativeStorage,
+    LanceFragments, compression::writer_batch, destination::LanceDestination, error::worker_stopped,
 };
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
@@ -26,9 +25,8 @@ pub(crate) struct FragmentWriter {
 
 impl FragmentWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        schemas: crate::write_options::LanceSchemas,
+        destination: LanceDestination,
         options: &WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);
@@ -37,7 +35,7 @@ impl FragmentWriter {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
         });
         let stream = Box::pin(RecordBatchStreamAdapter::new(
-            encoding_schema.clone(),
+            schemas.logical.clone(),
             batches,
         )) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(options)?);
@@ -49,8 +47,7 @@ impl FragmentWriter {
                 .await
         });
         Ok(Self {
-            schema,
-            encoding_schema,
+            schemas,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
@@ -70,16 +67,16 @@ impl FragmentWriter {
 impl DataWriter for FragmentWriter {
     type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
-        if crate::blob_input::has_blobs(&self.encoding_schema) {
+        if crate::blob_input::has_blobs(&self.schemas.logical) {
             crate::blob_input::send_rows(
                 &batch,
-                &self.encoding_schema,
+                &self.schemas.logical,
                 &self.downloader,
                 self.blob_mode,
                 self.io_metrics.as_ref(),
@@ -87,7 +84,7 @@ impl DataWriter for FragmentWriter {
             )
             .await?;
         } else {
-            let batch = writer_batch(batch, &self.encoding_schema)?;
+            let batch = writer_batch(batch, &self.schemas.logical)?;
             self.sender
                 .as_ref()
                 .unwrap()

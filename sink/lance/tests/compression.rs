@@ -69,8 +69,8 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
             input.schema(),
             WriteOptions::default()
                 .with_ordering(Ordering::Unordered)
-                .with_storage_version(Some("2.2".into()))
-                .with_target_file_size(Some(1)),
+                .with_storage_version("2.2".into())
+                .with_target_file_size(1),
         )
         .await
         .unwrap();

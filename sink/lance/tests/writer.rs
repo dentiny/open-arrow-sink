@@ -105,7 +105,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             expected.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();
@@ -177,7 +177,7 @@ async fn compression_survives_rolling_and_round_trips() {
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             schema.clone(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();

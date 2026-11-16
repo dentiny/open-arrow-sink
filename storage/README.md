@@ -14,6 +14,9 @@ use open_arrow_sink_storage::{Storage, opendal};
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
 let destination = storage.url("new-output/part-00000.parquet")?;
+let path = storage.resolve(&destination)?;
+// Reuse `path` for storage.create/read/delete and other I/O calls.
+let directory = path.as_dir();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -42,6 +45,15 @@ add layers while preserving caller-supplied operator layers.
 
 URL resolution decodes spaces and Unicode, checks endpoint/root boundaries, and
 rejects query strings, fragments, embedded credentials, and path traversal.
+`Storage::resolve(&Url)` performs those checks once and returns an opaque,
+decoded `ObjectPath` relative to this storage namespace. All byte I/O and listing
+methods take `&ObjectPath`; listings return paths that can be reused directly.
+Keep a resolved path with the storage that resolved it. `is_root()` recognizes
+the operator root, `as_dir()` gives prefixes directory semantics, `as_object()`
+addresses the exact key, and `join()` appends validated decoded child paths.
+Use `Storage::url(path.as_str())` only when a native SDK or sink entry point
+requires a URL. This replaces the former `path()` and `directory_url()` APIs.
+
 Root-destructive operations are rejected. `create` uses OpenDAL's atomic
 `if_not_exists` operation; unsupported backends fail instead of overwriting.
 

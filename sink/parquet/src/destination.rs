@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, Url};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
@@ -8,7 +8,7 @@ use crate::file_writer::FileWriter;
 /// Session-owned parts in a destination directory.
 pub(crate) struct Destination {
     storage: Storage,
-    directory: Url,
+    directory: ObjectPath,
     prefix: String,
     // Only Create may clean up the empty destination directory.
     // Append shares an existing directory and must preserve it.
@@ -23,7 +23,12 @@ impl Destination {
         mode: WriteMode,
         cleanup_on_error: bool,
     ) -> Result<Self> {
-        let directory = storage.directory_url(&directory)?;
+        let directory = storage.resolve(&directory)?.as_dir();
+        if directory.is_root() {
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
+        }
         if mode == WriteMode::Create
             && storage.inspect_directory(&directory).await? != DirectoryState::Missing
         {
@@ -35,7 +40,11 @@ impl Destination {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
                 (format!("part-{}-", uuid::Uuid::new_v4()), false)
             }
-            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
+            WriteMode::Overwrite => {
+                return Err(Error::Unsupported(
+                    "Parquet directory sink does not support Overwrite".into(),
+                ));
+            }
         };
         Ok(Self {
             storage,
@@ -45,10 +54,10 @@ impl Destination {
             cleanup_on_error,
         })
     }
-    fn child(&self, name: &str) -> Url {
+    fn child(&self, name: &str) -> ObjectPath {
         self.directory.join(name).unwrap()
     }
-    fn file(&self, index: usize) -> Url {
+    fn file(&self, index: usize) -> ObjectPath {
         self.child(&format!("{}{index:05}.parquet", self.prefix))
     }
     pub(crate) async fn open_writer(

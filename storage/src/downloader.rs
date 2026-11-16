@@ -240,12 +240,15 @@ impl BlobDownloader {
             let storage = match self
                 .primary
                 .as_ref()
-                .filter(|storage| storage.path(&url).is_ok())
+                .filter(|storage| storage.resolve(&url).is_ok())
             {
                 Some(storage) => storage.clone(),
                 None => self.sources.resolve(&url)?,
             };
-            (storage.operator(), storage.path(&url)?)
+            (
+                storage.operator(),
+                storage.resolve(&url)?.as_str().to_owned(),
+            )
         };
         // HTTP sources need not implement HEAD or range requests. Keep one
         // streaming GET; chunk_bytes bounds the application-side copy below.

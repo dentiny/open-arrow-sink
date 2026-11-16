@@ -1,22 +1,13 @@
-use std::io;
-
 use open_arrow_sink_core::{Error, Result};
 use opendal::ErrorKind;
 
-fn invalid(message: &str) -> Error {
-    Error::Backend(Box::new(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        message.to_owned(),
-    )))
-}
-
 /// Preserve the operation, object location, and original OpenDAL error.
 pub(crate) fn map_error(operation: &'static str, path: &str, source: opendal::Error) -> Error {
-    Error::Backend(Box::new(BackendError {
+    Error::backend(BackendError {
         operation,
         path: path.to_owned(),
         source,
-    }))
+    })
 }
 
 #[derive(Debug)]
@@ -40,57 +31,6 @@ impl std::error::Error for BackendError {
     }
 }
 
-pub(crate) fn invalid_file_url() -> Error {
-    invalid("invalid file URL")
-}
-pub(crate) fn endpoint_mismatch() -> Error {
-    invalid("URL does not belong to this storage endpoint")
-}
-pub(crate) fn outside_root() -> Error {
-    invalid("URL is outside the storage root")
-}
-pub(crate) fn url_without_paths() -> Error {
-    invalid("URL cannot contain paths")
-}
-pub(crate) fn invalid_read_range() -> Error {
-    invalid("invalid read range")
-}
-pub(crate) fn empty_path() -> Error {
-    invalid("operation requires a nonempty path")
-}
-pub(crate) fn invalid_url() -> Error {
-    invalid("storage URLs must be hierarchical and contain no query, fragment, or credentials")
-}
-pub(crate) fn invalid_utf8_path() -> Error {
-    invalid("URL path must be UTF-8")
-}
-pub(crate) fn invalid_path() -> Error {
-    invalid("invalid storage path")
-}
-pub(crate) fn invalid_retry_factor() -> Error {
-    invalid_config("retry factor must be finite and at least 1")
-}
-
-pub(crate) fn invalid_retry_delays() -> Error {
-    invalid_config("retry min_delay must not exceed max_delay")
-}
-
-pub(crate) fn invalid_timeouts() -> Error {
-    invalid_config("storage timeouts must be positive")
-}
-
-pub(crate) fn invalid_http_concurrency() -> Error {
-    invalid_config("HTTP concurrency must be positive and not exceed Semaphore::MAX_PERMITS")
-}
-
-fn invalid_config(message: &'static str) -> Error {
-    Error::InvalidConfig(message.into())
-}
-
-pub(crate) fn writer_closed() -> Error {
-    invalid("writer is closed")
-}
-
 pub(crate) fn delete_result(path: &str, result: opendal::Result<()>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
@@ -110,16 +50,16 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
 }
 
 pub(crate) fn download_limit() -> Error {
-    invalid("download pool limits exceed semaphore capacity")
+    Error::InvalidConfig("download limits exceed semaphore capacity".into())
 }
 pub(crate) fn invalid_download_url() -> Error {
-    invalid("invalid blob URL")
+    Error::InvalidInput("invalid blob URL".into())
 }
 pub(crate) fn download_scheme() -> Error {
-    invalid("blob URL must use HTTP or HTTPS")
+    Error::InvalidInput("blob URL must use HTTP or HTTPS".into())
 }
 pub(crate) fn http_storage_service() -> Error {
-    invalid_config("HTTP download storage must use the OpenDAL http service")
+    Error::InvalidConfig("HTTP download storage must use the OpenDAL http service".into())
 }
 
 pub(crate) fn download_response(
@@ -140,7 +80,7 @@ pub(crate) fn download_payload_limit() -> Error {
     Error::InvalidConfig("download payload and chunk limits must fit the shared byte budget".into())
 }
 pub(crate) fn download_too_large(limit: usize) -> Error {
-    invalid(&format!(
+    Error::InvalidInput(format!(
         "download group exceeds its {limit}-byte payload limit"
     ))
 }

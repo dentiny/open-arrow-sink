@@ -1,45 +1,51 @@
 use crate::provider::Provider;
-use crate::storage_router::StorageRouter;
 use lance::{
     dataset::{CommitBuilder, WriteParams, builder::DatasetBuilder},
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, StorageResolver, Url};
+use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
+/// Dataset location, native session, and owned publication reservation.
 #[derive(Clone)]
-pub(crate) struct NativeStorage {
+pub(crate) struct LanceDestination {
     pub storage: Storage,
     pub downloader: Arc<open_arrow_sink_storage::BlobDownloader>,
     pub url: Url,
+    pub path: ObjectPath,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     new_destination: bool,
     pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
-impl NativeStorage {
+impl LanceDestination {
     pub fn new(
         storage: Storage,
         url: Url,
         sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
-        let url = storage.directory_url(&url)?;
+        let path = storage.resolve(&url)?.as_dir();
+        if path.is_root() {
+            return Err(Error::InvalidInput(
+                "destination must not be the storage root".into(),
+            ));
+        }
+        // Lance's native API requires a URL at its boundary.
+        let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
         let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
-        let provider = Arc::new(Provider {
-            storage: StorageRouter::new(storage.clone(), sources),
-            io_tracker: io_tracker.clone(),
-        });
-        for scheme in provider.storage.schemes() {
+        let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
+        for scheme in provider.schemes() {
             session.store_registry().insert(&scheme, provider.clone());
         }
         Ok(Self {
             storage,
             downloader: Arc::new(open_arrow_sink_storage::BlobDownloader::with_defaults()?),
             url,
+            path,
             session,
             io_tracker,
             new_destination: false,
@@ -51,44 +57,32 @@ impl NativeStorage {
         schema: &SchemaRef,
         mode: WriteMode,
         storage_version: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Option<lance::Dataset>> {
         if mode == WriteMode::Append {
             return crate::validation::validate_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
                 storage_version,
             )
-            .await;
+            .await
+            .map(Some);
         }
-        if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
+        if self.storage.inspect_directory(&self.path).await? != DirectoryState::Missing {
             return match mode {
                 WriteMode::Create => Err(Error::DestinationExists),
                 _ => {
                     crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
                         .await
+                        .map(Some)
                 }
             };
         }
         self.new_destination = true;
-        Ok(())
-    }
-    pub async fn validate_index_requests(
-        &self,
-        options: &open_arrow_sink_core::WriteOptions,
-    ) -> Result<()> {
-        if options.mode == WriteMode::Append && !options.indexes.is_empty() {
-            let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(Error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
-        }
-        Ok(())
+        Ok(None)
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.new_destination {
-            self.storage.remove_all(&self.url).await?;
+            self.storage.remove_all(&self.path).await?;
         }
         Ok(())
     }
@@ -133,7 +127,10 @@ mod tests {
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();
         source
-            .write(&source_url, "custom backend".into())
+            .write(
+                &source.resolve(&source_url).unwrap(),
+                "custom backend".into(),
+            )
             .await
             .unwrap();
         let destination = Storage::new(
@@ -142,7 +139,7 @@ mod tests {
         )
         .unwrap();
         let url = destination.url("dataset/").unwrap();
-        let native = NativeStorage::new(destination, url, sources, None).unwrap();
+        let native = LanceDestination::new(destination, url, sources, None).unwrap();
         let registry = native.session.store_registry();
         assert!(registry.get_provider("destination-only").is_some());
         let provider = registry.get_provider(source_url.scheme()).unwrap();
