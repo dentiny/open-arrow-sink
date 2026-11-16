@@ -3,7 +3,7 @@ use std::{ops::Range, sync::Arc};
 
 use crate::{error::storage_backend as backend, validation::storage_location as location};
 use bytes::Bytes;
-use futures::{StreamExt, stream::BoxStream};
+use futures::{StreamExt, TryStreamExt, stream::BoxStream};
 use iceberg::{
     Result,
     io::{
@@ -13,6 +13,9 @@ use iceberg::{
 };
 use open_arrow_sink_core::async_trait;
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
+// Bound deletion tasks independently of stream length and the HTTP request budget.
+const DELETE_CONCURRENCY: usize = 32;
+
 #[derive(Clone, Debug)]
 struct ResolvedLocation {
     location: Arc<str>,
@@ -146,11 +149,13 @@ impl IcebergStorage for OpenDalStorageFactory {
             .await
             .map_err(backend)
     }
-    async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> Result<()> {
-        while let Some(path) = paths.next().await {
-            self.delete(&path).await?;
-        }
-        Ok(())
+    async fn delete_stream(&self, paths: BoxStream<'static, String>) -> Result<()> {
+        paths
+            .map(Ok)
+            .try_for_each_concurrent(DELETE_CONCURRENCY, |path| async move {
+                self.delete(&path).await
+            })
+            .await
     }
     fn new_input(&self, path: &str) -> Result<InputFile> {
         Ok(InputFile::new(
