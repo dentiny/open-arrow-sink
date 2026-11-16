@@ -1,5 +1,5 @@
 //! Resolve independent source namespaces without reusing destination credentials.
-use crate::{Storage, Url};
+use crate::{Storage, StorageConfig, Url};
 use open_arrow_sink_core::Result;
 use std::sync::{Arc, Mutex};
 
@@ -14,9 +14,18 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug, Default)]
 pub struct StorageResolver {
     configured: Vec<Storage>,
+    config: StorageConfig,
     cached: Arc<Mutex<Vec<Storage>>>,
 }
 impl StorageResolver {
+    /// Configure policies for URL-derived stores. Explicit stores keep their
+    /// own policies. Clones may use different policies while sharing the cache.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        config.validate()?;
+        self.config = config;
+        Ok(self)
+    }
+
     /// Register a source namespace. More specific matching roots take precedence;
     /// equal roots retain registration order (the first registered store wins).
     pub fn with_storage(mut self, storage: Storage) -> Self {
@@ -49,11 +58,14 @@ impl StorageResolver {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(storage) = matching_storage(&cached, url) {
-            return Ok(storage);
+            return storage.with_config(self.config.clone());
         }
         let storage = Storage::from_url(url)?;
-        cached.push(storage.clone());
-        Ok(storage)
+        // Cache the backend without resolver policies so differently configured
+        // clones share data and HTTP budgets without inheriting each other's layers.
+        let configured = storage.clone().with_config(self.config.clone())?;
+        cached.push(storage);
+        Ok(configured)
     }
 }
 

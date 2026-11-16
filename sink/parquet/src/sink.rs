@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{Storage, StorageConfig, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -19,6 +19,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct ParquetDirectorySink {
     storage: Option<Storage>,
+    config: StorageConfig,
 }
 
 impl ParquetDirectorySink {
@@ -26,7 +27,16 @@ impl ParquetDirectorySink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
+            config: StorageConfig::default(),
         }
+    }
+
+    /// Configure retry/timeout policies for explicit or URL-derived storage.
+    /// Validation happens now, before opening a destination or performing I/O.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        config.validate()?;
+        self.config = config;
+        Ok(self)
     }
 }
 
@@ -107,6 +117,7 @@ impl ParquetDirectorySink {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&directory)?,
         }
+        .with_config(self.config.clone())?
         .with_write_options(&options);
         let destination = Arc::new(
             Destination::open(
