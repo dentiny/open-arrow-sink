@@ -16,6 +16,7 @@ pub(crate) struct NativeStorage {
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
+    dataset: Option<Arc<lance::Dataset>>,
 }
 impl NativeStorage {
     pub fn new(
@@ -40,6 +41,7 @@ impl NativeStorage {
             session,
             io_tracker,
             reserved: false,
+            dataset: None,
         })
     }
     pub async fn prepare(
@@ -49,19 +51,27 @@ impl NativeStorage {
         storage_version: Option<&str>,
     ) -> Result<()> {
         if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
-                self.dataset_builder(),
-                Some(schema),
-                storage_version,
-            )
-            .await;
+            let dataset = self
+                .dataset_builder()
+                .load()
+                .await
+                .map_err(crate::error::backend)?;
+            crate::validation::validate_existing_dataset(&dataset, Some(schema), storage_version)?;
+            self.dataset = Some(Arc::new(dataset));
+            return Ok(());
         }
         if self.storage.prefix_exists(&self.url).await? {
             return match mode {
                 WriteMode::Create => Err(crate::error::destination_exists()),
                 _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
+                    let dataset = self
+                        .dataset_builder()
+                        .load()
                         .await
+                        .map_err(crate::error::backend)?;
+                    crate::validation::validate_existing_dataset(&dataset, None, None)?;
+                    self.dataset = Some(Arc::new(dataset));
+                    Ok(())
                 }
             };
         }
@@ -77,13 +87,22 @@ impl NativeStorage {
     ) -> Result<()> {
         if options.mode == WriteMode::Append && !options.indexes.is_empty() {
             let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(crate::error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
+                .dataset
+                .as_ref()
+                .expect("append prepare loads a dataset");
+            crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
         }
         Ok(())
+    }
+    /// Reuse the preflight snapshot so every writer shares its read version.
+    pub fn write_destination<'a>(
+        &self,
+        uri: &'a str,
+    ) -> lance::dataset::write::WriteDestination<'a> {
+        match &self.dataset {
+            Some(dataset) => dataset.clone().into(),
+            None => uri.into(),
+        }
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.reserved {

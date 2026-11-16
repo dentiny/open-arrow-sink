@@ -79,7 +79,7 @@ impl FragmentWriter {
         let params = destination.bind_write_params(crate::write_options::write_params(options)?);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
-            InsertBuilder::new(uri.as_str())
+            InsertBuilder::new(destination.write_destination(&uri))
                 .with_params(&params)
                 .execute_uncommitted_stream(
                     Box::new(reader) as Box<dyn arrow_array::RecordBatchReader + Send>
@@ -141,5 +141,73 @@ impl DataWriter for FragmentWriter {
         }
         // Session cleanup runs only after every worker has stopped.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::{ArrayRef, Int64Array};
+    use lance::dataset::{WriteMode as NativeWriteMode, WriteParams};
+    use open_arrow_sink_core::{Ordering, WriteMode};
+    use open_arrow_sink_storage::{Storage, StorageResolver, Url};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn all_fragment_writers_use_the_preflight_dataset_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let url = Url::from_directory_path(temp.path().join("dataset")).unwrap();
+        let batch = RecordBatch::try_from_iter([(
+            "value",
+            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+        )])
+        .unwrap();
+        let initial = InsertBuilder::new(url.as_str())
+            .execute(vec![batch.clone()])
+            .await
+            .unwrap();
+        let initial_version = initial.version().version;
+        let storage = Storage::from_url(&url).unwrap();
+        let mut destination =
+            NativeStorage::new(storage, url.clone(), StorageResolver::default(), None).unwrap();
+        destination
+            .prepare(&batch.schema(), WriteMode::Append, None)
+            .await
+            .unwrap();
+        let options = WriteOptions {
+            mode: WriteMode::Append,
+            ordering: Ordering::Unordered,
+            ..Default::default()
+        };
+        let mut first = FragmentWriter::new(
+            batch.schema(),
+            batch.schema(),
+            destination.clone(),
+            &options,
+        )
+        .unwrap();
+        first.write(batch.clone()).await.unwrap();
+        let (_, first_transaction) = first.finish().await.unwrap();
+
+        // A different session publishes between workers resolving their context.
+        InsertBuilder::new(url.as_str())
+            .with_params(&WriteParams {
+                mode: NativeWriteMode::Append,
+                ..Default::default()
+            })
+            .execute(vec![batch.clone()])
+            .await
+            .unwrap();
+        let mut second =
+            FragmentWriter::new(batch.schema(), batch.schema(), destination, &options).unwrap();
+        second.write(batch).await.unwrap();
+        let (_, second_transaction) = second.finish().await.unwrap();
+        assert_eq!(first_transaction.read_version, initial_version);
+        assert_eq!(second_transaction.read_version, initial_version);
+        crate::validation::validate_transaction_compatibility(
+            &first_transaction,
+            &second_transaction,
+        )
+        .unwrap();
     }
 }

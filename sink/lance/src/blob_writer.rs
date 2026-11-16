@@ -123,8 +123,15 @@ impl BlobDatasetWriter {
         };
         let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
         let uri = destination.url.to_string();
-        let task =
-            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
+        let worker_destination = destination.clone();
+        let task = tokio::spawn(async move {
+            Dataset::write(
+                reader,
+                worker_destination.write_destination(&uri),
+                Some(params),
+            )
+            .await
+        });
         Ok(Self {
             schema,
             storage_schema,

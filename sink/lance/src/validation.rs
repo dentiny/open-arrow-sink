@@ -132,12 +132,11 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
     Ok(())
 }
 
-pub(crate) async fn validate_existing_dataset(
-    builder: lance::dataset::builder::DatasetBuilder,
+pub(crate) fn validate_existing_dataset(
+    dataset: &lance::Dataset,
     schema: Option<&Schema>,
     storage_version: Option<&str>,
 ) -> Result<()> {
-    let dataset = builder.load().await.map_err(error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
         lance_file::version::ConcreteFileVersion::V2_2
