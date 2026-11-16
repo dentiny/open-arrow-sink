@@ -345,3 +345,74 @@ async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
     assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 2);
     assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 1);
 }
+
+#[rstest::rstest]
+#[case::commit(false, false)]
+#[case::abort(true, false)]
+#[case::abort_also_fails(true, true)]
+#[tokio::test]
+async fn finalization_drains_all_writes_and_preserves_first_error(
+    #[case] abort: bool,
+    #[case] fail_abort: bool,
+) {
+    let mut failures = vec![Failure::Write];
+    if fail_abort {
+        failures.push(Failure::Abort);
+    }
+    let state = Arc::new(Mutex::new(State::failing(failures)));
+    let mut writer = sink(&state)
+        .open((), batch().schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.write(batch()).await.unwrap();
+
+    // Fail the first scheduled write while the other is still blocked.
+    let first_id = {
+        let mut state = state.lock().unwrap();
+        let first_id = state
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Event::WriteStarted(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        state.gates.remove(first_id).send(()).unwrap();
+        first_id
+    };
+    let finalization = async move {
+        if abort {
+            writer.abort().await
+        } else {
+            writer.commit().await.map(|_| ())
+        }
+    };
+    futures::pin_mut!(finalization);
+    assert!(finalization.as_mut().now_or_never().is_none());
+    {
+        let mut state = state.lock().unwrap();
+        assert_eq!(state.count(|e| matches!(e, Event::Abort(_))), 0);
+        assert_eq!(state.count(|e| matches!(e, Event::SessionAbort)), 0);
+        state.config.failures.remove(&Failure::Write);
+    }
+    release(&state);
+    let error = finalization.await.unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Unsupported(message)
+            if message == format!("injected write failure for writer {first_id}")
+    ));
+    let state = state.lock().unwrap();
+    assert_eq!(state.count(|e| matches!(e, Event::WriteCompleted(_))), 1);
+    assert_eq!(state.count(|e| matches!(e, Event::Finish(_))), 0);
+    assert_eq!(state.count(|e| matches!(e, Event::CommitAttempt)), 0);
+    assert_eq!(
+        state.count(|e| matches!(e, Event::Abort(_))),
+        if abort { 2 } else { 0 }
+    );
+    assert_eq!(
+        state.count(|e| matches!(e, Event::SessionAbort)),
+        usize::from(abort)
+    );
+}

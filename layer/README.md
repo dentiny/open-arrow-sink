@@ -73,11 +73,18 @@ finish successfully. Returning on the first task error or dropping a join handle
 must not leave detached writers running. `WriteSession` itself is an ownership
 interface; it does not implement this task scheduler.
 
-A write error or cancellation makes the session terminal. Commit drains accepted
-writes and finishes every data writer before passing all outputs to one committer.
-A finish failure returns the error without aborting writers or deleting output.
-Explicit abort waits for in-flight writes and stops every writer even if one fails. Once publication begins, the committer owns uncertain outcomes; the layer
-does not delete potentially committed output. Drop performs no async cleanup.
+A write error or cancellation makes the session terminal. Commit waits for all
+accepted writes, retaining the first write error. If draining succeeds, it uses
+`try_join_all` to finish the data writers concurrently and passes all outputs to
+one committer only when every finish succeeds. On the first finish error,
+`try_join_all` drops the remaining finish futures, cancelling any unfinished
+finish operations; some writers may not have started finishing. The error is
+returned without aborting writers or deleting output.
+Explicit abort waits for all in-flight writes, then attempts to stop every writer
+and the session committer even if an operation fails. It returns the first error
+from draining or stopping. Once publication begins, the committer owns uncertain
+outcomes; the layer does not delete potentially committed output. Drop performs
+no async cleanup.
 
 Ordering and compression decorators forward `ParallelSink`. The concurrent sink
 itself exposes `Sink`, not `ParallelSink`.
