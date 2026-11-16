@@ -52,6 +52,10 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      - name: Free disk space for native backend builds
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h
       - name: Install native build dependencies
         run: |
           sudo apt-get update
@@ -69,3 +73,6 @@ jobs:
         run: |
           cargo run --locked -p open-arrow-sink-layer --example custom_sink
           cargo run --locked -p open-arrow-sink-layer --example custom_layer
+      - name: Report remaining disk space
+        if: always()
+        run: df -h
