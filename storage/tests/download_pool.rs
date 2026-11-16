@@ -2,13 +2,14 @@
 
 use std::{sync::Arc, time::Duration};
 
-use futures::{TryStreamExt, stream};
+use futures::{TryStreamExt, poll, stream};
 use http::{Request, Response, StatusCode};
 use more_asserts::assert_le;
 use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, opendal};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use tokio::time::timeout;
 
+const URL: &str = "https://download-fixture.invalid";
 const BODY: &[u8] = b"a payload larger than either pool budget";
 
 struct Transport;
@@ -35,123 +36,105 @@ impl HttpTransport for Transport {
     }
 }
 
-fn pool(concurrency: usize, bytes: usize) -> Arc<DownloadPool> {
-    Arc::new(
-        DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
-            .unwrap()
-            .with_http_transport(HttpTransporter::new(Transport)),
-    )
+fn pool(concurrency: usize, bytes: usize) -> DownloadPool {
+    DownloadPool::new(concurrency.try_into().unwrap(), bytes.try_into().unwrap())
+        .unwrap()
+        .with_http_transport(HttpTransporter::new(Transport))
+}
+
+// Consume chunks promptly so a payload larger than the budget can make progress.
+async fn read_body(pool: &DownloadPool, source: &str) -> Vec<u8> {
+    timeout(Duration::from_secs(5), async {
+        let mut download = pool.stream(source).await.unwrap();
+        let mut body = Vec::new();
+        while let Some(chunk) = download.try_next().await.unwrap() {
+            assert_le!(chunk.as_ref().len(), pool.max_buffered_bytes());
+            body.extend_from_slice(chunk.as_ref());
+        }
+        assert_eq!(pool.buffered_bytes(), 0);
+        body
+    })
+    .await
+    .expect("download stalled")
 }
 
 #[tokio::test]
-async fn streaming_limits_and_cleanup() {
+async fn independent_budgets_and_cleanup() {
     timeout(Duration::from_secs(5), async {
-        let url = "https://download-fixture.invalid";
-        let first = pool(2, 8);
-        let other = pool(64, 16);
-        assert_eq!(first.concurrency(), 2);
-        assert_eq!(other.concurrency(), 64);
+        let first = pool(1, 8);
+        let other = pool(2, 16);
+        assert_eq!(first.concurrency(), 1);
+        assert_eq!(other.concurrency(), 2);
 
-        let mut streams = Vec::new();
-        for _ in 0..first.concurrency() {
-            streams.push(first.stream(url).await.unwrap());
-        }
-        assert!(
-            timeout(Duration::from_millis(20), first.stream(url))
-                .await
-                .is_err()
-        );
-        // An unrelated pool remains usable when the first pool is saturated.
-        let mut independent = other.stream(url).await.unwrap();
-        let other_chunk = independent.try_next().await.unwrap().unwrap();
-        drop((independent, other_chunk));
-        let chunk = streams[0].try_next().await.unwrap().unwrap();
-        drop(streams);
+        let mut held = first.stream(URL).await.unwrap();
+        assert!(poll!(std::pin::pin!(first.stream(URL))).is_pending());
+        assert_eq!(read_body(&other, URL).await, BODY);
 
-        // Dropping streams releases request slots, but retained chunks keep their budget.
-        let mut resumed = first.stream(url).await.unwrap();
-        assert!(
-            timeout(Duration::from_millis(20), resumed.try_next())
-                .await
-                .is_err()
-        );
-        drop(resumed);
-        let mut independent = other.stream(url).await.unwrap();
-        let other_chunk = independent.try_next().await.unwrap().unwrap();
+        let chunk = held.try_next().await.unwrap().unwrap();
+        drop(held);
+        // Stream slots are released on cancellation; chunks retain byte reservations.
+        let mut resumed = first.stream(URL).await.unwrap();
+        assert!(poll!(resumed.try_next()).is_pending());
         assert_eq!(first.buffered_bytes(), 8);
-        assert_eq!(other.buffered_bytes(), 16);
-        drop((chunk, other_chunk, independent));
+        assert_eq!(read_body(&other, URL).await, BODY);
+        drop(chunk);
+        assert!(resumed.try_next().await.unwrap().is_some());
+        drop(resumed);
         assert_eq!(first.buffered_bytes(), 0);
-        assert_eq!(other.buffered_bytes(), 0);
-
-        {
-            let mut download = first.stream(url).await.unwrap();
-            let mut body = Vec::new();
-            while let Some(chunk) = download.try_next().await.unwrap() {
-                assert_le!(chunk.as_ref().len(), 8);
-                body.extend_from_slice(chunk.as_ref());
-            }
-            assert_eq!(body, BODY);
-        }
-        for source in ["not a URL", "unsupported:///tmp/blob"] {
-            assert!(first.stream(source).await.is_err());
-        }
-        {
-            let mut missing = first.stream(&format!("{url}/missing")).await.unwrap();
-            assert!(missing.try_next().await.is_err());
-        }
-        assert_eq!(first.buffered_bytes(), 0);
-        assert!(first.stream(url).await.is_ok());
-
-        {
-            // Replacing the transport after layering preserves retry policy.
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            struct Transient(Arc<AtomicUsize>);
-            impl HttpTransport for Transient {
-                async fn fetch(
-                    &self,
-                    request: Request<Buffer>,
-                ) -> opendal::Result<Response<HttpBody>> {
-                    let mut response = Transport.fetch(request).await?;
-                    if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
-                    }
-                    Ok(response)
-                }
-            }
-            let attempts = Arc::new(AtomicUsize::new(0));
-            let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
-                .unwrap()
-                .with_layer(
-                    opendal::layers::RetryLayer::default()
-                        .with_min_delay(Duration::from_millis(1))
-                        .with_max_delay(Duration::from_millis(1))
-                        .with_max_times(1),
-                )
-                .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
-            let mut retried = retrying.stream(url).await.unwrap();
-            let mut bytes = Vec::new();
-            while let Some(chunk) = retried.try_next().await.unwrap() {
-                bytes.extend_from_slice(chunk.as_ref());
-            }
-            assert_eq!(bytes, BODY);
-            assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        }
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("source.bin");
-        tokio::fs::write(&file, BODY).await.unwrap();
-        let uri = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
-        let mut local = first.stream(uri.as_str()).await.unwrap();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = local.try_next().await.unwrap() {
-            assert_le!(chunk.as_ref().len(), 8);
-            bytes.extend_from_slice(chunk.as_ref());
-        }
-        assert_eq!(bytes, BODY);
-        assert_eq!(first.buffered_bytes(), 0);
+        assert_eq!(read_body(&first, URL).await, BODY);
     })
     .await
-    .expect("download pool test stalled");
+    .expect("pool budgets stalled");
+}
+
+#[tokio::test]
+async fn invalid_sources_release_budgets() {
+    let pool = pool(1, 8);
+    for source in ["not a URL", "unsupported:///tmp/blob"] {
+        assert!(pool.stream(source).await.is_err());
+    }
+    let mut missing = pool.stream(&format!("{URL}/missing")).await.unwrap();
+    assert!(missing.try_next().await.is_err());
+    drop(missing);
+    assert_eq!(pool.buffered_bytes(), 0);
+    assert_eq!(read_body(&pool, URL).await, BODY);
+}
+
+#[tokio::test]
+async fn replacing_transport_preserves_retry_policy() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Transient(Arc<AtomicUsize>);
+    impl HttpTransport for Transient {
+        async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            let mut response = Transport.fetch(request).await?;
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+            }
+            Ok(response)
+        }
+    }
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let retrying = DownloadPool::new(2.try_into().unwrap(), 8.try_into().unwrap())
+        .unwrap()
+        .with_layer(
+            opendal::layers::RetryLayer::default()
+                .with_min_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(1))
+                .with_max_times(1),
+        )
+        .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
+    assert_eq!(read_body(&retrying, URL).await, BODY);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn filesystem_source_streams_within_budget() {
+    let pool = pool(1, 8);
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("source.bin");
+    tokio::fs::write(&file, BODY).await.unwrap();
+    let uri = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
+    assert_eq!(read_body(&pool, uri.as_str()).await, BODY);
 }
 
 #[tokio::test]
@@ -182,15 +165,10 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
         let second = make_pool(3.try_into().unwrap());
         assert_eq!(first.concurrency(), 2);
         assert_eq!(second.concurrency(), 3);
-        let url = "https://download-fixture.invalid";
-        let mut held = first.stream(url).await.unwrap();
+        let mut held = first.stream(URL).await.unwrap();
         let chunk = held.try_next().await.unwrap().unwrap();
-        let mut waiting = second.stream(url).await.unwrap();
-        assert!(
-            timeout(Duration::from_millis(20), waiting.try_next())
-                .await
-                .is_err()
-        );
+        let mut waiting = second.stream(URL).await.unwrap();
+        assert!(poll!(waiting.try_next()).is_pending());
         // The retained chunk owns only its pool's byte reservation. Dropping the
         // first HTTP body releases the shared request slot for the second pool.
         drop(held);
@@ -204,7 +182,7 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
 }
 
 #[test]
-fn invalid_concurrency_does_not_initialize_or_change_other_pools() {
+fn constructor_limits() {
     assert!(
         DownloadPool::new(
             (tokio::sync::Semaphore::MAX_PERMITS + 1)
@@ -214,11 +192,6 @@ fn invalid_concurrency_does_not_initialize_or_change_other_pools() {
         )
         .is_err()
     );
-    assert_eq!(
-        DownloadPool::new(3.try_into().unwrap(), 8.try_into().unwrap())
-            .unwrap()
-            .concurrency(),
-        3
-    );
+    assert_eq!(pool(3, 8).concurrency(), 3);
     assert_eq!(DownloadPool::with_defaults().unwrap().concurrency(), 64);
 }
