@@ -1,10 +1,7 @@
 use open_arrow_sink_core::{Ordering, ParallelSink, SinkExt};
+use open_arrow_sink_test_support::parallel_sink::{Config, Event, State, TestSink};
 use open_arrow_sink_test_support::unordered_options as options;
-use parallel_sink::{Config, Event, State, TestSink};
 use std::{num::NonZeroUsize, sync::Arc};
-
-#[path = "support/parallel_sink.rs"]
-mod parallel_sink;
 
 #[rstest::rstest]
 #[case::preserving_sink_preserve_input(Ordering::PreserveInput, Ordering::PreserveInput)]

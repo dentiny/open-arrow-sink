@@ -1,15 +1,15 @@
 use futures::FutureExt;
 use open_arrow_sink_core::{Error, Ordering, RecordBatch, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_test_support::parallel_sink::{
+    Config, Event, Failure, SessionDefect, State, TestSink, release,
+};
 use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
-use parallel_sink::{Config, Event, Failure, SessionDefect, State, TestSink, release};
 use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
 
-#[path = "support/parallel_sink.rs"]
-mod parallel_sink;
 fn batch() -> RecordBatch {
     int64_batch("id", vec![Some(1), Some(2), Some(3)])
 }

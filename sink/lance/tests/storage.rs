@@ -10,6 +10,7 @@ use open_arrow_sink_core::{
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_test_support::write_batches;
 use std::{num::NonZeroUsize, sync::Arc};
 
 fn storage() -> Storage {
@@ -26,18 +27,6 @@ fn write_options() -> WriteOptions {
     )
 }
 
-async fn write_dataset(
-    sink: impl Sink<Request = open_arrow_sink_lance::Url>,
-    url: open_arrow_sink_lance::Url,
-    options: WriteOptions,
-) {
-    let mut writer = sink.open(url, batch().schema(), options).await.unwrap();
-    for _ in 0..4 {
-        writer.write(batch()).await.unwrap();
-    }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 12);
-}
-
 struct IndexedDataset {
     sink: LanceDatasetSink,
     url: open_arrow_sink_lance::Url,
@@ -51,9 +40,10 @@ async fn indexed_dataset() -> &'static IndexedDataset {
             let sink = LanceDatasetSink::new(storage.clone());
             let url = storage.url("indexed/").unwrap();
             let io = open_arrow_sink_core::IoMetrics::default();
-            write_dataset(
-                sink.clone(),
+            write_batches(
+                &sink,
                 url.clone(),
+                &vec![batch(); 4],
                 write_options()
                     .with_io_metrics(io.clone())
                     .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
@@ -69,10 +59,12 @@ async fn shared_operator_unordered_commit_preserves_rows() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("output/").unwrap();
-    write_dataset(
-        sink.clone()
+    write_batches(
+        &sink
+            .clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap())),
         url.clone(),
+        &vec![batch(); 4],
         write_options(),
     )
     .await;
@@ -118,7 +110,7 @@ async fn native_files_use_the_configured_storage_namespace() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("雪 output%20/").unwrap();
-    write_dataset(sink.clone(), url.clone(), write_options()).await;
+    write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert_gt!(
         storage
             .list(&storage.resolve(&url).unwrap())
@@ -136,7 +128,7 @@ async fn duplicate_create_preserves_the_existing_dataset() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("output/").unwrap();
-    write_dataset(sink.clone(), url.clone(), write_options()).await;
+    write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert!(matches!(
         sink.open(url.clone(), batch().schema(), write_options()).await,
         Err(open_arrow_sink_core::Error::AlreadyExists(location)) if location == url.as_str()

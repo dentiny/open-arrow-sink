@@ -1,12 +1,9 @@
 use futures::FutureExt;
 use open_arrow_sink_core::{Error, ParallelSink, RecordBatch, Sink, SinkExt};
 use open_arrow_sink_layer::{MetricsLayer, UnorderedWriteLayer};
+use open_arrow_sink_test_support::parallel_sink::{Config, Failure, State, TestSink};
 use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
-use parallel_sink::{Config, Failure, State, TestSink};
 use std::num::NonZeroUsize;
-
-#[path = "support/parallel_sink.rs"]
-mod parallel_sink;
 
 fn sink(config: Config) -> TestSink {
     TestSink(State::shared(Config {

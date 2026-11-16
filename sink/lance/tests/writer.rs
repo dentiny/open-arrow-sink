@@ -3,6 +3,7 @@ use lance::Dataset;
 use more_asserts::assert_gt;
 use open_arrow_sink_core::{Sink, WriteMode, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
+use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use open_arrow_sink_test_support::{seeded_bytes, unordered_options as options};
 use std::sync::Arc;
 
@@ -82,9 +83,18 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
     }
 }
 
+#[rstest::rstest]
+#[case::round_trip(Case::RoundTrip)]
+#[case::rolling(Case::Rolling)]
+#[case::unsupported_modes(Case::UnsupportedModes)]
+#[case::empty_commit(Case::EmptyCommit)]
+#[case::abort(Case::Abort)]
+#[case::schema_mismatch(Case::SchemaMismatch)]
+#[case::abort_before_write(Case::AbortBeforeWrite)]
+#[case::poisoned_commit(Case::PoisonedCommit)]
 #[tokio::test]
-async fn shared_sink_contracts() {
-    open_arrow_sink_test_support::conformance::assert_conforms::<ConformanceFixture>().await;
+async fn shared_sink_contracts(#[case] case: Case) {
+    assert_case::<ConformanceFixture>(case).await;
 }
 
 #[rstest::rstest]

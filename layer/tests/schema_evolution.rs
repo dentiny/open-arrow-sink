@@ -2,12 +2,9 @@ use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field};
 use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_layer::{FieldRemap, SchemaEvolutionLayer, UnorderedWriteLayer};
+use open_arrow_sink_test_support::parallel_sink::{Config, State, TestSink};
 use open_arrow_sink_test_support::unordered_options as options;
-use parallel_sink::{Config, State, TestSink};
 use std::sync::Arc;
-
-#[path = "support/parallel_sink.rs"]
-mod parallel_sink;
 
 fn input() -> RecordBatch {
     RecordBatch::try_from_iter([("old", Arc::new(Int32Array::from(vec![1, 2, 3])) as _)]).unwrap()

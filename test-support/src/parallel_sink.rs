@@ -1,5 +1,6 @@
-//! Event-recording backend used only by the layer contract tests.
-#![allow(dead_code)] // Each integration-test binary uses a different fixture subset.
+//! Event-recording parallel sink for testing layers and session adapters.
+//! Configuration controls failures and body gates; observations retain dispatch
+//! identities separately from directly comparable lifecycle events.
 
 use futures::channel::oneshot;
 use open_arrow_sink_core::{

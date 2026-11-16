@@ -5,11 +5,14 @@ mod batch;
 pub mod conformance;
 pub mod http;
 mod options;
+pub mod parallel_sink;
 mod payload;
+mod sink_fixture;
 
 pub use batch::{concat_sorted, int64_batch, int64_schema, sort_batch};
 pub use options::unordered_options;
 pub use payload::seeded_bytes;
+pub use sink_fixture::write_batches;
 
 mod parquet_fixture;
 mod storage_fixture;

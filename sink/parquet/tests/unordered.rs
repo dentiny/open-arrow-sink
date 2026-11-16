@@ -2,6 +2,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_test_support::write_batches;
 use std::{num::NonZeroUsize, sync::Arc};
 
 #[tokio::test]
@@ -21,20 +22,16 @@ async fn unordered_commit_preserves_all_rows() {
         ])
         .unwrap()
     };
-    let mut writer = ParquetDirectorySink::new(storage.clone())
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
-        .open(
-            directory.clone(),
-            make_batch(0).schema(),
-            open_arrow_sink_test_support::unordered_options().with_target_file_size(1),
-        )
-        .await
-        .unwrap();
+    let sink = ParquetDirectorySink::new(storage.clone())
+        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
     let expected: Vec<_> = (0..8).map(make_batch).collect();
-    for batch in &expected {
-        writer.write(batch.clone()).await.unwrap();
-    }
-    assert_eq!(writer.commit().await.unwrap().rows_written, 24);
+    write_batches(
+        &sink,
+        directory.clone(),
+        &expected,
+        open_arrow_sink_test_support::unordered_options().with_target_file_size(1),
+    )
+    .await;
     let actual = open_arrow_sink_test_support::read_parquet_dir(
         &storage,
         &storage.resolve(&directory).unwrap(),
