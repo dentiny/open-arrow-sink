@@ -120,27 +120,21 @@ async fn overwrite_recovers_uncommitted_destination(
         open_arrow_sink_core::WriteMode::Append,
     ] {
         assert!(
-            sink.open(
-                url.clone(),
-                batch().schema(),
-                WriteOptions {
-                    mode,
-                    ..write_options()
-                }
-            )
+            sink.open(url.clone(), batch().schema(), {
+                let mut review_options = write_options();
+                review_options.mode = mode;
+                review_options
+            })
             .await
             .is_err()
         );
     }
     let mut writer = sink
-        .open(
-            url.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Overwrite,
-                ..write_options()
-            },
-        )
+        .open(url.clone(), batch().schema(), {
+            let mut review_options = write_options();
+            review_options.mode = open_arrow_sink_core::WriteMode::Overwrite;
+            review_options
+        })
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
@@ -186,14 +180,11 @@ async fn overwrite_does_not_ignore_corrupt_manifest() {
         storage.write(manifest, "corrupt".into()).await.unwrap();
     }
     assert!(
-        sink.open(
-            url.clone(),
-            batch().schema(),
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Overwrite,
-                ..write_options()
-            }
-        )
+        sink.open(url.clone(), batch().schema(), {
+            let mut review_options = write_options();
+            review_options.mode = open_arrow_sink_core::WriteMode::Overwrite;
+            review_options
+        })
         .await
         .is_err()
     );
