@@ -40,7 +40,7 @@ fn options() -> WriteOptions {
 async fn shared_storage_streams_large_empty_and_null_blobs() {
     let storage = storage();
     let url = storage.url("雪 output%20/").unwrap();
-    let sink = LanceDatasetSink::new(storage);
+    let sink = LanceDatasetSink::new(storage.clone());
     let io = open_arrow_sink_core::IoMetrics::default();
     let mut writer = sink
         .open(
@@ -82,6 +82,12 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .unwrap();
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_written, 3);
+    assert!(
+        !storage
+            .exists(&url.join(".open-arrow-sink").unwrap())
+            .await
+            .unwrap()
+    );
     assert!(io.snapshot().bytes_written > 17 * 1024 * 1024);
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let actual = dataset

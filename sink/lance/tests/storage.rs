@@ -57,6 +57,12 @@ async fn shared_operator_commit_indexes_and_read_back() {
     }
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_written, 12);
+    assert!(
+        !storage
+            .exists(&url.join(".open-arrow-sink").unwrap())
+            .await
+            .unwrap()
+    );
     assert_gt!(io.snapshot().bytes_read, 0);
     assert_gt!(io.snapshot().bytes_written, 0);
     let dataset = sink
@@ -83,6 +89,117 @@ async fn shared_operator_commit_indexes_and_read_back() {
             .await
             .is_err()
     );
+}
+
+#[rstest::rstest]
+#[case::marker_only(true, false)]
+#[case::orphan_fragment(false, true)]
+#[case::marker_and_orphan(true, true)]
+#[tokio::test]
+async fn overwrite_recovers_uncommitted_destination(
+    #[case] marker_exists: bool,
+    #[case] orphan: bool,
+) {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("interrupted/").unwrap();
+    let marker = url.join(".open-arrow-sink").unwrap();
+    if marker_exists {
+        storage.write(&marker, "".into()).await.unwrap();
+    }
+    let orphan_url = url.join("data/orphan.lance").unwrap();
+    if orphan {
+        storage
+            .write(&orphan_url, "uncommitted".into())
+            .await
+            .unwrap();
+    }
+    // Create still rejects an occupied prefix, and Append requires a manifest.
+    for mode in [
+        open_arrow_sink_core::WriteMode::Create,
+        open_arrow_sink_core::WriteMode::Append,
+    ] {
+        assert!(
+            sink.open(
+                url.clone(),
+                batch().schema(),
+                WriteOptions {
+                    mode,
+                    ..write_options()
+                }
+            )
+            .await
+            .is_err()
+        );
+    }
+    let mut writer = sink
+        .open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: open_arrow_sink_core::WriteMode::Overwrite,
+                ..write_options()
+            },
+        )
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    assert!(!storage.exists(&marker).await.unwrap());
+    assert_eq!(
+        sink.dataset_builder(url)
+            .unwrap()
+            .load()
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        3
+    );
+    if orphan {
+        // Recovery never deletes arbitrary pre-existing objects.
+        assert_eq!(storage.read(&orphan_url).await.unwrap(), "uncommitted");
+    }
+}
+
+#[tokio::test]
+async fn overwrite_does_not_ignore_corrupt_manifest() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("corrupt/").unwrap();
+    let mut writer = sink
+        .open(url.clone(), batch().schema(), write_options())
+        .await
+        .unwrap();
+    writer.write(batch()).await.unwrap();
+    writer.commit().await.unwrap();
+    let manifests: Vec<_> = storage
+        .list(&url)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|url| url.path().ends_with(".manifest"))
+        .collect();
+    assert!(!manifests.is_empty());
+    for manifest in &manifests {
+        storage.write(manifest, "corrupt".into()).await.unwrap();
+    }
+    assert!(
+        sink.open(
+            url.clone(),
+            batch().schema(),
+            WriteOptions {
+                mode: open_arrow_sink_core::WriteMode::Overwrite,
+                ..write_options()
+            }
+        )
+        .await
+        .is_err()
+    );
+    for manifest in manifests {
+        assert_eq!(storage.read(&manifest).await.unwrap(), "corrupt");
+    }
 }
 
 #[rstest::rstest]

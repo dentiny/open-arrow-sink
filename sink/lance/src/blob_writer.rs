@@ -85,6 +85,7 @@ impl Writer for BlobDatasetWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
+        self.destination.complete_reservation().await?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;

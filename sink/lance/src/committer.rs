@@ -38,6 +38,7 @@ impl SessionCommitter<Output> for LanceCommitter {
             builder = builder.with_storage_format(version);
         }
         let mut dataset = builder.execute(transaction).await.map_err(backend)?;
+        self.destination.complete_reservation().await?;
         build_indexes(&mut dataset, &self.options.indexes)
             .await
             .map_err(backend)?;

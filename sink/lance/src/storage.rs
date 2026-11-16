@@ -54,7 +54,21 @@ impl NativeStorage {
             return match mode {
                 WriteMode::Create => Err(crate::error::destination_exists()),
                 _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None).await
+                    let result =
+                        crate::validation::validate_existing_dataset(self.dataset_builder(), None)
+                            .await;
+                    // A crashed first write can leave reservations and fragments without
+                    // ever publishing a manifest. Overwrite may restart that write, but
+                    // must still propagate corrupt manifests and storage access errors.
+                    if let Err(open_arrow_sink_core::Error::Backend(source)) = &result
+                        && matches!(
+                            source.downcast_ref::<lance::Error>(),
+                            Some(lance::Error::DatasetNotFound { .. })
+                        )
+                    {
+                        return Ok(());
+                    }
+                    result
                 }
             };
         }
@@ -83,6 +97,13 @@ impl NativeStorage {
             self.storage.remove_all(&self.url).await?;
         }
         Ok(())
+    }
+    pub async fn complete_reservation(&self) -> Result<()> {
+        // Publication has succeeded. Remove even a reservation left by an earlier
+        // crashed write; never remove data when this cleanup fails.
+        self.storage
+            .delete(&self.url.join(".open-arrow-sink").unwrap())
+            .await
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, params: WriteParams) -> WriteParams {
