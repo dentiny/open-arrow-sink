@@ -8,7 +8,12 @@ description = "Shared OpenDAL storage for Arrow sinks"
 
 [features]
 default = []
-http = ["opendal/services-http", "opendal/http-transport-reqwest", "dep:async-stream", "dep:once_cell"]
+http = [
+  "opendal/services-http",
+  "opendal/http-transport-reqwest",
+  "dep:async-stream",
+  "dep:once_cell",
+]
 aws = ["opendal/services-s3", "opendal/http-transport-reqwest"]
 gcp = ["opendal/services-gcs", "opendal/http-transport-reqwest"]
 azure = ["opendal/services-azblob", "opendal/http-transport-reqwest"]
@@ -35,4 +40,11 @@ url = "2"
 more-asserts.workspace = true
 tempfile.workspace = true
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "time",
+  "fs",
+] }
