@@ -49,7 +49,10 @@ async fn create_collision_preserves_existing_content() {
     let storage = memory();
     let path = storage.resolve(&storage.url("file").unwrap()).unwrap();
     storage.create(&path, "original".into()).await.unwrap();
-    assert!(storage.create(&path, "replace".into()).await.is_err());
+    assert!(matches!(
+        storage.create(&path, "replace".into()).await,
+        Err(Error::AlreadyExists(_))
+    ));
     assert_eq!(storage.read(&path).await.unwrap(), "original");
 }
 
@@ -240,6 +243,12 @@ async fn filesystem_conditional_creation_has_one_winner() {
         storage.create(&path, "second".into())
     );
     assert_ne!(first.is_ok(), second.is_ok());
+    let error = if first.is_err() {
+        first.as_ref().unwrap_err()
+    } else {
+        second.as_ref().unwrap_err()
+    };
+    assert!(matches!(error, Error::AlreadyExists(_)));
     assert_eq!(
         storage.read(&storage.resolve(&url).unwrap()).await.unwrap(),
         if first.is_ok() { "first" } else { "second" }
@@ -247,21 +256,12 @@ async fn filesystem_conditional_creation_has_one_winner() {
 }
 
 #[tokio::test]
-async fn errors_retain_operation_path_and_opendal_source() {
-    use std::error::Error as _;
+async fn missing_objects_retain_category_operation_and_path() {
     let storage = memory();
     let error = storage
         .read(&storage.resolve(&storage.url("missing").unwrap()).unwrap())
         .await
         .unwrap_err();
+    assert!(matches!(error, Error::NotFound(_)));
     assert!(error.to_string().contains("read object \"missing\""));
-    let mut source = error.source();
-    while let Some(cause) = source {
-        if let Some(error) = cause.downcast_ref::<opendal::Error>() {
-            assert_eq!(error.kind(), opendal::ErrorKind::NotFound);
-            return;
-        }
-        source = cause.source();
-    }
-    panic!("the original OpenDAL error must remain in the source chain");
 }

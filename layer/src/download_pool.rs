@@ -157,10 +157,10 @@ impl DownloadPool {
         let reader = operator
             .reader(&path)
             .await
-            .map_err(Error::backend)?
+            .map_err(crate::error::download_error)?
             .into_stream(..)
             .await
-            .map_err(Error::backend)?;
+            .map_err(crate::error::download_error)?;
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
@@ -171,7 +171,7 @@ impl DownloadPool {
                 let reservation = buffers.clone().acquire_many_owned(capacity as u32)
                     .await.expect("pool is never closed");
                 if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(Error::backend)? else { break };
+                    let Some(buffer) = reader.try_next().await.map_err(crate::error::download_error)? else { break };
                     pending = buffer;
                 }
                 // A bounded copy avoids retaining a larger OpenDAL backing allocation.
@@ -200,7 +200,7 @@ impl HttpTransport for UrlTransport {
 fn http_operator(config: StorageConfig) -> Result<Operator> {
     opendal::install_default();
     let operator = Operator::new(Http::default().endpoint(HTTP_PLACEHOLDER.trim_end_matches('/')))
-        .map_err(Error::backend)?;
+        .map_err(crate::error::download_error)?;
     config.apply(operator)
 }
 

@@ -285,6 +285,19 @@ async fn empty_payload_is_distinct_from_null() {
     assert_eq!(capture.binary(0), vec![Some(vec![]), None]);
 }
 
+#[tokio::test]
+async fn missing_download_retains_category_and_row_context() {
+    let server = serve(|_| Reply::bytes(b"".as_slice()).status(HttpStatus::NOT_FOUND)).await;
+    let input = batch(vec![None, Some(&server.url)]);
+    let mut writer = Capture::default()
+        .writer(download_layer(["url"]), input.schema())
+        .await
+        .unwrap();
+    let error = writer.write(input).await.unwrap_err();
+    assert!(matches!(error, open_arrow_sink_core::Error::NotFound(_)));
+    assert!(error.to_string().contains("download column url row 1"));
+}
+
 #[rstest::rstest]
 #[case::not_found(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")]
 #[case::truncated_body(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabc")]

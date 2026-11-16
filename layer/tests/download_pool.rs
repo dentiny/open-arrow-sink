@@ -104,7 +104,10 @@ async fn invalid_sources_release_budgets() {
         assert!(pool.stream(source).await.is_err());
     }
     let mut missing = pool.stream(&format!("{URL}/missing")).await.unwrap();
-    assert!(missing.try_next().await.is_err());
+    assert!(matches!(
+        missing.try_next().await,
+        Err(open_arrow_sink_core::Error::NotFound(_))
+    ));
     drop(missing);
     assert_eq!(pool.buffered_bytes(), 0);
     assert_eq!(read_body(&pool, URL).await, BODY);
