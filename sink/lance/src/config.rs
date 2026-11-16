@@ -1,7 +1,8 @@
 use std::ops::Deref;
 
+use crate::BlobHandleConfig;
 pub use lance_file::version::LanceFileVersion;
-use open_arrow_sink_core::{BlobHandleConfig, IndexSpec, WriteOptions};
+use open_arrow_sink_core::{IndexSpec, WriteOptions};
 
 /// Lance-specific options. Configure these on `LanceDatasetSink` before layering.
 #[derive(Debug, Clone, Default)]

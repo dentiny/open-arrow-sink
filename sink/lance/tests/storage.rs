@@ -5,10 +5,8 @@ use lance::{
     datatypes::BlobKind,
 };
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{
-    BlobHandleConfig, IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions,
-};
-use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_lance::{BlobHandleConfig, LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::opendal;
 use std::{num::NonZeroUsize, sync::Arc};

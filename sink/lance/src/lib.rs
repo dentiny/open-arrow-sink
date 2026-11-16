@@ -3,6 +3,8 @@
 mod config;
 pub use config::{LanceFileVersion, LanceOptions};
 mod blob;
+mod blob_config;
+pub use blob_config::{BlobHandleConfig, ExternalBlobMode};
 mod blob_writer;
 mod committer;
 mod compression;

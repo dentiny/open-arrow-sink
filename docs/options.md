@@ -305,7 +305,7 @@ the writer's abort/drop guarantees.
 
 ### Blob handle configuration
 
-`LanceOptions.blob_handle: Option<BlobHandleConfig>` configures Lance writes via
+`LanceOptions.blob_handle: Option<open_arrow_sink_lance::BlobHandleConfig>` configures Lance writes via
 `LanceDatasetSink::with_options`. It controls `inline_size_threshold`,
 `dedicated_size_threshold`, and `external_blob_mode` (`Ingest` by default).
 Omitted thresholds preserve field metadata or native defaults. `None` still uses

@@ -3,12 +3,13 @@
 use crate::config::SessionOptions;
 use std::sync::Arc;
 
+use crate::{BlobHandleConfig, ExternalBlobMode};
 use arrow_schema::Schema;
 use lance::{
     blob::{BlobFieldOptions, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
-use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.

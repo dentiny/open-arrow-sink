@@ -47,6 +47,23 @@ fn validate_compression(options: &CompressionOptions) -> Result<()> {
 }
 
 fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    // Native blob descriptors are an opaque Lance representation. Generic Arrow
+    // path resolution in core must not know about Lance extension types.
+    for path in options.nested_columns.keys() {
+        if (1..path.len()).any(|end| {
+            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2")
+            })
+        }) {
+            return Err(open_arrow_sink_core::Error::Unsupported(format!(
+                "nested compression inside native blob column: {path:?}"
+            )));
+        }
+    }
     for field in schema.fields() {
         let encoding = options
             .column_encodings
@@ -288,4 +305,46 @@ pub(crate) fn validate_blob_placements(
         }
     }
     Ok(placements)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::Field;
+    use std::sync::Arc;
+
+    #[test]
+    fn nested_compression_cannot_address_native_blob_internals() {
+        let blob = Field::new(
+            "blob",
+            DataType::Struct(
+                vec![Arc::new(Field::new("data", DataType::LargeBinary, false))].into(),
+            ),
+            false,
+        )
+        .with_metadata([("ARROW:extension:name".into(), "lance.blob.v2".into())].into());
+        for (field, path) in [
+            (blob.clone(), vec!["blob".into(), "data".into()]),
+            (
+                Field::new(
+                    "items",
+                    DataType::List(Arc::new(Field::new(
+                        "item",
+                        DataType::Struct(vec![Arc::new(blob)].into()),
+                        false,
+                    ))),
+                    false,
+                ),
+                vec!["items".into(), "blob".into(), "data".into()],
+            ),
+        ] {
+            let schema = Schema::new(vec![field]);
+            assert!(validation::nested_field(&schema, &path).is_some());
+            let options = CompressionOptions {
+                nested_columns: [(path, Compression::Zstd { level: None })].into(),
+                ..Default::default()
+            };
+            assert!(validate_encoding(&schema, &options).is_err());
+        }
+    }
 }

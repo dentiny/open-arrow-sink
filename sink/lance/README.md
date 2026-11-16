@@ -128,8 +128,7 @@ Configure the Lance sink through `LanceOptions.blob_handle`; the storage thresho
 
 ```rust
 use std::num::NonZeroUsize;
-use open_arrow_sink_core::{BlobHandleConfig, ExternalBlobMode};
-use open_arrow_sink_lance::{LanceDatasetSink, LanceOptions};
+use open_arrow_sink_lance::{BlobHandleConfig, ExternalBlobMode, LanceDatasetSink, LanceOptions};
 
 let sink = LanceDatasetSink::default().with_options(LanceOptions {
     blob_handle: Some(BlobHandleConfig {
