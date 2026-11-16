@@ -1,4 +1,8 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
@@ -42,8 +46,31 @@ impl DownloadPool {
     /// process-wide request limiter. The first pool reads
     /// `OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to `concurrency` if
     /// unset or invalid; subsequent pools reuse that limit regardless of their
-    /// `concurrency` argument.
+    /// `concurrency` argument. HTTP control and I/O attempts time out after eight
+    /// seconds, with up to three retries for temporary errors. This is not a
+    /// whole-object deadline; use `new_with_config` to override these policies.
     pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
+        Self::new_with_config(
+            concurrency,
+            max_buffered_bytes,
+            crate::StorageConfig {
+                timeout: Some(crate::TimeoutConfig {
+                    operation_timeout: Duration::from_secs(8),
+                    io_timeout: Duration::from_secs(8),
+                }),
+                retry: Some(crate::RetryConfig::default()),
+            },
+        )
+    }
+
+    /// Override HTTP download policies. `StorageConfig::default()` explicitly
+    /// disables timeouts and retries. Non-HTTP source stores retain their own policies.
+    pub fn new_with_config(
+        concurrency: NonZeroUsize,
+        max_buffered_bytes: NonZeroUsize,
+        config: crate::StorageConfig,
+    ) -> Result<Self> {
+        config.validate()?;
         static REQUESTS: OnceCell<(NonZeroUsize, Arc<Semaphore>, HttpConcurrencyLimitLayer)> =
             OnceCell::new();
         validation::validate_download_limit(max_buffered_bytes)?;
@@ -60,7 +87,7 @@ impl DownloadPool {
             .map_err(backend)?
             .layer(http_limit.clone());
         Ok(Self {
-            operator,
+            operator: config.apply(operator)?,
             sources: crate::StorageResolver::default(),
             requests: requests.clone(),
             concurrency: *concurrency,
@@ -79,7 +106,8 @@ impl DownloadPool {
     }
 
     /// Configure OpenDAL policies. Add TimeoutLayer before RetryLayer so every
-    /// retry attempt receives its own I/O deadline. Neither is added by default.
+    /// retry attempt receives its own I/O deadline. These stack on the constructor
+    /// policies; use `new_with_config` to replace or disable those policies.
     pub fn with_layer(mut self, layer: impl Layer) -> Self {
         self.operator = self.operator.layer(layer);
         self
@@ -128,6 +156,7 @@ impl DownloadPool {
             let transport = HttpTransporter::new(UrlTransport {
                 uri,
                 inner: context.http_transport().clone(),
+                validator: Arc::new(Mutex::new(None)),
             });
             (
                 self.operator
@@ -172,12 +201,63 @@ impl DownloadPool {
 struct UrlTransport {
     uri: Uri,
     inner: HttpTransporter,
+    validator: Arc<Mutex<Option<String>>>,
 }
 
 impl HttpTransport for UrlTransport {
     async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
         *request.uri_mut() = self.uri.clone();
+        let offset = request
+            .headers()
+            .get(http::header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("bytes="))
+            .and_then(|value| value.split_once('-'))
+            .and_then(|(start, _)| start.parse::<u64>().ok())
+            .unwrap_or(0);
+        let validator = self.validator.lock().unwrap().clone();
+        if offset > 0
+            && let Some(validator) = &validator
+        {
+            request.headers_mut().insert(
+                http::header::IF_RANGE,
+                validator.parse().expect("previously validated HTTP header"),
+            );
+        }
         let response = self.inner.fetch(request).await?;
+        if response.status().is_success() {
+            if offset > 0 {
+                let actual_start = response
+                    .headers()
+                    .get(http::header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("bytes "))
+                    .and_then(|value| value.split_once('-'))
+                    .and_then(|(start, _)| start.parse::<u64>().ok());
+                let changed = validator.as_ref().is_some_and(|expected| {
+                    response
+                        .headers()
+                        .get(http::header::ETAG)
+                        .is_some_and(|actual| actual != expected.as_str())
+                });
+                if response.status() != http::StatusCode::PARTIAL_CONTENT
+                    || actual_start != Some(offset)
+                    || changed
+                {
+                    return Err(opendal::Error::new(
+                        opendal::ErrorKind::Unexpected,
+                        "HTTP download cannot safely resume: invalid range response or changed ETag",
+                    ));
+                }
+            } else if let Some(etag) = response
+                .headers()
+                .get(http::header::ETAG)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.starts_with("W/"))
+            {
+                *self.validator.lock().unwrap() = Some(etag.to_owned());
+            }
+        }
         Ok(error::download_response(response))
     }
 }

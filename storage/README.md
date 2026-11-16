@@ -85,3 +85,10 @@ transport is replaced. Returned chunks retain the same buffer accounting.
 [Usage](../docs/usage.md) · [Architecture](../docs/architecture.md) ·
 [Support matrix](../docs/support.md) · [Write layers](../layer/README.md) ·
 [Extend a sink](../docs/extending-sinks.md)
+
+HTTP `DownloadPool::new` bounds each control/I/O attempt to eight seconds and
+retries temporary errors up to three times. Use `DownloadPool::new_with_config`
+with `StorageConfig` to replace or disable that policy. This does not override
+registered source-store policies. Body retries resume at the consumed offset;
+range and strong ETag checks prevent replaying an ignored range into the output.
+See [download policies](../docs/options.md#streaming-download-pool) for scope and limits.

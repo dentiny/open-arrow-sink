@@ -262,10 +262,18 @@ Lance encoding/output buffers, input batches, and descriptor metadata are separa
 it is not a process RSS limit. Error response bodies are discarded before OpenDAL
 classifies the status to avoid collecting unbounded diagnostic payloads.
 
-HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. No timeout or
-retry policy is enabled by default. Apply OpenDAL policies with
-`DownloadPool::with_layer`, adding `TimeoutLayer` before `RetryLayer` so every
-attempt gets its own I/O deadline. Dropping a stream cancels pending work and
+HTTP(S), escaped paths, signed queries, and redirects are supported. File and enabled cloud URLs are also supported; configure their credentials and policies with `DownloadPool::with_source_storage`. HTTP downloads default to eight-second control-operation and per-I/O-attempt
+timeouts, and up to three retries for temporary errors (including 429 and 5xx).
+These are per-attempt deadlines, not a whole-blob deadline or a separate one-second
+connect timeout. `DownloadPool::new_with_config(concurrency, max_buffered_bytes,
+StorageConfig { timeout, retry })` replaces these defaults; `StorageConfig::default()`
+explicitly disables them. Source stores retain their own configured policies.
+OpenDAL resumes interrupted bodies at the consumed byte offset; a resumed HTTP
+response must be 206 with the matching `Content-Range`, and a strong ETag is sent
+as `If-Range` when available. Servers that cannot resume fail rather than append
+duplicate bytes. Sources without a strong ETag must remain unchanged during a
+download. Extra policies can still be stacked with `DownloadPool::with_layer`,
+adding `TimeoutLayer` before `RetryLayer` so every attempt gets its own I/O deadline. Dropping a stream cancels pending work and
 releases its request slot; dropping its yielded chunks releases their byte budget.
 
 ## Download URL columns into native blobs
