@@ -1,6 +1,12 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    pin::Pin,
+    sync::{Arc, atomic::Ordering},
+    task::{Context, Poll},
+};
 
-use datafusion_physical_plan::SendableRecordBatchStream;
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_physical_plan::{RecordBatchStream, SendableRecordBatchStream};
+use futures::Stream;
 use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
     BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
@@ -10,11 +16,51 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::worker_stopped,
+    error::{aborted, worker_stopped},
     index::build_indexes,
-    parallel::{ChannelStream, Message},
     storage::NativeStorage,
 };
+
+enum Message {
+    Batch(RecordBatch),
+    Commit,
+}
+
+/// Blob writes publish inside the native worker, so only explicit commit permits EOF.
+/// Dropping the sender must fail the stream instead of publishing a partial dataset.
+struct ChannelStream {
+    schema: SchemaRef,
+    receiver: mpsc::Receiver<Message>,
+    finished: bool,
+}
+
+impl Stream for ChannelStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Some(Message::Batch(batch))) => Poll::Ready(Some(Ok(batch))),
+            Poll::Ready(Some(Message::Commit)) => {
+                self.finished = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                Poll::Ready(Some(Err(DataFusionError::from(aborted()))))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl RecordBatchStream for ChannelStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
 
 pub(crate) struct BlobDatasetWriter {
     schema: SchemaRef,
