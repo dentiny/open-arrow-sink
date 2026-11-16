@@ -41,8 +41,20 @@ impl Writer for BlobDatasetWriter {
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
         crate::validation::validate_blob_state(self.failed, &self.blob_session)?;
         self.failed = true;
-        let blob =
-            crate::blob::create_blob(&self.destination.url, self.blob_session.clone()).await?;
+        // Native dedicated selection takes precedence if its threshold is lower.
+        let inline_limit = self.options.blob_handle.as_ref().and_then(|config| {
+            config.inline_size_threshold.map(|inline| {
+                config
+                    .dedicated_size_threshold
+                    .map_or(inline, |dedicated| inline.min(dedicated.get()))
+            })
+        });
+        let blob = crate::blob::create_blob(
+            &self.destination.url,
+            self.blob_session.clone(),
+            inline_limit,
+        )
+        .await?;
         self.failed = false;
         Ok(blob)
     }

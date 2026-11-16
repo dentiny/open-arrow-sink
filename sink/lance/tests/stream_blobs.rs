@@ -242,3 +242,96 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
     }
     assert!(io.snapshot().bytes_written >= 4096);
 }
+
+#[rstest::rstest]
+#[case::default_dedicated(None, None, 4, false)]
+#[case::inline_boundary(Some(4), None, 4, true)]
+#[case::spill_after_boundary(Some(4), None, 5, false)]
+#[case::empty_inline(Some(0), None, 0, true)]
+#[case::dedicated_precedence(Some(8), Some(2), 3, false)]
+#[tokio::test]
+async fn streamed_inline_threshold_avoids_objects_and_spills_larger_payloads(
+    #[case] inline_limit: Option<usize>,
+    #[case] dedicated_limit: Option<usize>,
+    #[case] payload_size: usize,
+    #[case] inline: bool,
+) {
+    use lance::datatypes::BlobKind;
+    use open_arrow_sink_core::BlobHandleConfig;
+    use std::num::NonZeroUsize;
+
+    let storage = storage();
+    let url = storage.url("layout/").unwrap();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let io = open_arrow_sink_core::IoMetrics::default();
+    let mut config = options();
+    config.io_metrics = Some(io.clone());
+    config.blob_handle = Some(BlobHandleConfig {
+        inline_size_threshold: inline_limit,
+        dedicated_size_threshold: dedicated_limit.and_then(NonZeroUsize::new),
+        ..Default::default()
+    });
+    let mut writer = sink
+        .open(url.clone(), input().schema(), config)
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    let payload: Vec<_> = (0..payload_size).map(|i| i as u8).collect();
+    // Multiple chunks exercise promotion without losing the buffered prefix.
+    for chunk in payload.chunks(2) {
+        blob.write(BlobChunk::new(chunk.to_vec())).await.unwrap();
+    }
+    let handle = blob.finish().await.unwrap();
+    assert_eq!(
+        io.snapshot().bytes_written,
+        if inline { 0 } else { payload_size as u64 }
+    );
+    writer
+        .write_with_blobs(
+            input(),
+            vec![BlobPlacement {
+                column: 0,
+                row: 0,
+                blob: handle,
+            }],
+        )
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    assert!(io.snapshot().bytes_written > 0);
+    let objects = storage.list(&url.join("_blobs/").unwrap()).await.unwrap();
+    assert_eq!(objects.len(), usize::from(!inline));
+    let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());
+    let blobs = dataset.take_blobs_by_indices(&[0], "blob").await.unwrap();
+    let blob = blobs[0].as_ref().unwrap();
+    assert_eq!(
+        blob.kind(),
+        if inline {
+            BlobKind::Inline
+        } else {
+            BlobKind::Managed
+        }
+    );
+    assert_eq!(blob.read().await.unwrap().as_ref(), payload.as_slice());
+}
+
+#[tokio::test]
+async fn abandoning_buffered_inline_blob_still_prevents_publication() {
+    use open_arrow_sink_core::BlobHandleConfig;
+    let storage = storage();
+    let url = storage.url("abandoned-inline/").unwrap();
+    let mut config = options();
+    config.blob_handle = Some(BlobHandleConfig {
+        inline_size_threshold: Some(16),
+        ..Default::default()
+    });
+    let mut writer = LanceDatasetSink::new(storage.clone())
+        .open(url.clone(), input().schema(), config)
+        .await
+        .unwrap();
+    let mut blob = writer.create_blob().await.unwrap();
+    blob.write(BlobChunk::new("partial")).await.unwrap();
+    drop(blob);
+    assert!(writer.commit().await.is_err());
+    assert!(storage.list(&url).await.unwrap().is_empty());
+}

@@ -302,8 +302,14 @@ let sink = LanceDatasetSink::default().layer(
 boundaries, row order, nulls, and metadata are preserved by the layer; the final
 sink's ordering guarantee still applies. There is no per-blob size limit or
 separate output batch size. Payloads larger than the shared buffer budget stream
-through in chunks. Streamed Lance blobs use native dedicated storage, and default
-scans return descriptors; use `blob_handling(BlobHandling::AllBinary)` to read bytes.
+through in chunks. Streamed Lance blobs use native dedicated storage by default.
+An explicit `blob_handle.inline_size_threshold` enables bounded buffering for small
+streams and embeds them in data files. Each pending inline handle can retain up to
+the configured limit outside the pool's transfer budget, including finished handles
+waiting for their batch to be consumed; bound batch sizes for this additional
+memory. Larger streams spill once to
+dedicated objects, while packed storage remains a native logical-input feature.
+Default scans return descriptors; use `blob_handling(BlobHandling::AllBinary)` to read bytes.
 
 The input writer schema retains URL columns. The inner writer schema has
 blob-marked `LargeBinary` fields with empty placeholders; payloads are carried by
@@ -323,7 +329,10 @@ The configuration follows Lance's `BlobFieldOptions`: `inline_size_threshold`
 (inline to packed) and `dedicated_size_threshold` (packed to dedicated), plus
 `external_blob_mode` (`Ingest` by default or explicit `Reference`). Thresholds
 apply to top-level native blob fields; omitted thresholds preserve field metadata
-or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
+or Lance defaults for logical inputs. For streamed Lance handles, an explicit
+inline threshold opts into buffering; None keeps dedicated streaming. A lower
+explicit dedicated threshold takes precedence, but streamed handles are never
+packed. `blob_handle: None` still uses `Ingest`. Lance advertises
 `SinkCapability.supports_blob_handle`; Parquet and Iceberg reject explicit blob
 configuration before destination I/O. Native schema and parallel-session restrictions
 still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).

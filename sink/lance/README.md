@@ -122,8 +122,18 @@ non-null binary placeholders. Null cells remain null. Ordinary materialized
 binary values can still be written through `Writer::write`.
 
 Streams append through the common `StorageWriter`, and batches carry native
-Lance managed-blob descriptors. Streaming values use dedicated storage without
-buffering the full payload to select inline or packed storage. Materialized binary
+Lance blob descriptors. By default, streaming values use dedicated storage without
+buffering the full payload. Set `blob_handle.inline_size_threshold = Some(bytes)`
+to keep smaller streams inline in the data file, avoiding one object per small
+blob. Each unfinished or completed-but-unconsumed inline handle retains at most
+that many payload bytes. Total memory therefore scales with the pending handles
+and the batch's inline payloads, not just active download concurrency; choose batch
+sizes accordingly. This destination memory is additional to the download pool's
+transfer budget. Once the
+threshold is exceeded, the buffered prefix and subsequent chunks go to one dedicated
+object, without rereading the payload. A lower explicit dedicated threshold takes
+precedence. Streamed handles do not use packed storage; use native logical blob
+inputs when medium-sized values should share packed sidecars. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
 poisons the session. Abort or a rejected commit removes a freshly reserved dataset
@@ -161,8 +171,11 @@ These options map through native `BlobFieldOptions` to top-level blob field meta
 Explicit values override existing field thresholds; `None` preserves field metadata
 or Lance defaults (64 KiB inline, 4 MiB dedicated). Values strictly above each
 threshold move to the next storage class. Dedicated selection takes precedence.
-They control native logical blob writes, including ingested URIs. Already prepared
-streaming handles retain their chosen dedicated storage layout.
+They control native logical blob writes, including ingested URIs. For streamed
+handles, an explicit inline threshold opts into bounded inline buffering as
+described above; omitted inline thresholds preserve dedicated streaming. Field
+metadata/default thresholds do not activate buffering, because `create_blob` has
+no column argument. The packed-storage threshold does not pack streamed handles.
 The default is `ExternalBlobMode::Ingest`, including when `blob_handle` is `None`
 or `Some(BlobHandleConfig::default())`. Choose `Reference` explicitly to retain external URIs.
 This setting applies to native logical blob inputs in single and parallel writes;

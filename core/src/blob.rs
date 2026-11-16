@@ -13,13 +13,16 @@ pub enum ExternalBlobMode {
 }
 
 /// Per-write blob handle configuration. Currently follows Lance blob options.
-/// These options govern native logical blob inputs; streamed handles already
-/// belong to the destination session and do not need external ingestion.
+/// Native logical blob inputs use these layout and ingestion options. Lance
+/// streamed handles also honor an explicitly configured inline threshold;
+/// larger streams use dedicated objects rather than packed storage.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobHandleConfig {
     pub external_blob_mode: ExternalBlobMode,
     /// Maximum payload size in bytes kept inline before using packed storage.
-    /// Matches Lance BlobFieldOptions; None keeps field metadata or Lance's default.
+    /// Matches Lance BlobFieldOptions; None keeps field metadata or Lance's default
+    /// for native logical inputs. For streamed Lance handles, Some opts into bounded
+    /// buffering up to this limit; None preserves constant-memory dedicated writes.
     pub inline_size_threshold: Option<usize>,
     /// Maximum payload size in bytes kept in packed storage before using a
     /// dedicated object. Lance selects dedicated storage strictly above this size.

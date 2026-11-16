@@ -60,11 +60,13 @@ impl BlobSession {
 pub(crate) struct NativeBlob {
     pub session: Arc<BlobSession>,
     pub descriptor: BlobDescriptor,
-    url: Url,
+    url: Option<Url>,
 }
 
 struct NativeBlobWriter {
-    inner: StorageWriter,
+    inner: Option<StorageWriter>,
+    inline_limit: Option<usize>,
+    buffer: Vec<u8>,
     session: Arc<BlobSession>,
     url: Url,
     relative: String,
@@ -84,7 +86,40 @@ impl BlobWriter for NativeBlobWriter {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
         validation::validate_blob_state(self.failed, &self.session)?;
         self.failed = true;
-        if let Err(error) = self.inner.write(chunk.bytes().clone()).await {
+        let result = async {
+            if self.inner.is_none()
+                && self.inline_limit.is_some_and(|limit| {
+                    chunk.as_ref().len() <= limit.saturating_sub(self.buffer.len())
+                })
+            {
+                // Retain at most the configured payload limit, not the source chunk's
+                // possibly larger backing allocation. Avoid geometric Vec growth.
+                self.buffer.reserve_exact(chunk.as_ref().len());
+                self.buffer.extend_from_slice(chunk.as_ref());
+                return Ok(());
+            }
+            if self.inner.is_none() {
+                // Track ownership before the first storage await so cancellation
+                // cannot leave an untracked object. Small inline blobs never open one.
+                self.session
+                    .unattached
+                    .lock()
+                    .unwrap()
+                    .insert(self.url.clone());
+                self.inner = Some(self.session.storage.writer(&self.url).await?);
+                if !self.buffer.is_empty() {
+                    let buffered = std::mem::take(&mut self.buffer);
+                    self.inner.as_mut().unwrap().write(buffered.into()).await?;
+                }
+            }
+            self.inner
+                .as_mut()
+                .unwrap()
+                .write(chunk.bytes().clone())
+                .await
+        }
+        .await;
+        if let Err(error) = result {
             self.session.failed.store(true, Ordering::Release);
             return Err(error);
         }
@@ -93,43 +128,67 @@ impl BlobWriter for NativeBlobWriter {
     }
     async fn finish(mut self: Box<Self>) -> Result<BlobHandle> {
         validation::validate_blob_state(self.failed, &self.session)?;
-        let size = self.inner.close().await?;
-        self.session.io_tracker.record_write(
-            "streamed_blob",
-            object_store::path::Path::from(self.url.path()),
-            size,
-        );
+        let (descriptor, url) = if let Some(inner) = self.inner.as_mut() {
+            let size = inner.close().await?;
+            self.session.io_tracker.record_write(
+                "streamed_blob",
+                object_store::path::Path::from(self.url.path()),
+                size,
+            );
+            (
+                BlobDescriptor::Managed {
+                    base_id: None,
+                    uri: self.relative.clone(),
+                    offset: 0,
+                    size,
+                },
+                Some(self.url.clone()),
+            )
+        } else {
+            (
+                BlobDescriptor::Inline {
+                    data: std::mem::take(&mut self.buffer).into(),
+                },
+                None,
+            )
+        };
         self.finished = true;
         Ok(BlobHandle::new(NativeBlob {
             session: self.session.clone(),
-            descriptor: BlobDescriptor::Managed {
-                base_id: None,
-                uri: self.relative.clone(),
-                offset: 0,
-                size,
-            },
-            url: self.url.clone(),
+            descriptor,
+            url,
         }))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        let upload = self.inner.abort().await;
-        let file = self.session.storage.delete(&self.url).await;
-        upload.and(file)
+        if let Some(inner) = self.inner.as_mut() {
+            let upload = inner.abort().await;
+            let file = self.session.storage.delete(&self.url).await;
+            upload.and(file)
+        } else {
+            Ok(())
+        }
     }
 }
 
 pub(crate) async fn create_blob(
     directory: &Url,
     session: Arc<BlobSession>,
+    inline_limit: Option<usize>,
 ) -> Result<Box<dyn BlobWriter>> {
     let relative = format!("{}{}.blob", session.relative_prefix, uuid::Uuid::new_v4());
     let url = directory.join(&relative).unwrap();
-    // Retain ownership before opening: cancellation can leave an object behind.
-    session.unattached.lock().unwrap().insert(url.clone());
-    let inner = session.storage.writer(&url).await?;
+    let inner = if inline_limit.is_none() {
+        // Preserve the constant-memory dedicated path unless buffering is opted into.
+        session.unattached.lock().unwrap().insert(url.clone());
+        Some(session.storage.writer(&url).await?)
+    } else {
+        None
+    };
     session.active.fetch_add(1, Ordering::Relaxed);
     Ok(Box::new(NativeBlobWriter {
         inner,
+        inline_limit,
+        buffer: Vec::new(),
         session,
         url,
         relative,
@@ -216,7 +275,9 @@ pub(crate) fn storage_batch(
         RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(backend)?;
     for handle in placements.values() {
         let native = handle.downcast_ref::<NativeBlob>().unwrap();
-        session.unattached.lock().unwrap().remove(&native.url);
+        if let Some(url) = &native.url {
+            session.unattached.lock().unwrap().remove(url);
+        }
     }
     Ok(output)
 }
