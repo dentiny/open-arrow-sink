@@ -29,10 +29,9 @@ let sink = IcebergTableSink::new(catalog).with_partition(PartitionOptions {
 });
 ```
 
-
 The table's default partition spec and current schema are fixed when the session
 opens. `partition_type` requests a transform type (default `Identity`); it must
-be advertised by the sink and match the table spec. It does not change the table
+be supported by the sink and match the table spec. It does not change the table
 spec. Do not repeat column names in the option. One or multiple partition fields
 and null partition values are supported. Every field must use the requested
 transform category; mixed categories are rejected at open.
@@ -81,7 +80,9 @@ partition writers, and an empty session does not publish a snapshot.
 row-group buffering and file footers may make actual files larger.
 
 `abort` drops the file writer and attempts to delete only that session's unique
-data prefix when `cleanup_on_error` is enabled. Drop and failed/cancelled commits can leave orphan files. Commit
+data prefix when `cleanup_on_error` is enabled. With `OpenDalStorageFactory`,
+prefix cleanup also aborts unfinished uploads before deleting completed objects.
+Drop and failed/cancelled commits can leave orphan files. Commit
 errors may have an unknown publication outcome: reload/reconcile the table before
 retrying; files are deliberately retained on failure to avoid deleting committed
 data. SDK catalog commit behavior (including its retry policy) applies.
@@ -120,6 +121,12 @@ creates independent Parquet writers with disjoint private prefixes. Each writer
 honors the target file size and destination partition spec. A writer can produce
 multiple files and, when partitioned, multiple partition writers.
 
+The layer overlaps I/O but polls all writers in the caller's task, so Parquet
+encoding and compression do not run across CPU cores merely by increasing this
+concurrency. A multithreaded runtime alone does not change that. See the
+[layer guide](../../layer/README.md#concurrent-writes) for application-managed
+`ParallelSink` worker tasks and their cleanup responsibilities.
+
 Finishing a data writer returns its `DataFile` metadata without modifying the
 catalog. The session committer combines all files in one fast-append transaction,
 so there is no per-worker table commit. An empty session publishes no snapshot.
@@ -135,17 +142,18 @@ cleanup all use the same shared operator. The sink request remains `TableIdent`;
 the table metadata determines data locations.
 
 ```rust,ignore
-use std::sync::Arc;
+use iceberg::{CatalogBuilder, memory::MemoryCatalogBuilder};
 use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
 use open_arrow_sink_storage::opendal;
-use iceberg::{CatalogBuilder, memory::MemoryCatalogBuilder};
+use std::sync::Arc;
 
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///".parse()?)?;
 let factory = Arc::new(OpenDalStorageFactory::new(storage));
 let catalog = MemoryCatalogBuilder::default()
     .with_storage_factory(factory)
-    .load("example", catalog_properties).await?;
+    .load("example", catalog_properties)
+    .await?;
 let sink = IcebergTableSink::new(Arc::new(catalog));
 ```
 
@@ -159,13 +167,18 @@ reconstruct them with the configured operator in another process.
 
 Native Iceberg owns publication and commit-failure handling. This adapter does
 not change those semantics or introduce a second table transaction. Iceberg's
-`FileWrite` interface has no asynchronous abort method; dropped uploads may need
-backend lifecycle cleanup even when session-owned published files are removed.
+`FileWrite` interface has no asynchronous abort method, so this factory retains
+unfinished native upload handles until successful close or explicit prefix
+cleanup. Factory clones and their `FileIO` instances share these handles;
+cleaning one prefix does not abort writers in another prefix. With cleanup
+disabled, abandoned handles remain until prefix cleanup or factory destruction.
+Drop performs no asynchronous work. Process crashes and other caller-provided
+storage factories still require backend lifecycle cleanup for unfinished uploads.
 
 ### Supported write modes
 
 `IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
-`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+`options.with_mode(WriteMode::Append)` appends to an existing
 table. A missing table is an error. The shared default is `WriteMode::Create`,
 which this sink rejects; callers must explicitly select Append.
 

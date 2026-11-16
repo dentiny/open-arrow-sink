@@ -135,10 +135,7 @@ fn state(failed: bool) -> Result<()> {
 impl<S: Sink> Sink for SchemaEvolutionSink<S> {
     type Request = S::Request;
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        self.inner.capability().with_supports_blob_streaming(false)
     }
     async fn open(
         &self,

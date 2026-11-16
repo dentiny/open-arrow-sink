@@ -71,12 +71,11 @@ impl SessionCommitter<u64> for Committer {
 impl Sink for TestSink {
     type Request = Behavior;
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supports_blob_streaming: false,
-            supported_modes: &[WriteMode::Create],
-            ordering: Ordering::Unordered,
-            compression: Default::default(),
-        }
+        SinkCapability::default()
+            .with_supports_blob_streaming(false)
+            .with_supported_modes(&[WriteMode::Create])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(Default::default())
     }
     async fn open(
         &self,
@@ -124,10 +123,7 @@ fn input() -> RecordBatch {
         .unwrap()
 }
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 
 #[rstest::rstest]

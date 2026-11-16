@@ -28,7 +28,7 @@ pub enum Ordering {
 /// Currently supported only by the Iceberg sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PartitionOptions {
-    /// Requested partition transform. The sink must advertise this type, and
+    /// Requested partition transform. The sink must support this type, and
     /// every field in the destination spec must use it; this does not alter
     /// the table spec. Bucket counts and truncate widths come from that spec.
     pub partition_type: PartitionType,
@@ -42,7 +42,25 @@ impl Default for PartitionOptions {
     }
 }
 
+/// Session options. Start from [`Self::default`] and use the `with_*` methods
+/// or mutate public fields; this allows future options to receive defaults.
+///
+/// ```
+/// use open_arrow_sink_core::{Ordering, WriteMode, WriteOptions};
+/// let mut options = WriteOptions::default()
+///     .with_mode(WriteMode::Append)
+///     .with_ordering(Ordering::Unordered);
+/// options.target_file_size = Some(64 * 1024 * 1024);
+/// ```
+///
+/// External struct literals are deliberately unsupported, including updates:
+///
+/// ```compile_fail,E0639
+/// use open_arrow_sink_core::{WriteMode, WriteOptions};
+/// let options = WriteOptions { mode: WriteMode::Append, ..WriteOptions::default() };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WriteOptions {
     /// Optional shared I/O observer. Layers forward it; instrumented backends
     /// record measured payloads independently of commit success.
@@ -71,5 +89,38 @@ impl Default for WriteOptions {
             target_file_size: None,
             cleanup_on_error: true,
         }
+    }
+}
+
+impl WriteOptions {
+    /// Set `io_metrics` while preserving all other options.
+    pub fn with_io_metrics(mut self, io_metrics: Option<crate::IoMetrics>) -> Self {
+        self.io_metrics = io_metrics;
+        self
+    }
+    /// Set `mode` while preserving all other options.
+    pub fn with_mode(mut self, mode: WriteMode) -> Self {
+        self.mode = mode;
+        self
+    }
+    /// Set `ordering` while preserving all other options.
+    pub fn with_ordering(mut self, ordering: Ordering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+    /// Set `compression` while preserving all other options.
+    pub fn with_compression(mut self, compression: CompressionOptions) -> Self {
+        self.compression = compression;
+        self
+    }
+    /// Set `target_file_size` while preserving all other options.
+    pub fn with_target_file_size(mut self, target_file_size: Option<usize>) -> Self {
+        self.target_file_size = target_file_size;
+        self
+    }
+    /// Set `cleanup_on_error` while preserving all other options.
+    pub fn with_cleanup_on_error(mut self, cleanup_on_error: bool) -> Self {
+        self.cleanup_on_error = cleanup_on_error;
+        self
     }
 }

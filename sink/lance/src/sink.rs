@@ -57,20 +57,20 @@ impl Sink for LanceDatasetSink {
     type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite],
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability {
-                global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
-                per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
-                structural_encodings: &[
-                    open_arrow_sink_core::StructuralEncoding::Miniblock,
-                    open_arrow_sink_core::StructuralEncoding::Fullzip,
-                ],
-                nested_columns: true,
-            },
-            supports_blob_streaming: true,
-        }
+        SinkCapability::default()
+            .with_supported_modes(&[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(
+                CompressionCapability::default()
+                    .with_global(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_per_column(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_structural_encodings(&[
+                        open_arrow_sink_core::StructuralEncoding::Miniblock,
+                        open_arrow_sink_core::StructuralEncoding::Fullzip,
+                    ])
+                    .with_nested_columns(true),
+            )
+            .with_supports_blob_streaming(true)
     }
 
     async fn open(
@@ -86,7 +86,11 @@ impl Sink for LanceDatasetSink {
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
             destination
-                .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
+                .prepare(
+                    &crate::blob::logical_schema(&encoding_schema),
+                    options.mode,
+                    options.storage_version,
+                )
                 .await?;
             destination.validate_index_requests(&options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
@@ -120,7 +124,9 @@ impl ParallelSink for LanceDatasetSink {
         crate::validation::validate_parallel_blob_schema(&schema)?;
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
         let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
-        destination.prepare(&encoding_schema, options.mode).await?;
+        destination
+            .prepare(&encoding_schema, options.mode, options.storage_version)
+            .await?;
         destination.validate_index_requests(&options).await?;
         let writers = (0..count.get())
             .map(|_| {

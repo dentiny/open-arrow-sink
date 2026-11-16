@@ -110,18 +110,20 @@ metadata is required when appending to an existing dataset.
 this layer pre-opens a fixed number of writers and drives their I/O concurrently:
 
 ```rust,ignore
-use std::num::NonZeroUsize;
 use open_arrow_sink::{Ordering, Sink, SinkExt, WriteOptions, layer::UnorderedWriteLayer};
+use std::num::NonZeroUsize;
 
 // `backend` implements ParallelSink.
-let sink = backend.layer(
-    UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()),
-);
-let mut writer = sink.open(directory, schema, WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-}).await?;
+let sink = backend.layer(UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()));
+let mut writer = sink
+    .open(
+        directory,
+        schema,
+        WriteOptions::default()
+            .with_ordering(Ordering::Unordered)
+            .with_target_file_size(Some(256 * 1024 * 1024)),
+    )
+    .await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
@@ -144,7 +146,16 @@ otherwise ignored. The bound is in batches, not bytes. Each backend also retains
 its own encoding buffers.
 
 The layer spawns no tasks: it polls data-writer futures during `write`, `commit`,
-or `abort`. Backends may use their native workers (Lance uses bounded channels). A successful `write` means accepted; an asynchronous error may surface
+or `abort`. Parquet and Iceberg encoding/compression consequently runs in the
+caller task, so multiple writers overlap I/O but do not add CPU encoding threads.
+A multithreaded runtime does not change this unless the application or backend
+schedules separate tasks. More writers also multiply backend encoding buffers;
+tune concurrency against the actual CPU or upload bottleneck. Lance schedules
+its native writes separately and uses bounded channels. For application-managed
+CPU scheduling and its writer ownership requirements, see
+[concurrent writes](../layer/README.md#concurrent-writes).
+
+A successful `write` means accepted; an asynchronous error may surface
 in a later call. An error or cancellation of `write` makes the session terminal;
 abort or drop it. Commit drains accepted writes, finishes every data writer,
 then calls the session committer once with all outputs. A finish failure aborts
@@ -187,11 +198,9 @@ The shared `WriteOptions.target_file_size` option specifies a positive byte coun
 ```rust
 use open_arrow_sink::{Ordering, WriteOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-};
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_target_file_size(Some(256 * 1024 * 1024));
 ```
 
 This is a soft data-file target, not a strict maximum or a total-output limit.
@@ -229,13 +238,20 @@ reusing them across sessions.
 `layer::DownloadPool` re-exports the common storage downloader, using its HTTP
 concurrency limiter. Construct a pool with
 `DownloadPool::new(concurrency, max_buffered_bytes)` and share its `Arc` across
-writers. Every pool shares one process-wide request limiter. The first pool reads
-`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY`, falling back to its `concurrency` argument
-when unset, non-Unicode, invalid, or zero. Later pools reuse that limit, ignoring
-their `concurrency` arguments. Values above semaphore capacity return an error
-without initializing the limiter. `DownloadPool::global()` uses a fallback of 64
-and an 8 GiB transfer-buffer budget. Transfer-buffer budgets remain per pool;
-creating a new pool does not add independent request slots.
+writers. Each new pool owns the requested stream-concurrency and transfer-buffer
+budgets. No environment variable or process-wide singleton changes these limits.
+The former `DownloadPool::global()` and
+`OPEN_ARROW_SINK_DOWNLOAD_CONCURRENCY` override have been removed.
+`DownloadPool::with_defaults()` creates an independent pool with 64 stream slots
+and an 8 GiB transfer-buffer budget. Without an explicitly configured pool,
+`DownloadBlobLayer` creates one default pool per opened writer.
+
+To share HTTP capacity across otherwise independent pools or with `Storage`,
+create one `HttpConcurrencyLimitLayer` and install its clones using the pool's
+`with_layer` and storage's `with_http_concurrency_limit`. Stream slots also cover
+non-HTTP sources; HTTP permits cover network requests until response-body release.
+These are separate budgets. There is no additional HTTP limiter unless configured.
+
 
 `pool.stream(url)` returns a pull-based stream of owned `BlobChunk` values.
 Consume each chunk (for example with `BlobWriter::write`) before requesting more.

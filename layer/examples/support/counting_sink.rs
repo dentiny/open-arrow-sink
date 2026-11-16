@@ -19,12 +19,11 @@ impl Sink for CountingSink {
     type Request = Arc<AtomicU64>;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supports_blob_streaming: false,
-            supported_modes: &[WriteMode::Create],
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability::default(),
-        }
+        SinkCapability::default()
+            .with_supports_blob_streaming(false)
+            .with_supported_modes(&[WriteMode::Create])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(CompressionCapability::default())
     }
 
     async fn open(

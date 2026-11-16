@@ -52,23 +52,23 @@ impl Sink for IcebergTableSink {
     type Request = TableIdent;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Append],
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability {
-                global: &[
-                    CompressionCodec::Uncompressed,
-                    CompressionCodec::Snappy,
-                    CompressionCodec::Gzip,
-                    CompressionCodec::Zstd,
-                    CompressionCodec::Lz4Raw,
-                ],
-                per_column: &[],
-                structural_encodings: &[],
-                nested_columns: false,
-            },
-            supports_blob_streaming: false,
-        }
+        SinkCapability::default()
+            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Append])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(
+                CompressionCapability::default()
+                    .with_global(&[
+                        CompressionCodec::Uncompressed,
+                        CompressionCodec::Snappy,
+                        CompressionCodec::Gzip,
+                        CompressionCodec::Zstd,
+                        CompressionCodec::Lz4Raw,
+                    ])
+                    .with_per_column(&[])
+                    .with_structural_encodings(&[])
+                    .with_nested_columns(false),
+            )
+            .with_supports_blob_streaming(false)
     }
 
     async fn open(

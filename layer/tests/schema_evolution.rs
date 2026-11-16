@@ -20,10 +20,7 @@ fn layer() -> SchemaEvolutionLayer {
     )])
 }
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: open_arrow_sink_core::Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(open_arrow_sink_core::Ordering::Unordered)
 }
 
 #[tokio::test]
@@ -66,13 +63,11 @@ mod counting_sink {
     impl Sink for CountingSink {
         type Request = Arc<AtomicU64>;
         fn capability(&self) -> SinkCapability {
-            SinkCapability {
-                supported_modes: &[WriteMode::Create],
-                ordering: open_arrow_sink_core::Ordering::Unordered,
-                compression: CompressionCapability::default(),
-
-                supports_blob_streaming: false,
-            }
+            SinkCapability::default()
+                .with_supported_modes(&[WriteMode::Create])
+                .with_ordering(open_arrow_sink_core::Ordering::Unordered)
+                .with_compression(CompressionCapability::default())
+                .with_supports_blob_streaming(false)
         }
         async fn open(
             &self,

@@ -86,12 +86,13 @@ impl Writer for BlobDatasetWriter {
         let _ = sender.send(Message::Commit).await;
         drop(sender);
         let mut dataset = self.task.await.map_err(backend)?.map_err(backend)?;
-        build_indexes(&mut dataset, &self.options.indexes)
+        let summary = WriteSummary {
+            rows_written: self.rows,
+        };
+        build_indexes(&mut dataset, &self.options.indexes, &summary)
             .await
             .map_err(backend)?;
-        Ok(WriteSummary {
-            rows_written: self.rows,
-        })
+        Ok(summary)
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {

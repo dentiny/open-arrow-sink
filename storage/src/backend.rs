@@ -96,6 +96,8 @@ impl Storage {
 
     /// Configure the request budget shared by subsequent clones and operators.
     /// Existing clones and operators retain their previous budget.
+    /// Upload parts, reads, and metadata requests share this aggregate cap;
+    /// size it together with writer and multipart concurrency. The default is 64.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
         let context = self
             .operator
