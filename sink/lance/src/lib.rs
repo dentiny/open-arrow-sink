@@ -22,6 +22,7 @@ pub struct LanceFragments {
 }
 
 mod index;
+mod indexed_commit;
 
 mod parallel;
 

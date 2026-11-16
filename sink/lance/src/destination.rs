@@ -73,6 +73,15 @@ impl LanceDestination {
             .with_session(self.session.clone())
             .with_commit_handler(Arc::new(ConditionalPutCommitHandler))
     }
+    /// Candidate manifests can share a version with another writer or the
+    /// published manifest. Keep their metadata caches separate from readers.
+    pub fn isolated_session(&self) -> Arc<Session> {
+        Arc::new(Session::new(
+            lance::dataset::DEFAULT_INDEX_CACHE_SIZE,
+            lance::dataset::DEFAULT_METADATA_CACHE_SIZE,
+            self.session.store_registry(),
+        ))
+    }
     pub fn dataset_builder(&self) -> DatasetBuilder {
         DatasetBuilder::from_uri(self.url.as_str())
             .with_session(self.session.clone())
