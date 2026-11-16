@@ -132,6 +132,7 @@ impl BlobDatasetWriter {
             blob_session: Arc::new(crate::blob::BlobSession::new(
                 destination.storage.clone(),
                 &destination.url,
+                destination.io_tracker.clone(),
             )),
             sender: Some(sender),
             task,

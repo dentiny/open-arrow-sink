@@ -3,6 +3,8 @@ mod capability;
 mod compression;
 mod error;
 mod index;
+mod io_metrics;
+pub use io_metrics::{IoMetrics, IoMetricsRegistration, IoMetricsSource, IoSnapshot};
 mod layer;
 mod request;
 mod result;

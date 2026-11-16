@@ -91,6 +91,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             Some(pool) => pool.clone(),
             None => DownloadPool::global()?,
         };
+        let io_metrics = options.io_metrics.clone();
         let inner = self
             .inner
             .open(request, output_schema.clone(), options)
@@ -102,6 +103,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             indices,
             pool,
             failed: false,
+            io_metrics,
         }))
     }
 }
@@ -113,6 +115,7 @@ struct DownloadBlobWriter {
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
     failed: bool,
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
     match array.data_type() {
@@ -141,21 +144,26 @@ async fn download(
     name: String,
     column: usize,
     row: usize,
+    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 ) -> Result<BlobPlacement> {
     let result = async {
         let mut stream = pool.stream(&url).await?;
         while let Some(chunk) = stream.next().await {
-            native.write(chunk?).await?;
+            let chunk = chunk?;
+            if let Some(metrics) = &io_metrics {
+                metrics.record_read(chunk.as_ref().len() as u64);
+            }
+            native.write(chunk).await?;
         }
-        native.finish().await
+        Ok(BlobPlacement {
+            column,
+            row,
+            blob: native.finish().await?,
+        })
     }
     .await
     .map_err(|error| error::download_context(&name, row, error))?;
-    Ok(BlobPlacement {
-        column,
-        row,
-        blob: result,
-    })
+    Ok(result)
 }
 #[async_trait]
 impl Writer for DownloadBlobWriter {
@@ -201,6 +209,7 @@ impl Writer for DownloadBlobWriter {
                         self.schema.field(column).name().clone(),
                         column,
                         row,
+                        self.io_metrics.clone(),
                     ));
                 }
                 match active.next().await {

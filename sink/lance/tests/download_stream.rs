@@ -38,10 +38,17 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
     ])
     .unwrap();
     let budget = pool();
-    let sink = LanceDatasetSink::default().layer(
-        DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
-            .with_download_pool(budget.clone()),
-    );
+    let inner_metrics_layer = open_arrow_sink_layer::MetricsLayer::default();
+    let inner_metrics = inner_metrics_layer.metrics();
+    let outer_metrics_layer = open_arrow_sink_layer::MetricsLayer::default();
+    let outer_metrics = outer_metrics_layer.metrics();
+    let sink = LanceDatasetSink::default()
+        .layer(inner_metrics_layer)
+        .layer(
+            DownloadBlobLayer::new(["url".to_owned()].into_iter().collect())
+                .with_download_pool(budget.clone()),
+        )
+        .layer(outer_metrics_layer);
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
     let mut writer = sink
@@ -54,7 +61,22 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
         .unwrap();
     writer.write(input).await.unwrap();
     assert_eq!(budget.buffered_bytes(), 0);
-    assert_eq!(writer.commit().await.unwrap().rows_written, 3);
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_written, 3);
+    let observed = outer_metrics.snapshot();
+    assert_eq!(observed.rows_committed, 3);
+    assert_eq!(observed.rows_accepted, 3);
+    assert!(observed.bytes_read >= 17 * 1024 * 1024);
+    assert!(observed.bytes_written > 17 * 1024 * 1024);
+    assert_eq!(
+        observed.bytes_read - inner_metrics.snapshot().bytes_read,
+        17 * 1024 * 1024
+    );
+    assert_eq!(inner_metrics.snapshot().rows_committed, 3);
+    assert_eq!(
+        inner_metrics.snapshot().bytes_written,
+        observed.bytes_written
+    );
     drop(server);
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     let actual = dataset

@@ -111,6 +111,14 @@ output. Cleanup follows the native writer's guarantees. See the
 
 To build your own decorator, follow [extend a layer](../docs/extending-layers.md).
 
+## Write metrics
+
+`MetricsLayer` wraps any Sink and forwards ParallelSink/native blob interfaces.
+Create a layer, keep its cloneable `metrics()` handle, then install the layer and
+inspect `snapshot()` for lifecycle, accepted/committed rows, durations, failures,
+and measured backend payload bytes (including unsuccessful sessions). The layer collects observations; backends remain
+responsible for measuring real encoded I/O. See [metrics contracts](../docs/options.md#observing-sessions-with-metricslayer).
+
 ## Schema evolution
 
 `SchemaEvolutionLayer` performs one-to-one top-level field remapping. It plans

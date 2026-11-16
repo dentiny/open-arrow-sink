@@ -352,3 +352,45 @@ Parquet and Iceberg reject this scope before opening the destination.
 
 `CompressionOptions` gains `nested_columns`; complete literals should use
 `..Default::default()`. `CompressionCapability.nested_columns` advertises support.
+
+## Observing sessions with MetricsLayer
+
+Compose `sink.layer(MetricsLayer::default())` for backend-independent observation.
+Keep `let metrics = layer.metrics()` before moving the layer into the sink and
+call `metrics.snapshot()` at any time. `MetricsLayer::new(WriteMetrics::default())`
+also accepts a shared handle. Counters aggregate all sessions using that handle.
+
+The layer records opened/committed/aborted sessions, accepted batches and rows,
+committed rows, failed/cancelled operations, and write/commit durations. Accepted
+rows include buffered data that may later fail; committed rows count only successful
+commit returns, not uncertain or partially successful native publication. Durations
+are accumulated wall time of operations and can overlap with parallel writers.
+
+Payload-byte observations are separate from `WriteSummary`, which only returns
+`rows_written`. `MetricsLayer` passes a shared `IoMetrics` handle through
+`WriteOptions.io_metrics`; backends and download layers report I/O independently of
+commit success. You can also supply your own handle without installing the layer.
+Existing complete `WriteOptions` literals should add `io_metrics: None` or
+`..Default::default()`.
+
+Lance registers a fresh counter for each session, covering native reads, parallel
+fragment writes, manifest/index work, and successfully closed streamed blobs.
+Counters are visible while sessions are active and retained after commit, failure,
+cancellation, abort, or drop. Active sources are released after their I/O owners
+are dropped, retaining final totals. DownloadBlobLayer records each source chunk
+as it is consumed, including chunks consumed before a later error or cancellation.
+Failed I/O requests and unfinished streamed-blob writes are not counted as
+successful payload writes. These are measured logical payloads, not HTTP headers,
+network retries, process memory, or bytes inferred from Arrow batches.
+
+Byte counters start at zero and sum only instrumented I/O. Parquet, Iceberg, and
+custom sinks without instrumentation contribute no bytes; a mixed-backend handle
+therefore reports measured traffic, not a complete total for every backend.
+Snapshotting does not reset counters.
+
+The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
+Install one observation layer at the boundary you want to measure. Placing it outside
+DownloadBlobLayer includes downloaded source bytes; placing it inside observes only
+the native sink's I/O. Nested observers receive backend measurements independently;
+reusing the same handle does not duplicate byte observations. Placing MetricsLayer
+inside or outside UnorderedWriteLayer still counts one successful session commit.

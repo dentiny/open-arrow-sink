@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct Provider {
     pub storage: StorageRouter,
+    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
 }
 #[async_trait]
 impl ObjectStoreProvider for Provider {
@@ -27,6 +28,10 @@ impl ObjectStoreProvider for Provider {
             )),
             None => Arc::new(OpendalStore::new(storage.operator())),
         };
+        use lance_io::object_store::WrappingObjectStore;
+        let object_store = self
+            .io_tracker
+            .wrap(storage.base_url().as_str(), object_store);
         let mut store = ObjectStore::new(
             object_store,
             base_path,

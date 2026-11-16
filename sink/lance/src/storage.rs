@@ -14,14 +14,22 @@ pub(crate) struct NativeStorage {
     pub storage: Storage,
     pub url: Url,
     session: Arc<Session>,
+    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     reserved: bool,
 }
 impl NativeStorage {
-    pub fn new(storage: Storage, url: Url, sources: StorageResolver) -> Result<Self> {
+    pub fn new(
+        storage: Storage,
+        url: Url,
+        sources: StorageResolver,
+        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+    ) -> Result<Self> {
         let url = storage.directory_url(&url)?;
         let session = Arc::new(Session::default());
+        let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
         let provider = Arc::new(Provider {
             storage: StorageRouter::new(storage.clone(), sources),
+            io_tracker: io_tracker.clone(),
         });
         for scheme in provider.storage.schemes() {
             session.store_registry().insert(&scheme, provider.clone());
@@ -30,6 +38,7 @@ impl NativeStorage {
             storage,
             url,
             session,
+            io_tracker,
             reserved: false,
         })
     }
@@ -92,5 +101,45 @@ impl NativeStorage {
         DatasetBuilder::from_uri(self.url.as_str())
             .with_session(self.session.clone())
             .with_commit_handler(Arc::new(ConditionalPutCommitHandler))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lance_io::object_store::ObjectStoreParams;
+    use object_store::ObjectStoreExt;
+    use open_arrow_sink_storage::opendal;
+
+    #[tokio::test]
+    async fn session_routes_opendal_registered_service_without_explicit_source() {
+        opendal::OperatorRegistry::get().register::<opendal::services::Memory>("lance-custom");
+        let sources = StorageResolver::default();
+        let source_url: Url = "lance-custom://source/blob".parse().unwrap();
+        // Seed the URL-derived cache; no source namespace is explicitly registered.
+        let source = sources.resolve(&source_url).unwrap();
+        source
+            .write(&source_url, "custom backend".into())
+            .await
+            .unwrap();
+        let destination = Storage::new(
+            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            "destination-only://warehouse/".parse().unwrap(),
+        )
+        .unwrap();
+        let url = destination.url("dataset/").unwrap();
+        let native = NativeStorage::new(destination, url, sources, None).unwrap();
+        let registry = native.session.store_registry();
+        assert!(registry.get_provider("destination-only").is_some());
+        let provider = registry.get_provider(source_url.scheme()).unwrap();
+        let path = provider.extract_path(&source_url).unwrap();
+        let store = registry
+            .get_store(source_url, &ObjectStoreParams::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.inner.get(&path).await.unwrap().bytes().await.unwrap(),
+            "custom backend"
+        );
     }
 }
