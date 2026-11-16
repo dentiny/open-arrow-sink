@@ -51,7 +51,7 @@ impl StorageResolver {
     }
     /// Select explicit configuration first, then reuse or create URL-derived
     /// storage. URL-derived cloud storage requires the corresponding feature.
-    pub fn resolve(&self, url: &Url) -> Result<Storage> {
+    pub fn storage_for(&self, url: &Url) -> Result<Storage> {
         if let Some(storage) = matching_storage(&self.configured, url) {
             return Ok(storage);
         }
@@ -74,6 +74,6 @@ impl StorageResolver {
 fn matching_storage(stores: &[Storage], url: &Url) -> Option<Storage> {
     stores
         .iter()
-        .find(|storage| storage.resolve(url).is_ok())
+        .find(|storage| storage.path(url).is_ok())
         .cloned()
 }

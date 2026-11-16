@@ -3,7 +3,7 @@ use std::{ops::Range, sync::Arc};
 
 use crate::{error::storage_backend as backend, validation::storage_location as location};
 use bytes::Bytes;
-use futures::{StreamExt, stream::BoxStream};
+use futures::{StreamExt, TryStreamExt, stream::BoxStream};
 use iceberg::{
     Result,
     io::{
@@ -13,11 +13,8 @@ use iceberg::{
 };
 use open_arrow_sink_core::async_trait;
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
-#[derive(Clone, Debug)]
-struct ResolvedLocation {
-    location: Arc<str>,
-    path: ObjectPath,
-}
+// Bound deletion tasks independently of stream length and the HTTP request budget.
+const DELETE_CONCURRENCY: usize = 32;
 
 /// Inject into `CatalogBuilder::with_storage_factory` so data, metadata, scans,
 /// and cleanup all share the same operator. This factory holds a live operator;
@@ -25,38 +22,17 @@ struct ResolvedLocation {
 #[derive(Clone, Debug)]
 pub struct OpenDalStorageFactory {
     storage: Storage,
-    // FileIO retains a string location; file handles retain its resolved path
-    // here so subsequent reads/writes do not revalidate the same URL.
-    resolved: Option<ResolvedLocation>,
 }
 impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
-        Self {
-            storage,
-            resolved: None,
-        }
+        Self { storage }
     }
     pub fn file_io(&self) -> iceberg::io::FileIO {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
     }
 
-    fn resolve(&self, path: &str) -> Result<ObjectPath> {
-        if let Some(resolved) = &self.resolved
-            && resolved.location.as_ref() == path
-        {
-            return Ok(resolved.path.clone());
-        }
-        self.storage.resolve(&location(path)?).map_err(backend)
-    }
-
-    fn for_location(&self, path: &str) -> Result<Self> {
-        let resolved = self.resolve(path)?;
-        let mut storage = self.clone();
-        storage.resolved = Some(ResolvedLocation {
-            location: Arc::from(path),
-            path: resolved,
-        });
-        Ok(storage)
+    fn path(&self, path: &str) -> Result<ObjectPath> {
+        self.storage.path(&location(path)?).map_err(backend)
     }
 }
 
@@ -88,7 +64,7 @@ impl StorageFactory for OpenDalStorageFactory {
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
         self.storage
-            .stat(&self.resolve(path)?)
+            .stat(&self.path(path)?)
             .await
             .map(|metadata| metadata.is_some())
             .map_err(backend)
@@ -96,7 +72,7 @@ impl IcebergStorage for OpenDalStorageFactory {
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let metadata = self
             .storage
-            .stat(&self.resolve(path)?)
+            .stat(&self.path(path)?)
             .await
             .map_err(backend)?
             .ok_or_else(|| {
@@ -110,13 +86,10 @@ impl IcebergStorage for OpenDalStorageFactory {
         })
     }
     async fn read(&self, path: &str) -> Result<Bytes> {
-        self.storage
-            .read(&self.resolve(path)?)
-            .await
-            .map_err(backend)
+        self.storage.read(&self.path(path)?).await.map_err(backend)
     }
     async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
-        let path = self.resolve(path)?;
+        let path = self.path(path)?;
         Ok(Box::new(OpenDalReader {
             storage: self.storage.clone(),
             path,
@@ -124,45 +97,43 @@ impl IcebergStorage for OpenDalStorageFactory {
     }
     async fn write(&self, path: &str, bytes: Bytes) -> Result<()> {
         self.storage
-            .write(&self.resolve(path)?, bytes)
+            .write(&self.path(path)?, bytes)
             .await
             .map_err(backend)
     }
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
-        let path = self.resolve(path)?;
+        let path = self.path(path)?;
         Ok(Box::new(OpenDalWriter {
             writer: self.storage.writer(&path).await.map_err(backend)?,
         }))
     }
     async fn delete(&self, path: &str) -> Result<()> {
         self.storage
-            .delete(&self.resolve(path)?)
+            .delete(&self.path(path)?)
             .await
             .map_err(backend)
     }
     async fn delete_prefix(&self, path: &str) -> Result<()> {
         self.storage
-            .remove_all(&self.resolve(path)?)
+            .remove_all(&self.path(path)?)
             .await
             .map_err(backend)
     }
-    async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> Result<()> {
-        while let Some(path) = paths.next().await {
-            self.delete(&path).await?;
-        }
-        Ok(())
+    async fn delete_stream(&self, paths: BoxStream<'static, String>) -> Result<()> {
+        paths
+            .map(Ok)
+            .try_for_each_concurrent(DELETE_CONCURRENCY, |path| async move {
+                self.delete(&path).await
+            })
+            .await
     }
     fn new_input(&self, path: &str) -> Result<InputFile> {
-        Ok(InputFile::new(
-            Arc::new(self.for_location(path)?),
-            path.to_owned(),
-        ))
+        self.path(path)?;
+        Ok(InputFile::new(Arc::new(self.clone()), path.to_owned()))
     }
     fn new_output(&self, path: &str) -> Result<OutputFile> {
-        Ok(OutputFile::new(
-            Arc::new(self.for_location(path)?),
-            path.to_owned(),
-        ))
+        self.path(path)?;
+        Ok(OutputFile::new(Arc::new(self.clone()), path.to_owned()))
     }
 }
 struct OpenDalReader {

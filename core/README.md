@@ -22,6 +22,11 @@ partition specs. Index-capable implementations also call `validate_indexes`.
 `validate_batch` enforces exact schema equality. `unique_column_index` resolves
 one exact top-level name; dots are literal and duplicate names are ambiguous.
 
+`WriteSession::expect(count, &schema)` validates the writer count and every
+writer's schema before use. `into_writer()` synchronously adapts a one-writer
+session; the default `ParallelSink::open_writer` validates it first. Invalid
+sessions return errors without invoking abort or deleting output.
+
 `WriteSummary.rows_written` is the successful session's committed row count.
 `Error::Unsupported` covers unavailable capabilities; `InvalidConfig` covers
 malformed options and `InvalidInput` covers malformed URLs, paths, and blob

@@ -3,7 +3,6 @@ mod decorate;
 mod options;
 pub use options::{OptionsLayer, OptionsSink};
 mod ordering;
-mod validation;
 pub use ordering::{OrderingLayer, OrderingSink};
 
 mod unordered;

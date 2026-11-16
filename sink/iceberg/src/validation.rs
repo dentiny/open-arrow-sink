@@ -13,6 +13,11 @@ pub(crate) fn validate_options(
     options: &WriteOptions,
     capability: SinkCapability,
 ) -> Result<()> {
+    if options.io_metrics.is_some() {
+        return Err(Error::Unsupported(
+            "Iceberg session io_metrics: configure the catalog's OpenDalStorageFactory with Storage::with_io_metrics instead".into(),
+        ));
+    }
     validation::validate_options(schema, options, capability)?;
     if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
         && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)

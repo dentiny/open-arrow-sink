@@ -13,7 +13,13 @@ pub fn path(
     storage: &open_arrow_sink_storage::Storage,
     relative: &str,
 ) -> open_arrow_sink_storage::ObjectPath {
-    storage.resolve(&storage.url(relative).unwrap()).unwrap()
+    storage
+        .path(
+            &storage
+                .url(&open_arrow_sink_storage::ObjectPath::parse(relative).unwrap())
+                .unwrap(),
+        )
+        .unwrap()
 }
 
 /// List a fixture directory in deterministic path order.

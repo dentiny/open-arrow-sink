@@ -5,7 +5,9 @@ use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{Error, Result, Sink, SinkExt, async_trait};
 use open_arrow_sink_lance::LanceDatasetSink;
 use open_arrow_sink_layer::{DownloadBlobLayer, DownloadFailurePolicy};
-use open_arrow_sink_storage::{BlobDownloader, DownloadContext, DownloadStream, Downloader};
+use open_arrow_sink_storage::{
+    BlobDownloader, DownloadContext, DownloadStream, Downloader, ObjectPath,
+};
 use open_arrow_sink_test_support::{memory_storage, unordered_options};
 
 struct Source;
@@ -57,7 +59,9 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     ])
     .unwrap();
     let storage = memory_storage("memory:///warehouse/");
-    let url = storage.url("recovered/").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("recovered/").unwrap())
+        .unwrap();
     let downloader = downloader(4);
     let backend = LanceDatasetSink::new(storage).with_blob_downloader(downloader.clone());
     let layer =
@@ -139,7 +143,7 @@ async fn terminal_errors_remain_terminal(
     )])
     .unwrap();
     let storage = memory_storage("memory:///warehouse/");
-    let url = storage.url("failed/").unwrap();
+    let url = storage.url(&ObjectPath::parse("failed/").unwrap()).unwrap();
     let layer = DownloadBlobLayer::new(["url".into()].into()).with_failure_policy(policy);
     let metrics = layer.metrics();
     let downloader = downloader(limit);

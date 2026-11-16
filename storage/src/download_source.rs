@@ -22,15 +22,15 @@ pub struct DownloadContext {
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,
-    pub(crate) io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+    pub(crate) io_metrics: Option<open_arrow_sink_core::IoObservers>,
 }
 impl DownloadContext {
     // The wrapper records consumed chunks; source operators retain only observers
     // not already present on that wrapper, including partially overlapping handles.
     pub(crate) fn unobserved_metrics(
         &self,
-        metrics: Option<open_arrow_sink_core::IoMetrics>,
-    ) -> Option<open_arrow_sink_core::IoMetrics> {
+        metrics: Option<open_arrow_sink_core::IoObservers>,
+    ) -> Option<open_arrow_sink_core::IoObservers> {
         metrics.and_then(|metrics| match &self.io_metrics {
             Some(observed) => metrics.excluding(observed),
             None => Some(metrics),
@@ -54,12 +54,12 @@ impl DownloadContext {
     /// Resolve a registered source, preferring a backend's own namespace.
     pub fn resolve_source(&self, url: &Url) -> Result<(Storage, ObjectPath)> {
         if let Some(storage) = &self.primary
-            && let Ok(path) = storage.resolve(url)
+            && let Ok(path) = storage.path(url)
         {
             return Ok((self.source_storage(storage.clone()), path));
         }
-        let storage = self.sources.resolve(url)?;
-        let path = storage.resolve(url)?;
+        let storage = self.sources.storage_for(url)?;
+        let path = storage.path(url)?;
         Ok((self.source_storage(storage), path))
     }
 }

@@ -85,11 +85,11 @@ impl LanceDatasetSink {
             .clone()
             .unwrap_or_else(|| self.downloader.source_resolver())
     }
-    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
+    fn destination_for(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
         let sources = self.source_resolver();
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
-            None => self.resolved.resolve(&url)?,
+            None => self.resolved.storage_for(&url)?,
         }
         .with_config(self.config.clone())?;
         let downloader = Arc::new(
@@ -112,7 +112,7 @@ impl LanceDatasetSink {
     /// Configure native Lance reads with the same shared operator as writes.
     pub fn dataset_builder(&self, url: Url) -> Result<lance::dataset::builder::DatasetBuilder> {
         Ok(self
-            .resolve(url, &WriteOptions::default())?
+            .destination_for(url, &WriteOptions::default())?
             .dataset_builder())
     }
 }
@@ -180,7 +180,7 @@ impl ParallelSink for LanceDatasetSink {
         let storage_version = validate_options(&schema, &options, self.capability())?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);
-        let mut destination = self.resolve(url, &options)?;
+        let mut destination = self.destination_for(url, &options)?;
         let existing = destination
             .prepare(&schemas.logical, options.mode, storage_version)
             .await?;
@@ -199,7 +199,7 @@ impl ParallelSink for LanceDatasetSink {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {
                 destination,
-                options,
+                indexes: options.indexes,
                 storage_version,
             }),
         })

@@ -1,4 +1,5 @@
 use open_arrow_sink_iceberg::OpenDalStorageFactory;
+use open_arrow_sink_storage::ObjectPath;
 
 #[tokio::test]
 async fn file_io_uses_shared_operator_for_reads_and_ranges() {
@@ -6,7 +7,9 @@ async fn file_io_uses_shared_operator_for_reads_and_ranges() {
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
         .with_io_metrics(metrics.clone());
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
-    let url = storage.url("data/part").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("data/part").unwrap())
+        .unwrap();
     let mut writer = file_io
         .new_output(url.as_str())
         .unwrap()
@@ -17,7 +20,7 @@ async fn file_io_uses_shared_operator_for_reads_and_ranges() {
     writer.write("world".into()).await.unwrap();
     assert_eq!(writer.close().await.unwrap().size, 11);
     assert_eq!(
-        storage.read(&storage.resolve(&url).unwrap()).await.unwrap(),
+        storage.read(&storage.path(&url).unwrap()).await.unwrap(),
         "hello world"
     );
     let input = file_io.new_input(url.as_str()).unwrap();
@@ -34,7 +37,9 @@ async fn file_io_uses_shared_operator_for_reads_and_ranges() {
 async fn deleting_prefix_preserves_siblings() {
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
-    let url = storage.url("data/part").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("data/part").unwrap())
+        .unwrap();
     storage
         .write(
             &open_arrow_sink_test_support::path(&storage, "data/part"),
@@ -42,27 +47,29 @@ async fn deleting_prefix_preserves_siblings() {
         )
         .await
         .unwrap();
-    let keep = storage.url("keep").unwrap();
+    let keep = storage.url(&ObjectPath::parse("keep").unwrap()).unwrap();
     storage
-        .write(&storage.resolve(&keep).unwrap(), "keep".into())
+        .write(&storage.path(&keep).unwrap(), "keep".into())
         .await
         .unwrap();
     file_io
-        .delete_prefix(storage.url("data/").unwrap().as_str())
+        .delete_prefix(
+            storage
+                .url(&ObjectPath::parse("data/").unwrap())
+                .unwrap()
+                .as_str(),
+        )
         .await
         .unwrap();
     assert!(
         storage
-            .stat(&storage.resolve(&url).unwrap())
+            .stat(&storage.path(&url).unwrap())
             .await
             .unwrap()
             .is_none()
     );
     assert_eq!(
-        storage
-            .read(&storage.resolve(&keep).unwrap())
-            .await
-            .unwrap(),
+        storage.read(&storage.path(&keep).unwrap()).await.unwrap(),
         "keep"
     );
 }

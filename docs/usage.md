@@ -38,14 +38,14 @@ share an in-memory namespace, inject a configured `Storage`. Its operator root
 must correspond to its base URL:
 
 ```rust,ignore
-use open_arrow_sink::{parquet::ParquetDirectorySink, storage::{Storage, opendal}};
+use open_arrow_sink::{parquet::ParquetDirectorySink, storage::{ObjectPath, Storage, opendal}};
 
 let operator = opendal::Operator::new(opendal::services::S3::default()
     .bucket("my-bucket")
     .root("exports/")
     .region("us-west-2"))?;
 let storage = Storage::new(operator, "s3://my-bucket/exports/".parse()?)?;
-let destination = storage.url("run-001/")?;
+let destination = storage.url(&ObjectPath::parse("run-001/")?)?;
 let sink = ParquetDirectorySink::new(storage);
 ```
 

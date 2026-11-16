@@ -94,7 +94,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
         let batches = open_arrow_sink_test_support::read_parquet_dir(
             &storage,
-            &storage.resolve(&directory).unwrap(),
+            &storage.path(&directory).unwrap(),
         )
         .await;
         assert!(
@@ -110,12 +110,9 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         let directory = self.request();
         let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
         assert!(
-            open_arrow_sink_test_support::sorted_list(
-                &storage,
-                &storage.resolve(&directory).unwrap()
-            )
-            .await
-            .len()
+            open_arrow_sink_test_support::sorted_list(&storage, &storage.path(&directory).unwrap())
+                .await
+                .len()
                 > 1
         );
     }
@@ -218,7 +215,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
     assert_eq!(
         storage
-            .list(&storage.resolve(&directory).unwrap())
+            .list(&storage.path(&directory).unwrap())
             .await
             .unwrap()
             .len(),
@@ -226,7 +223,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     );
     let batches = open_arrow_sink_test_support::read_parquet_dir(
         &storage,
-        &storage.resolve(&directory).unwrap(),
+        &storage.path(&directory).unwrap(),
     )
     .await;
     let mut offset = 0;
@@ -240,7 +237,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
 async fn row_count(directory: &std::path::Path) -> usize {
     let directory = Url::from_directory_path(directory).unwrap();
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
-    open_arrow_sink_test_support::read_parquet_dir(&storage, &storage.resolve(&directory).unwrap())
+    open_arrow_sink_test_support::read_parquet_dir(&storage, &storage.path(&directory).unwrap())
         .await
         .iter()
         .map(RecordBatch::num_rows)

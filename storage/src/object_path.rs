@@ -3,7 +3,7 @@ use open_arrow_sink_core::{Error, Result};
 use crate::validation;
 
 /// A validated, decoded path relative to a Storage namespace.
-/// Resolve external URLs with `Storage::resolve` before performing I/O. Paths
+/// Convert external URLs with `Storage::path`, or parse decoded relative keys. Paths
 /// contain no endpoint or credentials; use them with the storage that resolved them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectPath(String);
@@ -11,6 +11,16 @@ pub struct ObjectPath(String);
 impl ObjectPath {
     pub(crate) fn new(path: String) -> Self {
         Self(path)
+    }
+
+    /// Parse a decoded path relative to a storage root, without URL decoding.
+    /// Reject absolute paths and traversal; percent signs remain literal key bytes.
+    pub fn parse(path: &str) -> Result<Self> {
+        validation::validate_path(path)?;
+        if path.starts_with('/') {
+            return Err(Error::InvalidInput("invalid storage path".into()));
+        }
+        Ok(Self(path.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {

@@ -2,13 +2,16 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::ParquetDirectorySink;
+use open_arrow_sink_storage::ObjectPath;
 use open_arrow_sink_test_support::write_batches;
 use std::{num::NonZeroUsize, sync::Arc};
 
 #[tokio::test]
 async fn unordered_commit_preserves_all_rows() {
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-    let directory = storage.url("雪 output/").unwrap();
+    let directory = storage
+        .url(&ObjectPath::parse("雪 output/").unwrap())
+        .unwrap();
     let make_batch = |id: i64| {
         RecordBatch::try_from_iter([
             (
@@ -34,7 +37,7 @@ async fn unordered_commit_preserves_all_rows() {
     .await;
     let actual = open_arrow_sink_test_support::read_parquet_dir(
         &storage,
-        &storage.resolve(&directory).unwrap(),
+        &storage.path(&directory).unwrap(),
     )
     .await;
     assert_eq!(
@@ -56,7 +59,7 @@ async fn unordered_commit_preserves_all_rows() {
 #[tokio::test]
 async fn duplicate_create_preserves_existing_rows() {
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-    let directory = storage.url("output/").unwrap();
+    let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     let batch = open_arrow_sink_test_support::int64_batch("id", vec![Some(1)]);
     let sink = ParquetDirectorySink::new(storage.clone());
     let mut writer = sink
@@ -80,7 +83,7 @@ async fn duplicate_create_preserves_existing_rows() {
     ));
     let actual = open_arrow_sink_test_support::read_parquet_dir(
         &storage,
-        &storage.resolve(&directory).unwrap(),
+        &storage.path(&directory).unwrap(),
     )
     .await;
     assert_eq!(actual, vec![batch]);

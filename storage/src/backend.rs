@@ -32,7 +32,8 @@ pub enum DirectoryState {
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
-    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+    exported: Operator,
+    io_metrics: Vec<open_arrow_sink_core::IoMetrics>,
     http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
@@ -51,15 +52,18 @@ impl Storage {
             base_url.set_path(&path);
         }
         let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
-        Ok(Self {
+        let mut storage = Self {
+            exported: operator.clone(),
             operator,
-            io_metrics: None,
+            io_metrics: Vec::new(),
             http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
             upload_part_size: DEFAULT_UPLOAD_PART_SIZE,
             upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
-        })
+        };
+        storage.rebuild_operator();
+        Ok(storage)
     }
 
     /// Resolve a URL using enabled OpenDAL services. For custom credentials,
@@ -128,6 +132,7 @@ impl Storage {
     /// Repeated calls add layers; configure once before cloning into adapters.
     pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
         self.operator = config.apply(self.operator)?;
+        self.rebuild_operator();
         Ok(self)
     }
 
@@ -137,6 +142,7 @@ impl Storage {
     /// size it together with writer and multipart concurrency. The default is 64.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
         self.http_limit = limit;
+        self.rebuild_operator();
         self
     }
 
@@ -145,6 +151,7 @@ impl Storage {
     pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
         let context = self.operator.base_context().with_http_transport(transport);
         self.operator = self.operator.with_context(context);
+        self.rebuild_operator();
         self
     }
 
@@ -170,18 +177,39 @@ impl Storage {
         self
     }
 
-    pub(crate) fn without_io_metrics(mut self) -> (Self, Option<open_arrow_sink_core::IoMetrics>) {
-        let metrics = self.io_metrics.take();
-        (self, metrics)
+    pub(crate) fn without_io_metrics(
+        mut self,
+    ) -> (Self, Option<open_arrow_sink_core::IoObservers>) {
+        let metrics = std::mem::take(&mut self.io_metrics);
+        let observers = metrics.into_iter().fold(
+            None,
+            |all: Option<open_arrow_sink_core::IoObservers>, metrics| {
+                Some(match all {
+                    Some(all) => all.combine(metrics),
+                    None => metrics.into(),
+                })
+            },
+        );
+        self.rebuild_operator();
+        (self, observers)
     }
 
-    /// Observe this namespace, including native adapters. Clones keep the handle;
-    /// configuring another clone leaves existing sessions unchanged.
-    pub fn with_io_metrics(mut self, metrics: open_arrow_sink_core::IoMetrics) -> Self {
-        self.io_metrics = Some(match self.io_metrics.take() {
-            Some(existing) => existing.combine(metrics),
-            None => metrics,
-        });
+    /// Observe this namespace, including native adapters. Repeated handles are ignored.
+    /// Configuring another clone leaves existing sessions unchanged.
+    pub fn with_io_metrics(
+        mut self,
+        metrics: impl Into<open_arrow_sink_core::IoObservers>,
+    ) -> Self {
+        let mut changed = false;
+        for metrics in metrics.into().iter() {
+            if !self.io_metrics.contains(metrics) {
+                self.io_metrics.push(metrics.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_operator();
+        }
         self
     }
 
@@ -211,28 +239,32 @@ impl Storage {
     }
 
     pub fn operator(&self) -> Operator {
-        // Keep the stored operator free of our limiter. Both HTTP setters update
-        // independent inputs; every exposed operator wraps the provider once.
+        self.exported.clone()
+    }
+
+    fn rebuild_operator(&mut self) {
+        // Rebuild from the raw operator so policies stay inside metrics and the
+        // provider transport receives exactly one storage-owned limiter.
         let context = self.operator.base_context();
         let transport = self.http_limit.wrap(context.http_transport().clone());
-        let operator = self
+        let mut operator = self
             .operator
             .clone()
             .with_context(context.with_http_transport(transport));
-        match &self.io_metrics {
-            Some(metrics) => operator.layer(crate::IoMetricsLayer(metrics.clone())),
-            None => operator,
+        for metrics in &self.io_metrics {
+            operator = operator.layer(crate::IoMetricsLayer(metrics.clone()));
         }
+        self.exported = operator;
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
-    pub fn resolve(&self, url: &Url) -> Result<ObjectPath> {
+    pub fn path(&self, url: &Url) -> Result<ObjectPath> {
         validation::relative_path(&self.base_url, &self.base_path, url).map(ObjectPath::new)
     }
 
-    /// Encode a decoded relative path as a URL for an external API.
-    pub fn url(&self, path: &str) -> Result<Url> {
-        validation::validate_path(path)?;
+    /// Encode a validated relative path as a URL for an external API.
+    pub fn url(&self, path: &ObjectPath) -> Result<Url> {
+        let path = path.as_str();
         let mut url = self.base_url.clone();
         {
             let mut segments = url
@@ -374,13 +406,14 @@ pub struct StorageWriter {
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
         self.state.begin()?;
+        let len = bytes.len() as u64;
         self.inner
             .as_mut()
             .ok_or(Error::Poisoned)?
-            .write(bytes.clone())
+            .write(bytes)
             .await
             .map_err(|error| map_error("write", &self.path, error))?;
-        self.bytes_written += bytes.len() as u64;
+        self.bytes_written += len;
         self.state.complete();
         Ok(())
     }

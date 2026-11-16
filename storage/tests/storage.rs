@@ -3,7 +3,7 @@ use std::time::Duration;
 use open_arrow_sink_core::Error;
 
 use open_arrow_sink_storage::{
-    DirectoryState, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
+    DirectoryState, ObjectPath, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
 };
 
 fn memory() -> Storage {
@@ -33,7 +33,7 @@ async fn reads_ranges_and_lists_object_metadata() {
     assert_eq!(metadata.content_length(), 11);
     assert_eq!(
         storage
-            .list(&storage.resolve(storage.base_url()).unwrap())
+            .list(&storage.path(storage.base_url()).unwrap())
             .await
             .unwrap(),
         vec![path]
@@ -69,7 +69,7 @@ async fn delete_is_idempotent_and_removes_the_listing() {
     storage.delete(&path).await.unwrap();
     assert!(
         storage
-            .list(&storage.resolve(storage.base_url()).unwrap())
+            .list(&storage.path(storage.base_url()).unwrap())
             .await
             .unwrap()
             .is_empty()
@@ -88,14 +88,14 @@ async fn rejects_urls_outside_the_namespace() {
     ] {
         assert!(
             matches!(
-                storage.resolve(&url.parse().unwrap()),
+                storage.path(&url.parse().unwrap()),
                 Err(Error::InvalidInput(_))
             ),
             "{url}"
         );
     }
     assert!(matches!(
-        storage.url("../outside"),
+        ObjectPath::parse("../outside"),
         Err(Error::InvalidInput(_))
     ));
 }
@@ -103,9 +103,9 @@ async fn rejects_urls_outside_the_namespace() {
 #[tokio::test]
 async fn root_operations_are_rejected() {
     let storage = memory();
-    let root = storage.resolve(storage.base_url()).unwrap();
+    let root = storage.path(storage.base_url()).unwrap();
     let repeated_root = storage
-        .resolve(&"memory:///warehouse//".parse().unwrap())
+        .path(&"memory:///warehouse//".parse().unwrap())
         .unwrap();
     assert!(storage.remove_all(&root).await.is_err());
     assert!(storage.remove_all(&repeated_root).await.is_err());
@@ -115,7 +115,7 @@ async fn root_operations_are_rejected() {
 #[tokio::test]
 async fn memory_conditional_creation_has_one_winner() {
     let storage = memory();
-    let root = storage.resolve(storage.base_url()).unwrap();
+    let root = storage.path(storage.base_url()).unwrap();
     let prefix = root.join("claim").unwrap();
     assert_eq!(prefix.as_dir().as_str(), "claim/");
     assert_eq!(
@@ -141,19 +141,16 @@ async fn filesystem_urls_decode_escaped_paths() {
     let output = root.join("new/").unwrap();
     let file = output.join("part%20%E9%9B%AA").unwrap();
     storage
-        .create(&storage.resolve(&file).unwrap(), "data".into())
+        .create(&storage.path(&file).unwrap(), "data".into())
         .await
         .unwrap();
     assert_eq!(
-        storage
-            .read(&storage.resolve(&file).unwrap())
-            .await
-            .unwrap(),
+        storage.read(&storage.path(&file).unwrap()).await.unwrap(),
         "data"
     );
     assert!(
         storage
-            .stat(&storage.resolve(&output).unwrap())
+            .stat(&storage.path(&output).unwrap())
             .await
             .unwrap()
             .unwrap()
@@ -168,19 +165,19 @@ async fn filesystem_abort_allows_owner_cleanup() {
     let storage = Storage::from_url(&root).unwrap();
     let aborted = root.join("aborted").unwrap();
     let mut writer = storage
-        .writer(&storage.resolve(&aborted).unwrap())
+        .writer(&storage.path(&aborted).unwrap())
         .await
         .unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
     // Non-staged files can be visible before close; the owner removes them.
     storage
-        .delete(&storage.resolve(&aborted).unwrap())
+        .delete(&storage.path(&aborted).unwrap())
         .await
         .unwrap();
     assert!(
         storage
-            .stat(&storage.resolve(&aborted).unwrap())
+            .stat(&storage.path(&aborted).unwrap())
             .await
             .unwrap()
             .is_none()
@@ -195,28 +192,28 @@ async fn filesystem_removal_preserves_siblings() {
     let output = root.join("new/").unwrap();
     let file = output.join("part").unwrap();
     storage
-        .create(&storage.resolve(&file).unwrap(), "data".into())
+        .create(&storage.path(&file).unwrap(), "data".into())
         .await
         .unwrap();
     let sibling = root.join("keep").unwrap();
     storage
-        .create(&storage.resolve(&sibling).unwrap(), "keep".into())
+        .create(&storage.path(&sibling).unwrap(), "keep".into())
         .await
         .unwrap();
     storage
-        .remove_all(&storage.resolve(&output).unwrap())
+        .remove_all(&storage.path(&output).unwrap())
         .await
         .unwrap();
     assert!(
         storage
-            .stat(&storage.resolve(&file).unwrap())
+            .stat(&storage.path(&file).unwrap())
             .await
             .unwrap()
             .is_none()
     );
     assert_eq!(
         storage
-            .read(&storage.resolve(&sibling).unwrap())
+            .read(&storage.path(&sibling).unwrap())
             .await
             .unwrap(),
         "keep"
@@ -268,14 +265,14 @@ async fn filesystem_conditional_creation_has_one_winner() {
     let temp = tempfile::tempdir().unwrap();
     let url = Url::from_file_path(temp.path().join("claim")).unwrap();
     let storage = Storage::from_url(&url).unwrap();
-    let path = storage.resolve(&url).unwrap();
+    let path = storage.path(&url).unwrap();
     let (first, second) = tokio::join!(
         storage.create(&path, "first".into()),
         storage.create(&path, "second".into())
     );
     assert_ne!(first.is_ok(), second.is_ok());
     assert_eq!(
-        storage.read(&storage.resolve(&url).unwrap()).await.unwrap(),
+        storage.read(&storage.path(&url).unwrap()).await.unwrap(),
         if first.is_ok() { "first" } else { "second" }
     );
 }
@@ -289,4 +286,22 @@ async fn errors_retain_category_operation_and_path() {
         .unwrap_err();
     assert!(matches!(error, Error::NotFound(_)));
     assert!(error.to_string().contains("read object \"missing\""));
+}
+
+#[test]
+fn object_paths_round_trip_through_urls_without_double_decoding() {
+    let storage = memory();
+    for key in ["", "file", "雪 space/file", "literal%20/?#", "directory/"] {
+        let path = ObjectPath::parse(key).unwrap();
+        let url = storage.url(&path).unwrap();
+        assert_eq!(storage.path(&url).unwrap(), path, "{key}");
+        assert!(url.query().is_none());
+        assert!(url.fragment().is_none());
+    }
+    for key in ["/absolute", "../outside", "a/../b", "a/./b", "a\\b", "a\0b"] {
+        assert!(
+            matches!(ObjectPath::parse(key), Err(Error::InvalidInput(_))),
+            "{key}"
+        );
+    }
 }

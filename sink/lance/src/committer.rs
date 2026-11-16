@@ -1,13 +1,11 @@
 use lance::dataset::transaction::Transaction;
-use open_arrow_sink_core::{
-    Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
-};
+use open_arrow_sink_core::{Error, IndexSpec, Result, SessionCommitter, WriteSummary, async_trait};
 
 use crate::{LanceFragments, destination::LanceDestination, index::build_indexes};
 
 pub(crate) struct LanceCommitter {
     pub destination: LanceDestination,
-    pub options: WriteOptions,
+    pub indexes: Vec<IndexSpec>,
     pub storage_version: Option<lance_file::version::LanceFileVersion>,
 }
 
@@ -42,7 +40,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         }
         let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
         let summary = WriteSummary { rows_written };
-        build_indexes(&mut dataset, &self.options.indexes, &summary).await?;
+        build_indexes(&mut dataset, &self.indexes, &summary).await?;
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {

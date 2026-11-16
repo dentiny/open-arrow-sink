@@ -103,8 +103,9 @@ publish on drop or rely on drop for async cleanup.
 
 Build a `WriteSession { writers, committer }`. Ordinary `Sink::open` can delegate
 to the default `ParallelSink::open_writer(request, schema, options).await`, which
-requests one data writer and adapts the session with `into_writer`. The adapter
-rejects poisoned writes and invalid writer counts, and returns finish errors
+requests one data writer, validates its count and schema with
+`WriteSession::expect(1, &schema)`, and adapts it with synchronous `into_writer()`.
+The adapter rejects poisoned writes and returns finish errors
 without automatically aborting writers or deleting output.
 A backend can implement `Writer` directly for a specialized lifecycle, but must
 provide all equivalent failure, cancellation, consuming commit/abort, and optional

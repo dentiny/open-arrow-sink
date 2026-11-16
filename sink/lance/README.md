@@ -245,12 +245,12 @@ endpoints, or shared memory, pass a configured `Storage`:
 ```rust,ignore
 use open_arrow_sink_core::Sink;
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
-use open_arrow_sink_storage::opendal;
+use open_arrow_sink_storage::{ObjectPath, opendal};
 
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
 let sink = LanceDatasetSink::new(storage.clone());
-let url = storage.url("new-dataset/")?;
+let url = storage.url(&ObjectPath::parse("new-dataset/")?)?;
 let mut writer = sink.open(url.clone(), schema, options).await?;
 writer.write(batch).await?;
 writer.commit().await?;

@@ -8,7 +8,7 @@ use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
-/// Dataset location, native session, and owned publication reservation.
+/// Dataset location, native session, and storage configuration.
 #[derive(Clone)]
 pub(crate) struct LanceDestination {
     pub storage: Storage,
@@ -23,12 +23,12 @@ impl LanceDestination {
         storage: Storage,
         url: Url,
         sources: Arc<StorageResolver>,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<Self> {
-        let path = storage.resolve(&url)?.as_dir();
+        let path = storage.path(&url)?.as_dir();
         crate::validation::validate_destination_path(&path)?;
         // Lance's native API requires a URL at its boundary.
-        let url = storage.url(path.as_str())?;
+        let url = storage.url(&path)?;
         let session = Arc::new(Session::default());
         let provider = Arc::new(Provider::new(storage.clone(), sources, metrics.cloned()));
         for scheme in provider.schemes() {
@@ -92,12 +92,9 @@ mod tests {
         let sources = Arc::new(StorageResolver::default());
         let source_url: Url = "lance-custom://source/blob".parse().unwrap();
         // Seed the URL-derived cache; no source namespace is explicitly registered.
-        let source = sources.resolve(&source_url).unwrap();
+        let source = sources.storage_for(&source_url).unwrap();
         source
-            .write(
-                &source.resolve(&source_url).unwrap(),
-                "custom backend".into(),
-            )
+            .write(&source.path(&source_url).unwrap(), "custom backend".into())
             .await
             .unwrap();
         let destination = Storage::new(
@@ -105,7 +102,9 @@ mod tests {
             "destination-only://warehouse/".parse().unwrap(),
         )
         .unwrap();
-        let url = destination.url("dataset/").unwrap();
+        let url = destination
+            .url(&ObjectPath::parse("dataset/").unwrap())
+            .unwrap();
         let native = LanceDestination::new(destination, url, sources, None).unwrap();
         let registry = native.session.store_registry();
         assert!(registry.get_provider("destination-only").is_some());
