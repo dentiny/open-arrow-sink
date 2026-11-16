@@ -4,10 +4,6 @@ use std::io;
 
 use arrow_schema::ArrowError;
 
-pub(crate) fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::Backend(Box::new(error))
-}
-
 pub(crate) fn invalid_compression_level(level: i32) -> Error {
     Error::Unsupported(format!(
         "Lance Zstd compression level must be between 0 and {}: {level}",
@@ -23,7 +19,7 @@ pub(crate) fn aborted() -> ArrowError {
 }
 
 pub(crate) fn worker_stopped() -> Error {
-    backend(io::Error::other("Lance write worker stopped"))
+    Error::backend(io::Error::other("Lance write worker stopped"))
 }
 
 pub(crate) fn missing_index_column(column: &str) -> Error {
@@ -74,13 +70,6 @@ pub(crate) fn index_refresh(
     )
 }
 
-pub(crate) fn destination_exists() -> Error {
-    backend(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "destination exists",
-    ))
-}
-
 pub(crate) fn native_storage(error: impl std::fmt::Display) -> lance::Error {
     lance::Error::invalid_input(error.to_string())
 }
@@ -104,13 +93,9 @@ pub(crate) fn invalid_blob_column(column: &str) -> Error {
     Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
 }
 pub(crate) fn unfinished_blobs() -> Error {
-    backend(io::Error::other(
+    Error::backend(io::Error::other(
         "writer failed or has unfinished blobs; session aborted",
     ))
-}
-
-pub(crate) fn schema_mismatch() -> Error {
-    Error::SchemaMismatch
 }
 
 pub(crate) fn blob_column_out_of_bounds() -> Error {
@@ -156,4 +141,32 @@ pub(crate) fn mixed_blob_inputs() -> Error {
     Error::Unsupported(
         "cannot mix logical blob writes and prepared streaming handles in one session".into(),
     )
+}
+
+pub(crate) fn blob_input(column: &str, row: usize, source: Error) -> Error {
+    Error::backend(BlobInputError {
+        column: column.into(),
+        row,
+        source,
+    })
+}
+#[derive(Debug)]
+struct BlobInputError {
+    column: String,
+    row: usize,
+    source: Error,
+}
+impl std::fmt::Display for BlobInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "blob column {} row {}: {}",
+            self.column, self.row, self.source
+        )
+    }
+}
+impl std::error::Error for BlobInputError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }

@@ -2,8 +2,8 @@ use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::Transform;
 use iceberg::table::Table;
 use open_arrow_sink_core::{
-    Compression, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability, WriteOptions,
-    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Compression, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
+    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -63,9 +63,9 @@ pub(crate) fn validate_table(
         }
     }
     let table_schema =
-        schema_to_arrow_schema(table.metadata().current_schema()).map_err(error::backend)?;
+        schema_to_arrow_schema(table.metadata().current_schema()).map_err(Error::backend)?;
     if schema.as_ref() != &table_schema {
-        return Err(error::schema_mismatch());
+        return Err(Error::SchemaMismatch);
     }
     Ok(())
 }

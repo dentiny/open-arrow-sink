@@ -1,18 +1,19 @@
 use std::sync::{Arc, atomic::Ordering};
 
+use datafusion_physical_plan::SendableRecordBatchStream;
 use futures::StreamExt;
-use lance::Dataset;
+use lance::{Dataset, dataset::InsertBuilder};
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, WriteSummary,
-    Writer, async_trait, validation,
+    BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions,
+    WriteSummary, Writer, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{backend, worker_stopped},
+    error::worker_stopped,
     index::build_indexes,
-    parallel::{ChannelReader, Message},
+    parallel::{ChannelStream, Message},
     storage::NativeStorage,
 };
 
@@ -135,14 +136,14 @@ impl Writer for BlobDatasetWriter {
             .take()
             .unwrap()
             .await
-            .map_err(backend)?
-            .map_err(backend)?;
+            .map_err(Error::backend)?
+            .map_err(Error::backend)?;
         let summary = WriteSummary {
             rows_written: self.rows,
         };
         build_indexes(&mut dataset, &self.options.indexes, &summary)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         Ok(summary)
     }
 
@@ -168,7 +169,7 @@ impl BlobDatasetWriter {
             return Ok(());
         }
         let (sender, receiver) = mpsc::channel(1);
-        let reader = ChannelReader {
+        let stream = Box::pin(ChannelStream {
             schema: if logical {
                 crate::blob::logical_schema(&self.encoding_schema)
             } else {
@@ -176,13 +177,17 @@ impl BlobDatasetWriter {
             },
             receiver,
             finished: false,
-        };
+        }) as SendableRecordBatchStream;
         let params = self
             .destination
             .bind_write_params(crate::write_options::write_params(&self.options)?);
         let uri = self.destination.url.to_string();
-        let task =
-            tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
+        let task = tokio::spawn(async move {
+            InsertBuilder::new(uri.as_str())
+                .with_params(&params)
+                .execute_stream(stream)
+                .await
+        });
         self.sender = Some(sender);
         self.task = Some(task);
         self.logical = logical;

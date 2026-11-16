@@ -2,15 +2,11 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use futures::{TryStreamExt, stream::BoxStream};
 use http::{Request, Response, Uri};
-use open_arrow_sink_core::{BlobChunk, Result};
+use open_arrow_sink_core::{BlobChunk, Error, Result};
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter, Operator, services::Http};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::{
-    HttpConcurrencyLimitLayer, Storage, StorageConfig,
-    error::{self, backend},
-    validation,
-};
+use crate::{HttpConcurrencyLimitLayer, Storage, StorageConfig, error, validation};
 
 // Placeholder namespace for HTTP storage; requests use each complete source URL.
 const HTTP_PLACEHOLDER: &str = "https://download.invalid/";
@@ -71,8 +67,12 @@ impl BlobDownloader {
     pub fn http_storage(config: StorageConfig) -> Result<Storage> {
         opendal::install_default();
         let endpoint = HTTP_PLACEHOLDER.trim_end_matches('/');
-        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(backend)?;
-        Storage::try_new(operator, HTTP_PLACEHOLDER.parse().map_err(backend)?, config)
+        let operator = Operator::new(Http::default().endpoint(endpoint)).map_err(Error::backend)?;
+        Storage::try_new(
+            operator,
+            HTTP_PLACEHOLDER.parse().map_err(Error::backend)?,
+            config,
+        )
     }
 
     /// Route HTTP(S) downloads through `storage`, keeping its policies, request
@@ -200,7 +200,7 @@ impl BlobDownloader {
     }
 
     async fn reader(&self, source: &str) -> Result<opendal::Reader> {
-        let url = crate::Url::parse(source).map_err(backend)?;
+        let url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
             let operator = self.http.operator();
@@ -217,7 +217,7 @@ impl BlobDownloader {
         };
         // HTTP sources need not implement HEAD or range requests. Keep one
         // streaming GET; chunk_bytes bounds the application-side copy below.
-        operator.reader(&path).await.map_err(backend)
+        operator.reader(&path).await.map_err(Error::backend)
     }
 
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
@@ -234,7 +234,7 @@ impl BlobDownloader {
             .await?
             .into_stream(..)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
@@ -245,7 +245,7 @@ impl BlobDownloader {
                 let reservation = buffers.clone().acquire_many_owned(capacity as u32)
                     .await.expect("pool is never closed");
                 if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(backend)? else { break };
+                    let Some(buffer) = reader.try_next().await.map_err(Error::backend)? else { break };
                     pending = buffer;
                 }
                 // A bounded copy avoids retaining a larger OpenDAL backing allocation.
@@ -324,7 +324,8 @@ impl BlobDownload {
         if chunk.len() > self.downloader.download_bytes - self.total {
             return Err(error::download_too_large(self.downloader.download_bytes));
         }
-        data.try_reserve_exact(chunk.len()).map_err(backend)?;
+        data.try_reserve_exact(chunk.len())
+            .map_err(Error::backend)?;
         data.extend_from_slice(chunk);
         self.total += chunk.len();
         Ok(())
@@ -361,9 +362,9 @@ impl BlobDownload {
             .await?
             .into_stream(..)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         let mut data = Vec::new();
-        while let Some(mut buffer) = reader.try_next().await.map_err(backend)? {
+        while let Some(mut buffer) = reader.try_next().await.map_err(Error::backend)? {
             while !buffer.is_empty() {
                 let size = self.downloader.chunk_bytes.min(buffer.len());
                 if let Some(metrics) = metrics {

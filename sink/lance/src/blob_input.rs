@@ -11,7 +11,7 @@ use futures::{Stream, StreamExt, future::BoxFuture, stream};
 use open_arrow_sink_core::{ExternalBlobMode, IoMetrics, RecordBatch, Result, SchemaRef};
 use open_arrow_sink_storage::{BlobDownload, BlobDownloader};
 
-use crate::error::backend;
+use open_arrow_sink_core::Error;
 
 fn is_blob(field: &Field) -> bool {
     field
@@ -63,14 +63,18 @@ pub(crate) async fn materialize_row(
     let mut group = downloader.begin().await?;
     let mut columns = Vec::with_capacity(input.num_columns());
     for (array, field) in input.columns().iter().zip(schema.fields()) {
-        columns.push(materialize(array, field, &mut group, mode, metrics).await?);
+        columns.push(
+            materialize(array, field, &mut group, mode, metrics)
+                .await
+                .map_err(|error| crate::error::blob_input(field.name(), row, error))?,
+        );
     }
     RecordBatch::try_new_with_options(
         schema.clone(),
         columns,
         &RecordBatchOptions::new().with_row_count(Some(1)),
     )
-    .map_err(backend)
+    .map_err(Error::backend)
 }
 
 fn materialize<'a>(
@@ -102,7 +106,7 @@ fn materialize<'a>(
                 ));
                 return Ok(Arc::new(
                     <$ty>::try_new($child.clone(), offsets, child, values.nulls().cloned())
-                        .map_err(backend)?,
+                        .map_err(Error::backend)?,
                 ) as ArrayRef);
             }};
         }
@@ -120,7 +124,7 @@ fn materialize<'a>(
                         child_values,
                         values.nulls().cloned(),
                     )
-                    .map_err(backend)?,
+                    .map_err(Error::backend)?,
                 ) as ArrayRef);
             }
             DataType::Map(child, ordered) => {
@@ -152,7 +156,7 @@ fn materialize<'a>(
                         values.nulls().cloned(),
                         *ordered,
                     )
-                    .map_err(backend)?,
+                    .map_err(Error::backend)?,
                 ) as ArrayRef);
             }
             _ => {}
@@ -166,7 +170,7 @@ fn materialize<'a>(
         }
         if is_blob(field) && values.column_by_name("kind").is_none() {
             let malformed = || {
-                backend(std::io::Error::other(format!(
+                Error::backend(std::io::Error::other(format!(
                     "invalid logical blob field {}",
                     field.name()
                 )))
@@ -205,7 +209,7 @@ fn materialize<'a>(
                         .unwrap_or(Some(bytes.len() as u64))
                         .filter(|&end| start <= end && end <= bytes.len() as u64)
                         .ok_or_else(|| {
-                            backend(std::io::Error::other(
+                            Error::backend(std::io::Error::other(
                                 "blob range exceeds downloaded source",
                             ))
                         })?;
@@ -219,10 +223,12 @@ fn materialize<'a>(
                 data_validity.push(bytes.is_some());
                 materialized.push(bytes.is_some());
                 if let Some(bytes) = bytes {
-                    payload.try_reserve_exact(bytes.len()).map_err(backend)?;
+                    payload
+                        .try_reserve_exact(bytes.len())
+                        .map_err(Error::backend)?;
                     payload.extend_from_slice(&bytes);
                 }
-                offsets.push(i64::try_from(payload.len()).map_err(backend)?);
+                offsets.push(i64::try_from(payload.len()).map_err(Error::backend)?);
                 output_uris.push(uri);
             }
             let payload = group.finish_buffer(payload)?;

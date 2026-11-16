@@ -5,7 +5,7 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
+use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
@@ -62,7 +62,7 @@ impl NativeStorage {
         }
         if self.storage.prefix_exists(&self.url).await? {
             return match mode {
-                WriteMode::Create => Err(crate::error::destination_exists()),
+                WriteMode::Create => Err(Error::DestinationExists),
                 _ => {
                     crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
                         .await
@@ -84,7 +84,7 @@ impl NativeStorage {
                 .dataset_builder()
                 .load()
                 .await
-                .map_err(crate::error::backend)?;
+                .map_err(Error::backend)?;
             crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
         }
         Ok(())

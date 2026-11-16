@@ -1,14 +1,11 @@
 use open_arrow_sink_core::{
-    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
+    validation,
 };
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 use std::sync::Arc;
 
-use crate::{
-    destination::Destination,
-    error::{backend, closed},
-    file_writer::FileWriter,
-};
+use crate::{destination::Destination, error::closed, file_writer::FileWriter};
 
 pub(crate) struct ParquetDirectoryWriter {
     pub(crate) destination: Arc<Destination>,
@@ -40,7 +37,7 @@ impl DataWriter for ParquetDirectoryWriter {
                 .unwrap()
                 .finish()
                 .await
-                .map_err(backend)?;
+                .map_err(Error::backend)?;
             self.writer = None;
             let writer = self
                 .destination
@@ -54,7 +51,7 @@ impl DataWriter for ParquetDirectoryWriter {
             self.writer = Some(writer);
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
-        writer.write(&batch).await.map_err(backend)?;
+        writer.write(&batch).await.map_err(Error::backend)?;
         // Let Parquet coalesce small batches into its bounded row groups.
         // Only force an early group boundary when buffered encoded data could
         // reach the file target; rolling still uses actual flushed bytes.
@@ -66,7 +63,7 @@ impl DataWriter for ParquetDirectoryWriter {
                     >= size
             })
         {
-            writer.flush().await.map_err(backend)?;
+            writer.flush().await.map_err(Error::backend)?;
         }
         self.rows_written += batch.num_rows() as u64;
         self.state.complete();
@@ -80,7 +77,7 @@ impl DataWriter for ParquetDirectoryWriter {
             .ok_or_else(closed)?
             .finish()
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         self.writer = None;
         self.destination.complete_reservation().await?;
         Ok(self.rows_written)

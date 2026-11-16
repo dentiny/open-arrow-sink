@@ -22,12 +22,23 @@ pub enum Error {
     Unsupported(String),
     #[error("batch schema does not match the write session schema")]
     SchemaMismatch,
+    #[error("destination exists")]
+    DestinationExists,
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
     #[error("backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl Error {
+    /// Preserve a native error and its source chain at a backend boundary.
+    pub fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Backend(Box::new(error))
+    }
+}
+
 pub(crate) fn invalid_target_file_size() -> Error {
-    Error::Unsupported("target_file_size must be greater than zero".into())
+    Error::InvalidConfig("target_file_size must be greater than zero".into())
 }
 
 pub(crate) fn preserve_input_unsupported() -> Error {
