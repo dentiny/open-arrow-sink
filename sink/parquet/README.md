@@ -33,7 +33,7 @@ layers, pass a configured `Storage`; see [shared storage](../../storage/README.m
 Create and staged Overwrite reserve a new prefix with conditional creation of `.open-arrow-sink`.
 It also claims each part name before opening a streaming writer. Backends without
 conditional-create support fail instead of overwriting. External writers must
-not modify a reserved prefix. The marker is removed after a file finishes; all
+not modify a reserved prefix. The committer removes the marker after all writers finish; all
 part names have already been claimed, so the destination remains occupied.
 Abort removes owned parts and the marker when no other objects remain, preserving
 unrelated files. Drop performs no async cleanup. These rules apply to local and

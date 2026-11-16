@@ -131,26 +131,25 @@ impl ParquetDirectorySink {
             .await?,
         );
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
-        for index in 0..count.get() {
+        for _ in 0..count.get() {
             let opened = destination
-                .open_writer(index, schema.clone(), properties.clone())
+                .open_writer(schema.clone(), properties.clone())
                 .await;
             match opened {
-                Ok(writer) => writers.push(ParquetDirectoryWriter::new(
+                Ok((index, writer)) => writers.push(ParquetDirectoryWriter::new(
                     destination.clone(),
                     schema.clone(),
                     writer,
                     options.clone(),
                     properties.clone(),
                     index,
-                    count.get(),
                 )),
                 Err(error) => {
                     for writer in writers {
                         let _ = DataWriter::abort(Box::new(writer)).await;
                     }
                     if options.cleanup_on_error {
-                        let _ = destination.remove_reservation().await;
+                        let _ = destination.abort().await;
                     }
                     return Err(error);
                 }

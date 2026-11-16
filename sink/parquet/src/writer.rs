@@ -15,9 +15,7 @@ pub(crate) struct ParquetDirectoryWriter {
     state: Poison,
     properties: WriterProperties,
     rows_written: u64,
-    files_created: usize,
-    first_file: usize,
-    file_stride: usize,
+    files: Vec<usize>,
 }
 
 #[async_trait]
@@ -39,15 +37,11 @@ impl DataWriter for ParquetDirectoryWriter {
                 .await
                 .map_err(Error::backend)?;
             self.writer = None;
-            let writer = self
+            let (index, writer) = self
                 .destination
-                .open_writer(
-                    self.file_index(self.files_created),
-                    self.schema.clone(),
-                    self.properties.clone(),
-                )
+                .open_writer(self.schema.clone(), self.properties.clone())
                 .await?;
-            self.files_created += 1;
+            self.files.push(index);
             self.writer = Some(writer);
         }
         let writer = self.writer.as_mut().ok_or_else(closed)?;
@@ -79,7 +73,6 @@ impl DataWriter for ParquetDirectoryWriter {
             .await
             .map_err(Error::backend)?;
         self.writer = None;
-        self.destination.complete_reservation().await?;
         Ok(self.rows_written)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -96,7 +89,6 @@ impl ParquetDirectoryWriter {
         options: WriteOptions,
         properties: WriterProperties,
         first_file: usize,
-        file_stride: usize,
     ) -> Self {
         Self {
             destination,
@@ -106,9 +98,7 @@ impl ParquetDirectoryWriter {
             options,
             properties,
             rows_written: 0,
-            files_created: 1,
-            first_file,
-            file_stride,
+            files: vec![first_file],
         }
     }
 
@@ -125,10 +115,6 @@ impl ParquetDirectoryWriter {
                 .is_some_and(|size| writer.bytes_written() >= size)
     }
 
-    fn file_index(&self, index: usize) -> usize {
-        self.first_file + index * self.file_stride
-    }
-
     async fn cleanup(&mut self) -> Result<()> {
         if !self.options.cleanup_on_error {
             return Ok(());
@@ -138,13 +124,10 @@ impl ParquetDirectoryWriter {
         } else {
             Ok(())
         };
-        for index in 0..self.files_created {
-            if let Err(error) = self.destination.remove_file(self.file_index(index)).await {
+        for &index in &self.files {
+            if let Err(error) = self.destination.remove_file(index).await {
                 result = Err(error);
             }
-        }
-        if let Err(error) = self.destination.remove_reservation().await {
-            result = Err(error);
         }
         result
     }

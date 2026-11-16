@@ -12,6 +12,6 @@ impl SessionCommitter<u64> for ParquetCommitter {
         })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        Ok(())
+        self.0.abort().await
     }
 }

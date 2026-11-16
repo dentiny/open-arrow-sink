@@ -158,3 +158,85 @@ async fn overwrite_rejects_symlink_targets_before_staging() {
         "original"
     );
 }
+
+#[tokio::test]
+async fn parallel_finish_keeps_reservation_until_session_commit() {
+    use open_arrow_sink_core::ParallelSink;
+
+    let storage = storage();
+    let directory = storage.url("parallel/").unwrap();
+    let marker = directory.join(".open-arrow-sink").unwrap();
+    let mut session = ParquetDirectorySink::new(storage.clone())
+        .open_writers(
+            directory.clone(),
+            batch().schema(),
+            options(),
+            NonZeroUsize::new(3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut session.writers {
+        writer.write(batch()).await.unwrap();
+        writer.write(batch()).await.unwrap();
+        outputs.push(writer.finish().await.unwrap());
+        assert!(storage.exists(&marker).await.unwrap());
+    }
+    let files = storage.list(&directory).await.unwrap();
+    assert_eq!(files.len(), 7, "six disjoint parts and one session marker");
+    assert_eq!(
+        session
+            .committer
+            .commit(outputs)
+            .await
+            .unwrap()
+            .rows_written,
+        18
+    );
+    assert!(!storage.exists(&marker).await.unwrap());
+    assert_eq!(rows(&storage, &directory).await, 18);
+}
+
+#[rstest::rstest]
+#[case::cleanup(true)]
+#[case::keep(false)]
+#[tokio::test]
+async fn finished_parallel_writers_leave_session_cleanup_to_committer(
+    #[case] cleanup_on_error: bool,
+) {
+    use open_arrow_sink_core::ParallelSink;
+
+    let storage = storage();
+    let directory = storage.url("parallel-abort/").unwrap();
+    let marker = directory.join(".open-arrow-sink").unwrap();
+    let mut session = ParquetDirectorySink::new(storage.clone())
+        .open_writers(
+            directory.clone(),
+            batch().schema(),
+            WriteOptions {
+                cleanup_on_error,
+                ..options()
+            },
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .await
+        .unwrap();
+    for writer in &mut session.writers {
+        writer.write(batch()).await.unwrap();
+        writer.write(batch()).await.unwrap();
+        writer.finish().await.unwrap();
+    }
+    for writer in session.writers {
+        writer.abort().await.unwrap();
+    }
+    assert!(
+        storage.exists(&marker).await.unwrap(),
+        "data writers do not release the session claim"
+    );
+    session.committer.abort().await.unwrap();
+    assert_eq!(
+        storage.list(&directory).await.unwrap().is_empty(),
+        cleanup_on_error
+    );
+    assert_eq!(storage.exists(&marker).await.unwrap(), !cleanup_on_error);
+}
