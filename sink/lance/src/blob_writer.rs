@@ -57,18 +57,13 @@ impl Writer for BlobDatasetWriter {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self
+        let validation = self
             .state
             .check()
-            .and_then(|()| self.blob_session.ensure_idle())
-        {
-            let _ = self.abort().await;
-            return Err(error);
-        }
-        if let Err(error) = self.blob_session.cleanup().await {
-            let _ = self.abort().await;
-            return Err(error);
-        }
+            .and_then(|()| self.blob_session.ensure_idle());
+        self.blob_session.fail();
+        validation?;
+        self.blob_session.cleanup().await?;
         let fragments = self.worker.finish().await?;
         // Share manifest publication, index creation, and failure semantics with
         // ordinary writers. Once publication starts, retain files on failure.
@@ -83,13 +78,8 @@ impl Writer for BlobDatasetWriter {
 
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.blob_session.fail();
-        // Stop native writing before cleaning up the destination.
+        // Stop native writing and retain persisted output.
         self.worker.abort().await;
-        if self.options.cleanup_on_error {
-            let blobs = self.blob_session.abort().await;
-            let directory = self.destination.cleanup().await;
-            return blobs.and(directory);
-        }
         Ok(())
     }
 }
@@ -105,10 +95,7 @@ impl BlobDatasetWriter {
         let worker = FragmentWorker::new(schemas.encoded.clone(), &destination, params);
         Self {
             schemas,
-            blob_session: Arc::new(crate::blob::BlobSession::new(
-                destination.storage.clone(),
-                &destination.path,
-            )),
+            blob_session: Arc::new(crate::blob::BlobSession::new(destination.storage.clone())),
             worker,
             state: Poison::default(),
             destination,

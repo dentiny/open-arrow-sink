@@ -31,8 +31,8 @@ Writes feed a capacity-one queue into Lance's native streaming writer. Native
 buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
-Lance to publish a new manifest version. `abort` stops the worker and removes the
-new destination when `cleanup_on_error` is enabled. Dropping closes the stream
+Lance to publish a new manifest version. `abort` stops the worker and retains
+persisted output. Dropping closes the stream
 with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
@@ -109,7 +109,7 @@ builds requested indexes one at a time to bound peak native build memory. Each t
 through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
 when one fails, and the original dataset handle is refreshed after they finish.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
-indexes and committed data remain visible regardless of `cleanup_on_error`.
+indexes and committed data remain visible after an error.
 `Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
 and column, or a task failure if a worker panics. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
@@ -137,10 +137,9 @@ Lance managed-blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a new dataset
-when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
-owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
-streamed blobs when appending to or overwriting an existing dataset.
+poisons the session. Abort stops writing and retains persisted output. A rejected
+commit returns directly without deleting the dataset or its streamed blobs.
+Each session owns a separate `_blobs/<session>/` namespace.
 
 ## External blob ingestion
 
@@ -276,16 +275,16 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
-create a missing dataset. Abort waits for workers to stop and removes only a
-new destination when `cleanup_on_error` is enabled. Existing
-datasets and files with an uncertain publication outcome are retained.
+create a missing dataset. Explicit abort waits for workers to stop and retains
+persisted output. Write and commit failures return directly without automatic
+abort, deletion, or rollback.
 
 `DownloadBlobLayer` uses this streaming interface directly: network chunks are
 appended to native blob files and only completed handles enter record batches.
 A blob larger than the download pool's buffer budget is supported. The shared
 budget applies to application-owned download chunks; Lance's internal I/O and
 encoding buffers are separate. HTTP errors or cancellation poison the layer and
-native session, and a rejected commit aborts the new dataset directory.
+native session, and a rejected commit leaves output in place.
 
 ## Storage version
 

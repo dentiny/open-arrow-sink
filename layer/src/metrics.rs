@@ -238,12 +238,7 @@ impl Writer for MetricsWriter {
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        if let Err(error) = self.inner.check() {
-            if Box::new(self.inner).abort().await.is_ok() {
-                self.metrics.update(|s| s.sessions_aborted += 1);
-            }
-            return Err(error);
-        }
+        self.inner.check()?;
         let summary = Box::new(self.inner).commit().await?;
         self.metrics.committed(&summary);
         observation.success();

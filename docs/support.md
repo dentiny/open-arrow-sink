@@ -52,12 +52,12 @@ provide one configured `Storage` rather than resolving fresh `memory://` stores.
 
 | Backend | Before commit | Successful commit | Failure or abort |
 | --- | --- | --- | --- |
-| Parquet | Parts may already be visible | Finish footers | Best-effort removal of session-owned output; no general directory transaction/fsync guarantee |
-| Iceberg | Unreferenced data files may exist | One fast-append catalog transaction | Before publication, best-effort private-prefix cleanup; uncertain commits retain files |
+| Parquet | Parts may already be visible | Finish footers | Output retained; no general directory transaction/fsync guarantee |
+| Iceberg | Unreferenced data files may exist | One fast-append catalog transaction | Output retained; commit outcome can be uncertain |
 | Lance | Uncommitted fragments/blobs may exist | Data manifest, followed by optional independent index commits | Existing data is preserved; publication errors can be uncertain; index errors leave committed data and successful indexes |
 
-`cleanup_on_error = true` is best effort, not rollback or an exactly-once
-protocol. No writer performs async cleanup on drop. Applications must exclude
+Failures return directly without automatic abort, deletion, or rollback.
+Explicit abort stops writing and retains persisted output. Drop performs no async cleanup. Applications must exclude
 unsupported concurrent destination mutation and reconcile uncertain commits
 before retrying. No general upsert, automatic schema evolution, sorting, or
 session-level retry is supplied.

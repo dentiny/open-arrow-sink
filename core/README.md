@@ -11,7 +11,7 @@ and storage dependencies.
 | `Writer` | Owned `Send` session; fixed schema; bounded writes; consuming commit/abort |
 | `ParallelSink` | Exactly N schema-compatible data writers and one publication authority |
 | `DataWriter` | Physical output; `finish(&mut self)` returns metadata; abort remains possible after finish |
-| `SessionCommitter<T>` | Publish every output once, or clean up session resources after writer aborts |
+| `SessionCommitter<T>` | Publish every output once, or end an explicitly aborted session without deleting output |
 | `Layer<S>` / `SinkExt` | Construct decorators without I/O, preserving the request type |
 | `BlobWriter` / `BlobHandle` / `BlobPlacement` | Stream bytes and attach completed session-owned native blob descriptors |
 

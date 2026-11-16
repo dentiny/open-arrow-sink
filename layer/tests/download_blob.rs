@@ -292,9 +292,7 @@ async fn empty_payload_is_distinct_from_null() {
     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabc"
 )]
 #[tokio::test]
-async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
-    #[case] response: &[u8],
-) {
+async fn failures_poison_session_and_commit_returns_without_aborting(#[case] response: &[u8]) {
     let server = fault_server(response).await;
     let batch = batch(vec![None, Some(&server.url)]);
     let capture = Capture::default();
@@ -308,7 +306,7 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
     assert!(writer.commit().await.is_err());
     let state = capture.0.lock().unwrap();
     assert_eq!(state.batches.len(), 1);
-    assert!(state.aborted);
+    assert!(!state.aborted);
     assert!(!state.committed);
 }
 
@@ -438,7 +436,7 @@ async fn cancelling_download_releases_shared_pool_capacity() {
     };
     drop(write);
     assert!(writer.commit().await.is_err());
-    assert!(capture.0.lock().unwrap().aborted);
+    assert!(!capture.0.lock().unwrap().aborted);
 
     assert_pool_has_capacity(layer, input, &mut events).await;
     drop(held_body);
@@ -540,7 +538,7 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
         .unwrap_err();
     assert!(error.to_string().contains("timeout"), "{error}");
     assert!(writer.commit().await.is_err());
-    assert!(capture.0.lock().unwrap().aborted);
+    assert!(!capture.0.lock().unwrap().aborted);
 
     assert_pool_has_capacity(layer, input, &mut events).await;
     drop(held_body);
@@ -597,7 +595,7 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
         assert_eq!(values[0].as_deref().unwrap(), b"ok");
     } else {
         assert!(writer.commit().await.is_err());
-        assert!(capture.0.lock().unwrap().aborted);
+        assert!(!capture.0.lock().unwrap().aborted);
     }
 }
 

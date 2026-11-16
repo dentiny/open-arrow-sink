@@ -19,19 +19,16 @@ pub(crate) struct BlobSession {
     failed: AtomicBool,
     storage: Storage,
     relative_prefix: String,
-    directory: ObjectPath,
     unattached: Mutex<HashSet<ObjectPath>>,
 }
 impl BlobSession {
-    pub fn new(storage: Storage, dataset: &ObjectPath) -> Self {
+    pub fn new(storage: Storage) -> Self {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
-        let directory = dataset.join(&relative_prefix).unwrap();
         Self {
             active: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
             storage,
             relative_prefix,
-            directory,
             unattached: Mutex::default(),
         }
     }
@@ -50,7 +47,7 @@ impl BlobSession {
         self.check()?;
         if self.active.load(Ordering::Acquire) != 0 {
             return Err(Error::backend(std::io::Error::other(
-                "writer failed or has unfinished blobs; session aborted",
+                "writer failed or has unfinished blobs",
             )));
         }
         Ok(())
@@ -88,11 +85,6 @@ impl BlobSession {
         self.active.fetch_sub(1, Ordering::Release);
     }
 
-    /// All native streams in this namespace belong to this session, including
-    /// handles already attached to batches that were never committed.
-    pub async fn abort(&self) -> Result<()> {
-        self.storage.remove_all(&self.directory).await
-    }
     pub async fn cleanup(&self) -> Result<()> {
         let files: Vec<_> = self.unattached.lock().unwrap().drain().collect();
         for path in files {
@@ -151,9 +143,7 @@ impl BlobWriter for NativeBlobWriter {
         }))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
-        let upload = self.inner.abort().await;
-        let file = self.session.storage.delete(&self.path).await;
-        upload.and(file)
+        self.inner.abort().await
     }
 }
 

@@ -9,8 +9,8 @@ For a new destination, follow [extend a sink](extending-sinks.md).
 
 [custom_layer.rs](../layer/examples/custom_layer.rs) implements `MaxBatchRows`,
 a wrapping sink, and a wrapping writer. It rejects oversized batches, forwards
-accepted batches and native blob methods, and aborts a poisoned session instead
-of committing earlier accepted rows.
+accepted batches and native blob methods, and rejects a poisoned session without
+publishing or automatically aborting it.
 
 ```sh
 cargo run --locked -p open-arrow-sink-layer --example custom_layer
@@ -40,7 +40,7 @@ the blob writer methods too; inheriting their unsupported defaults would contrad
 
 Reject invalid layer configuration before opening the inner sink. If overriding
 options, modify them before validation/open. Keep the backend's remaining options
-intact, including modes, compression, partitions, indexes, versions, and cleanup.
+intact, including modes, compression, partitions, indexes, versions, and upload settings.
 Validate only layer-owned constraints; the inner sink performs shared and
 backend-specific validation after all option overrides.
 
@@ -57,14 +57,14 @@ write, including empty batches.
 | `schema()` | Fixed caller-facing schema |
 | `write(batch)` | Check outer state/schema, transform or validate, await inner acceptance |
 | `create_blob()` / `write_with_blobs(...)` | Forward or adapt if advertising support; validate batch policy on both write paths |
-| `commit(self: Box<Self>)` | Abort a poisoned inner session; otherwise consume and delegate commit exactly once |
+| `commit(self: Box<Self>)` | Return an error for a poisoned session; otherwise consume and delegate commit exactly once |
 | `abort(self: Box<Self>)` | Consume and delegate abort, releasing layer-owned resources |
 
 Return `Box::new(GuardedWriter::new(Box::new(your_writer)))` from `open`.
 The core guard owns terminal-state transitions around the entire decorator,
 including validation/transform errors before the inner writer is called. It
-rejects writes after an error or cancellation and aborts a poisoned session on
-commit. The decorator itself only implements its policy and cleanup delegation;
+rejects writes after an error or cancellation and returns an error on
+commit without automatically aborting the inner writer. The decorator itself only implements its policy and cleanup delegation;
 it does not need its own `Poison` field. See the batch-limit example above.
 
 A cancelled write cannot invoke async cleanup; retain enough ownership for a

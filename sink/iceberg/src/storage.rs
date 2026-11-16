@@ -1,9 +1,5 @@
 //! Bridge Iceberg's FileIO contracts to the shared OpenDAL operator.
-use std::{
-    collections::HashMap,
-    ops::Range,
-    sync::{Arc, Mutex},
-};
+use std::{ops::Range, sync::Arc};
 
 use crate::{error::storage_backend as backend, validation::storage_location as location};
 use bytes::Bytes;
@@ -17,32 +13,6 @@ use iceberg::{
 };
 use open_arrow_sink_core::async_trait;
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
-use uuid::Uuid;
-
-type SharedWriter = Arc<futures::lock::Mutex<StorageWriter>>;
-
-struct Upload {
-    path: ObjectPath,
-    writer: SharedWriter,
-}
-
-#[derive(Default)]
-struct Uploads(Mutex<HashMap<Uuid, Upload>>);
-impl std::fmt::Debug for Uploads {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Uploads")
-            .field("unfinished", &self.lock().len())
-            .finish()
-    }
-}
-impl Uploads {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, Upload>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
 #[derive(Clone, Debug)]
 struct ResolvedLocation {
     location: Arc<str>,
@@ -55,9 +25,6 @@ struct ResolvedLocation {
 #[derive(Clone, Debug)]
 pub struct OpenDalStorageFactory {
     storage: Storage,
-    // Iceberg's FileWrite has no abort method. Retain unfinished native handles
-    // across FileWrite drop so explicit prefix cleanup can still abort them.
-    uploads: Arc<Uploads>,
     // FileIO retains a string location; file handles retain its resolved path
     // here so subsequent reads/writes do not revalidate the same URL.
     resolved: Option<ResolvedLocation>,
@@ -66,7 +33,6 @@ impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage,
-            uploads: Arc::default(),
             resolved: None,
         }
     }
@@ -164,21 +130,8 @@ impl IcebergStorage for OpenDalStorageFactory {
     }
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
         let path = self.resolve(path)?;
-        let writer = Arc::new(futures::lock::Mutex::new(
-            self.storage.writer(&path).await.map_err(backend)?,
-        ));
-        let id = Uuid::new_v4();
-        self.uploads.lock().insert(
-            id,
-            Upload {
-                path,
-                writer: writer.clone(),
-            },
-        );
         Ok(Box::new(OpenDalWriter {
-            writer,
-            uploads: self.uploads.clone(),
-            id,
+            writer: self.storage.writer(&path).await.map_err(backend)?,
         }))
     }
     async fn delete(&self, path: &str) -> Result<()> {
@@ -188,31 +141,10 @@ impl IcebergStorage for OpenDalStorageFactory {
             .map_err(backend)
     }
     async fn delete_prefix(&self, path: &str) -> Result<()> {
-        let path = self.resolve(path)?;
-        // Reject the operator root before aborting any active upload.
-        if path.is_root() {
-            return self.storage.remove_all(&path).await.map_err(backend);
-        }
-        let prefix = path.as_dir();
-        // Never hold the registry's synchronous mutex across storage I/O.
-        let uploads: Vec<_> = self
-            .uploads
-            .lock()
-            .iter()
-            .filter(|(_, upload)| upload.path.as_str().starts_with(prefix.as_str()))
-            .map(|(id, upload)| (*id, upload.writer.clone()))
-            .collect();
-        let mut first_error = None;
-        for (id, writer) in uploads {
-            if let Err(error) = writer.lock().await.abort().await {
-                first_error.get_or_insert_with(|| backend(error));
-            }
-            self.uploads.lock().remove(&id);
-        }
-        if let Err(error) = self.storage.remove_all(&path).await {
-            first_error.get_or_insert_with(|| backend(error));
-        }
-        first_error.map_or(Ok(()), Err)
+        self.storage
+            .remove_all(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn delete_stream(&self, mut paths: BoxStream<'static, String>) -> Result<()> {
         while let Some(path) = paths.next().await {
@@ -247,154 +179,15 @@ impl FileRead for OpenDalReader {
     }
 }
 struct OpenDalWriter {
-    writer: SharedWriter,
-    uploads: Arc<Uploads>,
-    id: Uuid,
+    writer: StorageWriter,
 }
 #[async_trait]
 impl FileWrite for OpenDalWriter {
     async fn write(&mut self, bytes: Bytes) -> Result<()> {
-        self.writer.lock().await.write(bytes).await.map_err(backend)
+        self.writer.write(bytes).await.map_err(backend)
     }
     async fn close(&mut self) -> Result<FileMetadata> {
-        let size = self.writer.lock().await.close().await.map_err(backend)?;
-        self.uploads.lock().remove(&self.id);
+        let size = self.writer.close().await.map_err(backend)?;
         Ok(FileMetadata { size })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Fixture {
-        storage: Storage,
-        factory: OpenDalStorageFactory,
-    }
-    impl Fixture {
-        fn new() -> Self {
-            let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-            Self {
-                factory: OpenDalStorageFactory::new(storage.clone()),
-                storage,
-            }
-        }
-        async fn upload(&self, path: &str, bytes: &'static str) -> Box<dyn FileWrite> {
-            let url = self.storage.url(path).unwrap();
-            let mut writer = self
-                .factory
-                .file_io()
-                .new_output(url.as_str())
-                .unwrap()
-                .writer()
-                .await
-                .unwrap();
-            writer.write(bytes.into()).await.unwrap();
-            writer
-        }
-        async fn cleanup(&self) {
-            self.factory
-                .clone()
-                .file_io()
-                .delete_prefix(self.storage.url("session-a/").unwrap().as_str())
-                .await
-                .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn prefix_cleanup_aborts_dropped_native_handles() {
-        let fixture = Fixture::new();
-        let writer = fixture.upload("session-a/abandoned", "abandoned").await;
-        let native = fixture
-            .factory
-            .uploads
-            .lock()
-            .values()
-            .next()
-            .unwrap()
-            .writer
-            .clone();
-        // The native SDK drops FileWrite before requesting prefix cleanup.
-        drop(writer);
-        fixture.cleanup().await;
-        assert!(native.lock().await.write("more".into()).await.is_err());
-        assert!(fixture.factory.uploads.lock().is_empty());
-        assert!(
-            fixture
-                .storage
-                .stat(
-                    &fixture
-                        .storage
-                        .resolve(&fixture.storage.url("session-a/abandoned").unwrap())
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn prefix_cleanup_aborts_active_uploads_and_preserves_other_sessions() {
-        let fixture = Fixture::new();
-        let mut active = fixture.upload("session-a/active", "active").await;
-        let mut keep = fixture.upload("session-ab/keep", "keep").await;
-        fixture.cleanup().await;
-        assert_eq!(fixture.factory.uploads.lock().len(), 1);
-        assert!(active.write("more".into()).await.is_err());
-        assert!(active.close().await.is_err());
-        assert!(
-            fixture
-                .storage
-                .stat(
-                    &fixture
-                        .storage
-                        .resolve(&fixture.storage.url("session-a/active").unwrap())
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .is_none()
-        );
-        keep.write(" more".into()).await.unwrap();
-        keep.close().await.unwrap();
-        assert!(fixture.factory.uploads.lock().is_empty());
-        assert_eq!(
-            fixture
-                .storage
-                .read(
-                    &fixture
-                        .storage
-                        .resolve(&fixture.storage.url("session-ab/keep").unwrap())
-                        .unwrap()
-                )
-                .await
-                .unwrap(),
-            "keep more"
-        );
-    }
-
-    #[tokio::test]
-    async fn closed_uploads_leave_the_registry_and_prefix_cleanup_is_idempotent() {
-        let fixture = Fixture::new();
-        let mut writer = fixture.upload("session-a/completed", "complete").await;
-        writer.close().await.unwrap();
-        assert!(fixture.factory.uploads.lock().is_empty());
-        fixture.cleanup().await;
-        assert!(
-            fixture
-                .storage
-                .stat(
-                    &fixture
-                        .storage
-                        .resolve(&fixture.storage.url("session-a/completed").unwrap())
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .is_none()
-        );
-        fixture.cleanup().await;
     }
 }

@@ -85,7 +85,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
 }
 
 #[tokio::test]
-async fn overwrite_abort_removes_attached_session_blobs() {
+async fn overwrite_abort_preserves_attached_session_blobs() {
     let storage = storage();
     let url = storage.url("existing/").unwrap();
     let sink = LanceDatasetSink::new(storage.clone());
@@ -118,7 +118,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
         .unwrap();
     writer.abort().await.unwrap();
     assert!(
-        storage
+        !storage
             .list(&storage.resolve(&url.join("_blobs/").unwrap()).unwrap())
             .await
             .unwrap()
@@ -132,7 +132,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
 #[case::dropped(true)]
 #[case::unfinished(false)]
 #[tokio::test]
-async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
+async fn partial_or_unfinished_blobs_prevent_publication_and_preserve_output(
     #[case] drop_partial: bool,
 ) {
     let storage = storage();
@@ -142,6 +142,10 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
         .open(url.clone(), input().schema(), options())
         .await
         .unwrap();
+    // Persist a completed blob before poisoning the session with another upload.
+    let mut completed = writer.create_blob().await.unwrap();
+    completed.write(BlobChunk::new("retained")).await.unwrap();
+    let _completed = completed.finish().await.unwrap();
     let mut blob = Some(writer.create_blob().await.unwrap());
     blob.as_mut()
         .unwrap()
@@ -153,7 +157,7 @@ async fn partial_or_unfinished_blobs_prevent_publication_and_are_cleaned_up(
     }
     assert!(writer.commit().await.is_err());
     assert!(
-        storage
+        !storage
             .list(&storage.resolve(&url).unwrap())
             .await
             .unwrap()

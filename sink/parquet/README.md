@@ -34,8 +34,8 @@ Create checks that the destination prefix does not exist, then claims each part
 name with conditional creation before opening a streaming writer. Backends without
 conditional-create support fail instead of overwriting. Callers must exclude
 concurrent writes or directory replacement during a session. No marker files are
-created. Abort removes owned parts and, for Create, the directory if it is empty,
-preserving unrelated files. Drop performs no async cleanup; a process crash can
+created. Abort stops writing and retains persisted output.
+Drop performs no async cleanup; a process crash can
 leave output files that require manual cleanup before another Create. These rules
 apply to local and remote destinations alike.
 
@@ -56,13 +56,9 @@ roll at the next nonempty batch. An empty session still creates one readable fil
 Commit completes the final file footer. The target is visible while writing and has no
 atomic directory transaction or durability/fsync guarantee.
 
-`WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
-removal of this session's files and directory; failed open/commit also attempts
-cleanup. Set it to `false` to retain session-created output on abort or failure.
-Data writers stop their uploads on abort; the session committer applies this
-cleanup policy after every writer has stopped, including when an individual
-writer abort fails. Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
-and never commits.
+Write, finish, open, and commit failures leave output in place and return the
+error without automatic abort or deletion. Explicit abort retains output too.
+Applications own any later cleanup of incomplete files.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 
@@ -79,7 +75,7 @@ for using `ParallelSink` directly with application-managed worker tasks.
 Empty sessions produce one readable empty file per pre-opened writer. Batch
 distribution and directory scan order are unspecified. Data writers finish all
 footers before the session committer returns the combined row count. A finish
-failure aborts every writer according to the cleanup policy. Files remain visible
+failure returns directly without aborting writers or deleting output. Files remain visible
 before commit; there is no atomic directory transaction. See the [layer guide](../../layer/README.md) for
 buffering, cancellation, partial commit, and layer composition semantics.
 

@@ -2,7 +2,6 @@ use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
 use open_arrow_sink_storage::{DirectoryState, ObjectPath, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
-use std::sync::Mutex;
 
 use crate::file_writer::FileWriter;
 
@@ -16,8 +15,6 @@ pub(crate) struct Directory {
     pub(crate) storage: Storage,
     pub(crate) path: ObjectPath,
     prefix: String,
-    // Record claims before opening uploads so failed opens are cleaned up too.
-    files: Mutex<Vec<ObjectPath>>,
 }
 
 impl Destination {
@@ -56,7 +53,6 @@ impl Destination {
             storage,
             path: directory,
             prefix,
-            files: Mutex::new(Vec::new()),
         };
         Ok(match mode {
             WriteMode::Create => Self::Owned(directory),
@@ -69,10 +65,6 @@ impl Destination {
         match self {
             Self::Owned(directory) | Self::Shared(directory) => directory,
         }
-    }
-
-    pub(crate) fn claimed_files(&self) -> Vec<ObjectPath> {
-        std::mem::take(&mut *self.directory().files.lock().unwrap())
     }
 
     pub(crate) async fn open_writer(
@@ -91,9 +83,6 @@ impl Destination {
             ))
             .unwrap();
         directory.storage.create(&path, Bytes::new()).await?;
-        // No await between successful conditional creation and ownership tracking.
-        // A colliding file is never added to this session's cleanup list.
-        directory.files.lock().unwrap().push(path.clone());
         let file = FileWriter(directory.storage.writer(&path).await?);
         AsyncArrowWriter::try_new(file, schema, Some(properties)).map_err(Error::backend)
     }

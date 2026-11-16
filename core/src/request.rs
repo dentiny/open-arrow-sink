@@ -115,9 +115,6 @@ pub struct WriteOptions {
     /// Backend data-file format version. None preserves the backend default.
     /// Currently supported only by Lance; values use the backend version syntax.
     pub storage_version: Option<String>,
-    /// Best-effort removal of session-created output on abort or failed open/commit.
-    /// Enabled by default. Drop never performs asynchronous cleanup.
-    pub cleanup_on_error: bool,
 }
 
 impl Default for WriteOptions {
@@ -133,7 +130,6 @@ impl Default for WriteOptions {
             upload: UploadConfig::default(),
             target_file_size: None,
             storage_version: None,
-            cleanup_on_error: true,
         }
     }
 }
@@ -187,11 +183,6 @@ impl WriteOptions {
     /// Set `storage_version` while preserving all other options.
     pub fn with_storage_version(mut self, storage_version: String) -> Self {
         self.storage_version = Some(storage_version);
-        self
-    }
-    /// Set `cleanup_on_error` while preserving all other options.
-    pub fn with_cleanup_on_error(mut self, cleanup_on_error: bool) -> Self {
-        self.cleanup_on_error = cleanup_on_error;
         self
     }
 }
