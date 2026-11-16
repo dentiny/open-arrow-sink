@@ -1,40 +1,50 @@
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
     CompressionCapability, CompressionCodec, DataWriter, IndexType, Ordering, ParallelSink, Result,
     SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{storage::NativeStorage, validation::validate_options, write_options};
+use crate::{
+    LanceFragments, destination::LanceDestination, validation::validate_options, write_options,
+};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
 #[derive(Debug, Clone, Default)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
 }
 
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
-            sources: StorageResolver::default(),
+            sources: Arc::default(),
         }
     }
-    /// Configure an independent source namespace for native external blob ingestion.
-    pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = self.sources.with_storage(storage);
+    /// Share source namespaces, credentials, and the URL-derived cache with a download pool.
+    /// This replaces any previously configured source stores.
+    pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
+        self.sources = sources;
         self
     }
-    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<NativeStorage> {
+
+    /// Configure an independent source namespace for native external blob ingestion.
+    /// If the resolver is shared, detach its registrations before adding this store.
+    pub fn with_source_storage(mut self, storage: Storage) -> Self {
+        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
+        self
+    }
+    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         }
         .with_write_options(options);
-        NativeStorage::new(
+        LanceDestination::new(
             storage,
             url,
             self.sources.clone(),
@@ -86,8 +96,7 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        let storage_schema = crate::blob::storage_schema(&schema)?;
-        if storage_schema != schema {
+        if crate::blob::requires_streaming_writer(&schema) {
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url, &options)?;
@@ -101,7 +110,6 @@ impl Sink for LanceDatasetSink {
             destination.validate_index_requests(&options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
-                storage_schema,
                 encoding_schema,
                 destination,
                 options,
@@ -117,7 +125,7 @@ impl Sink for LanceDatasetSink {
 
 #[async_trait]
 impl ParallelSink for LanceDatasetSink {
-    type Output = (u64, lance::dataset::transaction::Transaction);
+    type Output = LanceFragments;
     async fn open_writers(
         &self,
         url: Url,

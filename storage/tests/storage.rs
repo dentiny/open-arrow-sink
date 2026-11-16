@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use open_arrow_sink_storage::{RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal};
+use open_arrow_sink_core::Error;
+
+use open_arrow_sink_storage::{
+    DirectoryState, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
+};
 
 fn memory() -> Storage {
     Storage::new(
@@ -21,7 +25,7 @@ async fn streaming_close_abort_and_shared_namespace() {
     assert!(writer.write("late".into()).await.is_err());
     assert_eq!(storage.clone().read(&url).await.unwrap(), "hello world");
     assert_eq!(storage.read_range(&url, 6..11).await.unwrap(), "world");
-    let metadata = storage.stat_optional(&url).await.unwrap().unwrap();
+    let metadata = storage.stat(&url).await.unwrap().unwrap();
     assert!(metadata.is_file());
     assert_eq!(metadata.content_length(), 11);
     assert_eq!(
@@ -34,9 +38,9 @@ async fn streaming_close_abort_and_shared_namespace() {
     let mut writer = storage.writer(&aborted).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
     writer.abort().await.unwrap();
-    assert!(!storage.exists(&aborted).await.unwrap());
+    assert!(storage.stat(&aborted).await.unwrap().is_none());
     storage.delete(&url).await.unwrap();
-    assert!(storage.stat_optional(&url).await.unwrap().is_none());
+    assert!(storage.stat(&url).await.unwrap().is_none());
     storage.delete(&url).await.unwrap();
     assert!(storage.list(storage.base_url()).await.unwrap().is_empty());
 }
@@ -51,8 +55,17 @@ async fn namespace_boundaries_and_conditional_creation() {
         "memory:///warehouse/file?x=y",
         "memory:///warehouse/%2e%2e%2ffile",
     ] {
-        assert!(storage.path(&url.parse().unwrap()).is_err(), "{url}");
-        assert!(storage.stat_optional(&url.parse().unwrap()).await.is_err());
+        assert!(
+            matches!(
+                storage.path(&url.parse().unwrap()),
+                Err(Error::InvalidInput(_))
+            ),
+            "{url}"
+        );
+        assert!(matches!(
+            storage.stat(&url.parse().unwrap()).await,
+            Err(Error::InvalidInput(_))
+        ));
     }
     assert!(
         storage
@@ -60,7 +73,10 @@ async fn namespace_boundaries_and_conditional_creation() {
             .await
             .is_err()
     );
-    assert!(storage.url("../outside").is_err());
+    assert!(matches!(
+        storage.url("../outside"),
+        Err(Error::InvalidInput(_))
+    ));
     assert!(storage.remove_all(storage.base_url()).await.is_err());
     assert!(storage.directory_url(storage.base_url()).is_err());
     assert!(
@@ -73,14 +89,20 @@ async fn namespace_boundaries_and_conditional_creation() {
         storage.directory_url(&prefix).unwrap().path(),
         "/warehouse/claim/"
     );
-    assert!(!storage.prefix_exists(&prefix).await.unwrap());
+    assert_eq!(
+        storage.inspect_directory(&prefix).await.unwrap(),
+        DirectoryState::Missing
+    );
     let url = storage.url("claim").unwrap();
     let (a, b) = tokio::join!(
         storage.create(&url, "a".into()),
         storage.create(&url, "b".into())
     );
     assert_ne!(a.is_ok(), b.is_ok());
-    assert!(storage.prefix_exists(&url).await.unwrap());
+    assert_eq!(
+        storage.inspect_directory(&url).await.unwrap(),
+        DirectoryState::File
+    );
 }
 
 #[tokio::test]
@@ -92,14 +114,7 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     let file = output.join("part%20%E9%9B%AA").unwrap();
     storage.create(&file, "data".into()).await.unwrap();
     assert_eq!(storage.read(&file).await.unwrap(), "data");
-    assert!(
-        storage
-            .stat_optional(&output)
-            .await
-            .unwrap()
-            .unwrap()
-            .is_dir()
-    );
+    assert!(storage.stat(&output).await.unwrap().unwrap().is_dir());
     let aborted = root.join("aborted").unwrap();
     let mut writer = storage.writer(&aborted).await.unwrap();
     writer.write("incomplete".into()).await.unwrap();
@@ -109,7 +124,7 @@ async fn filesystem_urls_decode_and_preserve_siblings() {
     let sibling = root.join("keep").unwrap();
     storage.create(&sibling, "keep".into()).await.unwrap();
     storage.remove_all(&output).await.unwrap();
-    assert!(!storage.exists(&file).await.unwrap());
+    assert!(storage.stat(&file).await.unwrap().is_none());
     assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
 }
 

@@ -25,7 +25,8 @@ fn codec(codec: SinkCompression) -> Result<Compression> {
         SinkCompression::Snappy => Compression::SNAPPY,
         SinkCompression::Gzip => Compression::GZIP(Default::default()),
         SinkCompression::Zstd { level } => Compression::ZSTD(match level {
-            Some(level) => ZstdLevel::try_new(level).map_err(Error::backend)?,
+            Some(level) => ZstdLevel::try_new(level)
+                .map_err(|error| Error::InvalidConfig(error.to_string()))?,
             None => ZstdLevel::default(),
         }),
         SinkCompression::Lz4Raw => Compression::LZ4_RAW,

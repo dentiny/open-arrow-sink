@@ -10,8 +10,8 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison,
-    RecordBatch, Result, SchemaRef, async_trait,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
+    SchemaRef, async_trait, is_blob_field,
 };
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
@@ -164,20 +164,21 @@ impl BlobWriter for NativeBlobWriter {
     }
 }
 
+/// Marked binary columns require the session-owned streaming blob writer.
+pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
+    schema.fields().iter().any(|field| is_blob_field(field))
+}
+
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
     crate::validation::validate_blob_schema(schema)?;
-    if !schema
-        .fields()
-        .iter()
-        .any(|field| field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true"))
-    {
+    if !requires_streaming_writer(schema) {
         return Ok(schema.clone());
     }
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_field(field) {
                 return field.clone();
             }
             let native = BlobDescriptorArrayBuilder::new(field.name())
@@ -210,7 +211,7 @@ pub(crate) fn storage_batch(
         .enumerate()
         .zip(schema.fields())
         .map(|((column, array), field)| {
-            if array.data_type() == field.data_type() {
+            if !is_blob_field(field) {
                 return Ok(array.clone());
             }
             let values = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
@@ -237,7 +238,11 @@ pub(crate) fn storage_batch(
             Ok(builder.finish().map_err(Error::backend)?.array().clone() as ArrayRef)
         })
         .collect::<Result<Vec<_>>>()?;
-    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    // Compression can change nested field metadata while reusing column buffers.
+    // Match the metadata-only conversion used by ordinary writers.
+    let options = arrow_array::RecordBatchOptions::new()
+        .with_match_field_names(false)
+        .with_row_count(Some(batch.num_rows()));
     let output = RecordBatch::try_new_with_options(schema.clone(), columns, &options)
         .map_err(Error::backend)?;
     for handle in placements.values() {
@@ -253,7 +258,7 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+            if is_blob_field(field) {
                 Arc::new(
                     field.as_ref().clone().with_data_type(
                         lance::blob::blob_field(field.name(), field.is_nullable())

@@ -32,7 +32,7 @@ async fn file_io_uses_shared_operator_for_reads_ranges_and_cleanup() {
         .delete_prefix(storage.url("data/").unwrap().as_str())
         .await
         .unwrap();
-    assert!(!storage.exists(&url).await.unwrap());
+    assert!(storage.stat(&url).await.unwrap().is_none());
     assert_eq!(storage.read(&keep).await.unwrap(), "keep");
     assert!(file_io.new_output("memory:///outside/file").is_err());
     assert!(file_io.serialize_all().is_err());

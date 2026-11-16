@@ -1,38 +1,3 @@
-use iceberg::spec::Transform;
-use open_arrow_sink_core::{Error, PartitionType, ZSTD_COMPRESSION_LEVEL_RANGE};
-
-pub(crate) fn invalid_zstd_level(level: i32) -> Error {
-    Error::Unsupported(format!(
-        "Iceberg Zstd compression level must be between {} and {}: {level}",
-        ZSTD_COMPRESSION_LEVEL_RANGE.start(),
-        ZSTD_COMPRESSION_LEVEL_RANGE.end(),
-    ))
-}
-
-pub(crate) fn read_only_table() -> Error {
-    Error::Unsupported("read-only Iceberg table".into())
-}
-
-pub(crate) fn partition_required() -> Error {
-    Error::Unsupported("partitioned tables require WriteOptions.partition".into())
-}
-
-pub(crate) fn unsupported_partition_transform(transform: Transform, field: &str) -> Error {
-    Error::Unsupported(format!(
-        "Iceberg partition transform {transform:?} on field {field}"
-    ))
-}
-
-pub(crate) fn partition_mismatch(
-    requested: PartitionType,
-    field: &str,
-    transform: Transform,
-) -> Error {
-    Error::Unsupported(format!(
-        "requested {requested:?} partitioning, but field {field} uses {transform:?}"
-    ))
-}
-
 pub(crate) fn storage_backend(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> iceberg::Error {

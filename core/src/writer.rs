@@ -13,7 +13,9 @@ pub trait Writer: Send {
     /// Start a native blob. An unfinished or failed blob poisons the write session.
     /// Sinks advertise this interface with `SinkCapability.supports_blob_streaming`.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Err(crate::error::unsupported_blob_streams())
+        Err(crate::Error::Unsupported(
+            "sink does not support streaming blobs".into(),
+        ))
     }
 
     /// Attach native blobs to empty, non-null cells of blob-marked binary columns.
@@ -26,7 +28,9 @@ pub trait Writer: Send {
         if blobs.is_empty() {
             return self.write(batch).await;
         }
-        Err(crate::error::unsupported_blob_streams())
+        Err(crate::Error::Unsupported(
+            "sink does not support streaming blobs".into(),
+        ))
     }
 
     /// Finish buffered writes and commit using the backend's documented semantics.

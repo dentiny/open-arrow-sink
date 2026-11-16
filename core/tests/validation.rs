@@ -41,13 +41,19 @@ fn column_resolution_is_literal_and_rejects_ambiguity() {
 
 #[test]
 fn unsupported_guarantees_modes_and_zero_size_are_rejected() {
-    assert!(validation::validate_mode_options(WriteMode::Create, &[WriteMode::Append]).is_err());
+    assert!(matches!(
+        validation::validate_mode_options(WriteMode::Create, &[WriteMode::Append]),
+        Err(Error::Unsupported(_))
+    ));
     assert!(
         validation::validate_ordering_options(Ordering::PreserveInput, Ordering::Unordered)
             .is_err()
     );
     validation::validate_ordering_options(Ordering::Unordered, Ordering::PreserveInput).unwrap();
-    assert!(validation::validate_target_file_size_options(Some(0)).is_err());
+    assert!(matches!(
+        validation::validate_target_file_size_options(Some(0)),
+        Err(Error::InvalidConfig(_))
+    ));
     validation::validate_target_file_size_options(None).unwrap();
     validation::validate_target_file_size_options(Some(1)).unwrap();
 }

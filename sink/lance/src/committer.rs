@@ -3,21 +3,23 @@ use open_arrow_sink_core::{
     Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
 };
 
-use crate::{index::build_indexes, storage::NativeStorage};
-
-type Output = (u64, Transaction);
+use crate::{LanceFragments, destination::LanceDestination, index::build_indexes};
 
 pub(crate) struct LanceCommitter {
-    pub destination: NativeStorage,
+    pub destination: LanceDestination,
     pub options: WriteOptions,
 }
 
 #[async_trait]
-impl SessionCommitter<Output> for LanceCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<Output>) -> Result<WriteSummary> {
+impl SessionCommitter<LanceFragments> for LanceCommitter {
+    async fn commit(self: Box<Self>, outputs: Vec<LanceFragments>) -> Result<WriteSummary> {
         let mut rows_written = 0;
         let mut combined: Option<Transaction> = None;
-        for (rows, mut transaction) in outputs {
+        for LanceFragments {
+            rows_written: rows,
+            mut transaction,
+        } in outputs
+        {
             rows_written += rows;
             if let Some(target) = &mut combined {
                 crate::validation::validate_transaction_compatibility(target, &transaction)?;
@@ -41,9 +43,7 @@ impl SessionCommitter<Output> for LanceCommitter {
         }
         let mut dataset = builder.execute(transaction).await.map_err(Error::backend)?;
         let summary = WriteSummary { rows_written };
-        build_indexes(&mut dataset, &self.options.indexes, &summary)
-            .await
-            .map_err(Error::backend)?;
+        build_indexes(&mut dataset, &self.options.indexes, &summary).await?;
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
