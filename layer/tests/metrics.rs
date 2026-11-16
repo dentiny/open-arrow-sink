@@ -2,7 +2,7 @@
 mod parallel_sink;
 use arrow_array::{ArrayRef, Int64Array};
 use futures::FutureExt;
-use open_arrow_sink_core::{RecordBatch, Sink, SinkExt};
+use open_arrow_sink_core::{Error, ParallelSink, RecordBatch, Sink, SinkExt};
 use open_arrow_sink_layer::{MetricsLayer, UnorderedWriteLayer};
 use parallel_sink::{Config, Failure, State, TestSink};
 use std::{num::NonZeroUsize, sync::Arc};
@@ -81,12 +81,12 @@ async fn cancellation_is_terminal_without_automatic_abort() {
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
     assert!(writer.write(input()).now_or_never().is_none());
     assert_eq!(metrics.snapshot().failed_operations, 1);
-    assert!(writer.commit().await.is_err());
+    assert!(matches!(writer.commit().await, Err(Error::Poisoned)));
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot.sessions_committed, 0);
     assert_eq!(snapshot.sessions_aborted, 0);
     assert_eq!(snapshot.rows_accepted, 0);
-    assert_eq!(snapshot.failed_operations, 2);
+    assert_eq!(snapshot.failed_operations, 1);
     assert_eq!(snapshot.bytes_written, 10);
 }
 
@@ -158,4 +158,110 @@ async fn shared_handle_in_nested_layers_does_not_duplicate_io() {
     writer.commit().await.unwrap();
     assert_eq!(metrics.snapshot().bytes_written, 10);
     assert_eq!(metrics.snapshot().bytes_read, 5);
+}
+
+#[rstest::rstest]
+#[case::write_error(false, false)]
+#[case::blob_open_error(true, false)]
+#[case::abort_after_write_error(false, true)]
+#[tokio::test]
+async fn poisoned_writer_operations_do_not_change_metrics(
+    #[case] blob_error: bool,
+    #[case] abort: bool,
+) {
+    let layer = MetricsLayer::default();
+    let metrics = layer.metrics();
+    let backend = sink(Behavior::default());
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .config
+        .failures
+        .insert(Failure::Write);
+    let sink = backend.layer(layer);
+    let mut writer = sink.open((), input().schema(), options()).await.unwrap();
+    if blob_error {
+        assert!(matches!(
+            writer.create_blob().await,
+            Err(Error::Unsupported(_))
+        ));
+    } else {
+        assert!(matches!(
+            writer.write(input()).await,
+            Err(Error::Unsupported(_))
+        ));
+    }
+    let before = metrics.snapshot();
+    assert_eq!(before.failed_operations, 1);
+    assert!(matches!(writer.write(input()).await, Err(Error::Poisoned)));
+    assert!(matches!(
+        writer.write_with_blobs(input(), vec![]).await,
+        Err(Error::Poisoned)
+    ));
+    assert!(matches!(writer.create_blob().await, Err(Error::Poisoned)));
+    assert_eq!(metrics.snapshot(), before);
+    if abort {
+        writer.abort().await.unwrap();
+        assert_eq!(metrics.snapshot().sessions_aborted, 1);
+        assert_eq!(metrics.snapshot().failed_operations, 1);
+    } else {
+        assert!(matches!(writer.commit().await, Err(Error::Poisoned)));
+        assert_eq!(metrics.snapshot(), before);
+    }
+}
+
+#[rstest::rstest]
+#[case::cancelled_write(true, false)]
+#[case::failed_write(false, false)]
+#[case::finished_writer(false, true)]
+#[tokio::test]
+async fn poisoned_data_writer_operations_do_not_change_metrics(
+    #[case] cancelled: bool,
+    #[case] finished: bool,
+) {
+    let layer = MetricsLayer::default();
+    let metrics = layer.metrics();
+    let backend = sink(Behavior {
+        blocked: cancelled,
+        ..Default::default()
+    });
+    if !cancelled && !finished {
+        backend
+            .0
+            .lock()
+            .unwrap()
+            .config
+            .failures
+            .insert(Failure::Write);
+    }
+    let sink = backend.layer(layer);
+    let mut session = sink
+        .open_writers((), input().schema(), options(), NonZeroUsize::MIN)
+        .await
+        .unwrap();
+    let writer = &mut session.writers[0];
+    if finished {
+        writer.write(input()).await.unwrap();
+        assert_eq!(writer.finish().await.unwrap(), 3);
+    } else if cancelled {
+        assert!(writer.write(input()).now_or_never().is_none());
+    } else {
+        assert!(matches!(
+            writer.write(input()).await,
+            Err(Error::Unsupported(_))
+        ));
+    }
+    let before = metrics.snapshot();
+    assert_eq!(before.failed_operations, if finished { 0 } else { 1 });
+    assert!(matches!(writer.write(input()).await, Err(Error::Poisoned)));
+    assert!(matches!(writer.finish().await, Err(Error::Poisoned)));
+    assert_eq!(metrics.snapshot(), before);
+    session.writers.pop().unwrap().abort().await.unwrap();
+    session.committer.abort().await.unwrap();
+    assert_eq!(metrics.snapshot().sessions_aborted, 1);
+    assert_eq!(
+        metrics.snapshot().failed_operations,
+        before.failed_operations
+    );
 }
