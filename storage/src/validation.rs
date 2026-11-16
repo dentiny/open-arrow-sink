@@ -99,7 +99,6 @@ pub(crate) fn validate_http_concurrency(limit: usize) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "http")]
 pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<()> {
     if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
         return Err(error::download_limit());
@@ -107,7 +106,6 @@ pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<(
     Ok(())
 }
 
-#[cfg(feature = "http")]
 pub(crate) fn validate_download_url(source: &str) -> Result<http::Uri> {
     let mut url = url::Url::parse(source).map_err(|_| error::invalid_download_url())?;
     if !matches!(url.scheme(), "http" | "https") {
