@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Update the Lance crate family to 14.0.3.
+- Require OpenDAL 0.59.5 and object_store_opendal 0.60.5 for shared storage.
+- Release the workspace together with matching internal dependency requirements.
+
 ## 0.1.0
 
 Initial release of the Arrow RecordBatch sink workspace:

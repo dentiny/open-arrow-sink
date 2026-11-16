@@ -20,17 +20,17 @@ hex.workspace = true
 lance-encoding.workspace = true
 open-arrow-sink-storage.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-lance-file = { version = "14.0.1", default-features = false }
-lance-table = { version = "14.0.1", default-features = false }
-lance-io = { version = "14.0.1", default-features = false }
+lance-file = { version = "14.0.3", default-features = false }
+lance-table = { version = "14.0.3", default-features = false }
+lance-io = { version = "14.0.3", default-features = false }
 object_store = { version = "0.14.2", default-features = false }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-schema.workspace = true
-lance-index = { version = "14.0.1", default-features = false }
-lance-linalg = { version = "14.0.1", default-features = false }
-lance = { version = "14.0.1", default-features = false }
+lance-index = { version = "14.0.3", default-features = false }
+lance-linalg = { version = "14.0.3", default-features = false }
+lance = { version = "14.0.3", default-features = false }
 tokio = { workspace = true, features = ["fs", "rt", "sync", "macros"] }
 
 [dev-dependencies]
