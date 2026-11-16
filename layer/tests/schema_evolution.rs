@@ -61,16 +61,15 @@ mod counting_sink {
     impl Sink for CountingSink {
         type Request = Arc<AtomicU64>;
         fn capability(&self) -> SinkCapability {
-            SinkCapability {
-                supported_modes: &[WriteMode::Create],
-                ordering: open_arrow_sink_core::Ordering::Unordered,
-                compression: CompressionCapability::default(),
-                supported_partitions: vec![],
-                supports_blob_handle: false,
-                supports_blob_streaming: false,
-                supports_storage_version: false,
-                supported_indexes: &[],
-            }
+            SinkCapability::default()
+                .with_supported_modes(&[WriteMode::Create])
+                .with_ordering(open_arrow_sink_core::Ordering::Unordered)
+                .with_compression(CompressionCapability::default())
+                .with_supported_partitions(vec![])
+                .with_supports_blob_handle(false)
+                .with_supports_blob_streaming(false)
+                .with_supports_storage_version(false)
+                .with_supported_indexes(&[])
         }
         async fn open(
             &self,
