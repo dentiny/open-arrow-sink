@@ -186,8 +186,8 @@ converts them to logical blobs and the SDK chooses their layout.
 
 ## Compression
 
-Supports global, per-column, and nested-column `Compression::Zstd { level }`,
-`Compression::Lz4Raw`, and `Compression::Uncompressed`, directly in
+Supports global, per-column, and nested-column `CompressionSpec::Zstd { level }`,
+`CompressionSpec::Lz4Raw`, and `CompressionSpec::Uncompressed`, directly in
 `WriteOptions.compression` or through `CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
 Lance's codec default. Unsupported codecs and levels fail before destination
 creation. Empty compression options preserve existing field metadata and native
@@ -221,11 +221,11 @@ Zstd. The adapter preserves this native behavior and the requested `lz4` schema
 metadata. Snappy and Gzip are unsupported by Lance.
 
 ```rust
-use open_arrow_sink_core::{Compression, CompressionOptions, StructuralEncoding};
+use open_arrow_sink_core::{CompressionOptions, CompressionSpec, StructuralEncoding};
 
 let compression = CompressionOptions {
-    global: Some(Compression::Zstd { level: Some(9) }),
-    columns: [("raw_payload".into(), Compression::Uncompressed)].into(),
+    global: Some(CompressionSpec::Zstd { level: Some(9) }),
+    columns: [("raw_payload".into(), CompressionSpec::Uncompressed)].into(),
     structural_encoding: Some(StructuralEncoding::Fullzip),
     column_encodings: [("id".into(), StructuralEncoding::Miniblock)].into(),
 };

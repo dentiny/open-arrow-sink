@@ -52,9 +52,9 @@ layer per sink. Layers wrap without I/O; the last installed layer is outermost.
 
 `WriteOptions.compression` selects a global default and/or per-column overrides.
 Empty `CompressionOptions::default()` preserves backend defaults; explicit
-`Compression::Uncompressed` disables compression. Column overrides take
+`CompressionSpec::Uncompressed` disables compression. Column overrides take
 precedence over the entire global compression setting, including its level.
-`Compression::Zstd { level: Some(9) }` selects an explicit Zstandard level;
+`CompressionSpec::Zstd { level: Some(9) }` selects an explicit Zstandard level;
 `level: None` preserves the backend's default level. Other codecs use their
 backend defaults. Levels use `i32` so backends that support negative Zstandard
 levels can expose them. Each backend validates its supported level range before
@@ -76,11 +76,11 @@ a scope or codec. The shared interface does not promise that every sink supports
 every codec.
 
 ```rust,ignore
-use open_arrow_sink::{Compression, CompressionOptions, SinkExt, layer::CompressionLayer};
+use open_arrow_sink::{CompressionOptions, CompressionSpec, SinkExt, layer::CompressionLayer};
 
 let sink = backend.layer(CompressionLayer::new(CompressionOptions {
-    global: Some(Compression::Zstd { level: Some(9) }),
-    columns: [("embedding".into(), Compression::Uncompressed)].into(),
+    global: Some(CompressionSpec::Zstd { level: Some(9) }),
+    columns: [("embedding".into(), CompressionSpec::Uncompressed)].into(),
     ..Default::default()
 }));
 ```
@@ -101,7 +101,7 @@ overrides do not reset codecs or their levels. Both policies apply recursively t
 nested descendants. Empty policies preserve existing schema metadata and backend
 defaults. `CompressionLayer` replaces all four fields together.
 
-Lance accepts `Compression::Lz4Raw` as its native `lz4` policy for global,
+Lance accepts `CompressionSpec::Lz4Raw` as its native `lz4` policy for global,
 per-column, and nested overrides. Native framing and codec selection still apply:
 Miniblock uses LZ4, while some Fullzip per-value paths in Lance 14 substitute Zstd.
 

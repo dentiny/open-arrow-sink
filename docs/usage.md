@@ -132,13 +132,13 @@ leftovers from earlier sessions. Exclude concurrent destination mutations.
 ## Choose write options
 
 ```rust
-use open_arrow_sink::{Compression, CompressionOptions, Ordering, WriteMode, WriteOptions};
+use open_arrow_sink::{CompressionOptions, CompressionSpec, Ordering, WriteMode, WriteOptions};
 
 let options = WriteOptions::default()
     .with_mode(WriteMode::Create)
     .with_ordering(Ordering::Unordered)
     .with_compression(CompressionOptions {
-        global: Some(Compression::Zstd { level: Some(9) }),
+        global: Some(CompressionSpec::Zstd { level: Some(9) }),
         ..Default::default()
     })
     .with_target_file_size(256 * 1024 * 1024);

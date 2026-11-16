@@ -630,28 +630,28 @@ async fn numeric_partitions_round_trip_and_record_metadata(
 
 #[rstest::rstest]
 #[case(
-    open_arrow_sink_core::Compression::Uncompressed,
+    open_arrow_sink_core::CompressionSpec::Uncompressed,
     parquet::basic::Compression::UNCOMPRESSED
 )]
 #[case(
-    open_arrow_sink_core::Compression::Snappy,
+    open_arrow_sink_core::CompressionSpec::Snappy,
     parquet::basic::Compression::SNAPPY
 )]
 #[case(
-    open_arrow_sink_core::Compression::Gzip,
+    open_arrow_sink_core::CompressionSpec::Gzip,
     parquet::basic::Compression::GZIP(Default::default())
 )]
 #[case(
-    open_arrow_sink_core::Compression::Zstd { level: None },
+    open_arrow_sink_core::CompressionSpec::Zstd { level: None },
     parquet::basic::Compression::ZSTD(Default::default())
 )]
 #[case(
-    open_arrow_sink_core::Compression::Lz4Raw,
+    open_arrow_sink_core::CompressionSpec::Lz4Raw,
     parquet::basic::Compression::LZ4_RAW
 )]
 #[tokio::test]
 async fn compression_survives_rolling_and_round_trips(
-    #[case] codec: open_arrow_sink_core::Compression,
+    #[case] codec: open_arrow_sink_core::CompressionSpec,
     #[case] expected: parquet::basic::Compression,
 ) {
     use parquet::file::reader::{FileReader, SerializedFileReader};

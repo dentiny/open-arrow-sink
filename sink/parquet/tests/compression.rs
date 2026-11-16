@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{
-    Compression as Codec, CompressionOptions, Ordering, Sink, SinkExt, WriteOptions,
+    CompressionOptions, CompressionSpec, Ordering, Sink, SinkExt, WriteOptions,
 };
 use open_arrow_sink_layer::CompressionLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
@@ -28,17 +28,23 @@ fn batch() -> RecordBatch {
 }
 
 #[rstest::rstest]
-#[case::uncompressed(Codec::Uncompressed, Compression::UNCOMPRESSED)]
-#[cfg_attr(feature = "snappy", case::snappy(Codec::Snappy, Compression::SNAPPY))]
+#[case::uncompressed(CompressionSpec::Uncompressed, Compression::UNCOMPRESSED)]
+#[cfg_attr(
+    feature = "snappy",
+    case::snappy(CompressionSpec::Snappy, Compression::SNAPPY)
+)]
 #[cfg_attr(
     feature = "gzip",
-    case::gzip(Codec::Gzip, Compression::GZIP(Default::default()))
+    case::gzip(CompressionSpec::Gzip, Compression::GZIP(Default::default()))
 )]
-#[cfg_attr(feature = "zstd", case::zstd(Codec::Zstd { level: None }, Compression::ZSTD(Default::default())))]
-#[cfg_attr(feature = "lz4", case::lz4(Codec::Lz4Raw, Compression::LZ4_RAW))]
+#[cfg_attr(feature = "zstd", case::zstd(CompressionSpec::Zstd { level: None }, Compression::ZSTD(Default::default())))]
+#[cfg_attr(
+    feature = "lz4",
+    case::lz4(CompressionSpec::Lz4Raw, Compression::LZ4_RAW)
+)]
 #[tokio::test]
 async fn compression_survives_rolling_and_round_trips(
-    #[case] codec: Codec,
+    #[case] codec: CompressionSpec,
     #[case] expected_codec: Compression,
 ) {
     let temp = tempfile::tempdir().unwrap();
@@ -46,7 +52,7 @@ async fn compression_survives_rolling_and_round_trips(
     let batch = batch();
     let sink = ParquetDirectorySink::default().layer(CompressionLayer::new(CompressionOptions {
         global: Some(codec),
-        columns: BTreeMap::from([("literal.dot".into(), Codec::Uncompressed)]),
+        columns: BTreeMap::from([("literal.dot".into(), CompressionSpec::Uncompressed)]),
         ..Default::default()
     }));
     assert_eq!(
@@ -61,7 +67,7 @@ async fn compression_survives_rolling_and_round_trips(
                 .with_target_file_size(1)
                 .with_compression(CompressionOptions {
                     global: None,
-                    columns: BTreeMap::from([("missing".into(), Codec::Snappy)]),
+                    columns: BTreeMap::from([("missing".into(), CompressionSpec::Snappy)]),
                     ..Default::default()
                 }),
         )
@@ -91,7 +97,7 @@ async fn option_layers_compose_before_backend_validation() {
     // The compression layer replaces an invalid caller policy. Ordering is
     // enabled by a layer so callers can retain WriteOptions' default ordering.
     let compression = CompressionLayer::new(CompressionOptions {
-        global: Some(Codec::Uncompressed),
+        global: Some(CompressionSpec::Uncompressed),
         ..Default::default()
     });
     let ordering = OrderingLayer::new(Ordering::Unordered);
@@ -131,7 +137,7 @@ async fn option_layers_compose_before_backend_validation() {
         let directory = temp.path().join("output");
         let batch = batch();
         let options = WriteOptions::default().with_compression(CompressionOptions {
-            columns: [("missing".into(), Codec::Snappy)].into(),
+            columns: [("missing".into(), CompressionSpec::Snappy)].into(),
             ..Default::default()
         });
         // Deferring validation must still reject invalid effective options

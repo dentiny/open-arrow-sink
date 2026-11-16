@@ -2,7 +2,7 @@ use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::Transform;
 use iceberg::table::Table;
 use open_arrow_sink_core::{
-    Compression, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
+    CompressionSpec, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
     WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
@@ -19,7 +19,7 @@ pub(crate) fn validate_options(
         ));
     }
     validation::validate_options(schema, options, capability)?;
-    if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
+    if let Some(CompressionSpec::Zstd { level: Some(level) }) = options.compression.global
         && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
     {
         return Err(Error::InvalidConfig(format!(

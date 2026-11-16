@@ -17,7 +17,7 @@ pub enum CompressionCodec {
 /// Compression requested for a global default or a column override.
 /// Levels left unspecified preserve the backend's codec default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compression {
+pub enum CompressionSpec {
     Uncompressed,
     Snappy,
     Gzip,
@@ -30,7 +30,7 @@ pub enum Compression {
     Lz4Raw,
 }
 
-impl Compression {
+impl CompressionSpec {
     /// Codec identifier, independent of encoding parameters.
     pub const fn codec(self) -> CompressionCodec {
         match self {
@@ -43,7 +43,7 @@ impl Compression {
     }
 }
 
-impl From<CompressionCodec> for Compression {
+impl From<CompressionCodec> for CompressionSpec {
     fn from(codec: CompressionCodec) -> Self {
         match codec {
             CompressionCodec::Uncompressed => Self::Uncompressed,
@@ -67,13 +67,13 @@ pub enum StructuralEncoding {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompressionOptions {
     /// Default compression for every column; None preserves the backend default.
-    pub global: Option<Compression>,
+    pub global: Option<CompressionSpec>,
     /// Overrides keyed by exact top-level Arrow field name (dots are literal).
     /// For nested fields, applies to all descendant physical columns.
-    pub columns: BTreeMap<String, Compression>,
+    pub columns: BTreeMap<String, CompressionSpec>,
     /// Explicit nested field paths, omitting list item names. Applied after top-level overrides.
     /// Segments are literal names, so dots never make a path ambiguous.
-    pub nested_columns: BTreeMap<Vec<String>, Compression>,
+    pub nested_columns: BTreeMap<Vec<String>, CompressionSpec>,
     /// Default structural encoding. None preserves backend/schema defaults.
     /// Independent of the global codec and per-column codec overrides.
     pub structural_encoding: Option<StructuralEncoding>,

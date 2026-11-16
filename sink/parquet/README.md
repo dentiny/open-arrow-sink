@@ -114,7 +114,7 @@ so other dependencies may still bring in codecs through their own Parquet featur
 Column keys are exact top-level Arrow names; nested fields apply to all descendant columns.
 Overrides and global settings persist across file rolling.
 
-Explicit Zstandard levels use `Compression::Zstd { level: Some(level) }`.
+Explicit Zstandard levels use `CompressionSpec::Zstd { level: Some(level) }`.
 Parquet accepts levels 1 through 22; unsupported levels are rejected before
 creating the destination. `level: None` uses the Parquet default.
 

@@ -1,5 +1,5 @@
 use open_arrow_sink_core::{
-    Compression as SinkCompression, CompressionCodec, CompressionOptions, Error, Result, SchemaRef,
+    CompressionCodec, CompressionOptions, CompressionSpec, Error, Result, SchemaRef,
 };
 use parquet::{
     arrow::ArrowSchemaConverter,
@@ -19,17 +19,17 @@ pub(crate) const SUPPORTED_CODECS: &[CompressionCodec] = &[
     CompressionCodec::Lz4Raw,
 ];
 
-fn codec(codec: SinkCompression) -> Result<Compression> {
+fn codec(codec: CompressionSpec) -> Result<Compression> {
     Ok(match codec {
-        SinkCompression::Uncompressed => Compression::UNCOMPRESSED,
-        SinkCompression::Snappy => Compression::SNAPPY,
-        SinkCompression::Gzip => Compression::GZIP(Default::default()),
-        SinkCompression::Zstd { level } => Compression::ZSTD(match level {
+        CompressionSpec::Uncompressed => Compression::UNCOMPRESSED,
+        CompressionSpec::Snappy => Compression::SNAPPY,
+        CompressionSpec::Gzip => Compression::GZIP(Default::default()),
+        CompressionSpec::Zstd { level } => Compression::ZSTD(match level {
             Some(level) => ZstdLevel::try_new(level)
                 .map_err(|error| Error::InvalidConfig(error.to_string()))?,
             None => ZstdLevel::default(),
         }),
-        SinkCompression::Lz4Raw => Compression::LZ4_RAW,
+        CompressionSpec::Lz4Raw => Compression::LZ4_RAW,
     })
 }
 
