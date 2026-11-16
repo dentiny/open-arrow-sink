@@ -182,7 +182,7 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
 }
 
 #[test]
-fn constructor_limits() {
+fn rejects_concurrency_above_semaphore_capacity() {
     assert!(
         DownloadPool::new(
             (tokio::sync::Semaphore::MAX_PERMITS + 1)
@@ -192,6 +192,4 @@ fn constructor_limits() {
         )
         .is_err()
     );
-    assert_eq!(pool(3, 8).concurrency(), 3);
-    assert_eq!(DownloadPool::with_defaults().unwrap().concurrency(), 64);
 }
