@@ -398,20 +398,28 @@ commit success. You can also supply your own handle without installing the layer
 Existing complete `WriteOptions` literals should add `io_metrics: None` or
 `..Default::default()`.
 
-Lance registers a fresh counter for each session, covering native reads, parallel
-fragment writes, manifest/index work, and successfully closed streamed blobs.
-Counters are visible while sessions are active and retained after commit, failure,
-cancellation, abort, or drop. Active sources are released after their I/O owners
-are dropped, retaining final totals. DownloadBlobLayer records each source chunk
-as it is consumed, including chunks consumed before a later error or cancellation.
-Failed I/O requests and unfinished streamed-blob writes are not counted as
-successful payload writes. These are measured logical payloads, not HTTP headers,
-network retries, process memory, or bytes inferred from Arrow batches.
+`Storage` uses one OpenDAL `IoMetricsLayer` for byte observations across backends.
+Lance and Parquet attach the session handle from `WriteOptions`; native adapters,
+parallel fragments, metadata payloads, streamed blobs, and index work use the same
+operator layer. DownloadBlobLayer applies it to each source reader. The old
+`IoMetricsSource`, `IoMetricsRegistration`, and `IoMetrics::track` APIs are removed;
+byte owners retain cloned observers directly. No manual blob accounting is needed.
 
-Byte counters start at zero and sum only instrumented I/O. Parquet, Iceberg, and
-custom sinks without instrumentation contribute no bytes; a mixed-backend handle
-therefore reports measured traffic, not a complete total for every backend.
-Snapshotting does not reset counters.
+For Iceberg, configure the catalog's `OpenDalStorageFactory` with
+`storage.with_io_metrics(metrics.clone())`. Its FileIO belongs to the caller's
+catalog, so `WriteOptions.io_metrics` cannot replace that FileIO. The configured
+handle covers data, manifest, and metadata I/O, including catalog work and readback;
+use a separate catalog/storage observer when isolation is needed. Custom sinks
+that bypass instrumented Storage still contribute no bytes.
+
+Counters record bytes returned by successful reads and accepted by successful
+writes, including transfers before a later failure, cancellation, abort, or drop.
+Buffered writes contribute when OpenDAL accepts them; acceptance does not imply
+publication or a successful close. Streaming readers may fetch more bytes than a
+consumer ultimately uses. Metadata operations, server-side copies, HTTP framing,
+and internal retries are excluded. These are payload observations, not network
+totals or bytes inferred from Arrow batches. Install the layer outside retry layers;
+`Storage` does this when exporting an operator. Snapshots do not reset counters.
 
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
 Install one observation layer at the boundary you want to measure. Placing it outside

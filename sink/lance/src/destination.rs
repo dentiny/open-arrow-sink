@@ -15,7 +15,6 @@ pub(crate) struct LanceDestination {
     pub url: Url,
     pub path: ObjectPath,
     session: Arc<Session>,
-    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     new_destination: bool,
 }
 impl LanceDestination {
@@ -25,13 +24,16 @@ impl LanceDestination {
         sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
+        let storage = match metrics {
+            Some(metrics) => storage.with_io_metrics(metrics.clone()),
+            None => storage,
+        };
         let path = storage.resolve(&url)?.as_dir();
         crate::validation::validate_destination_path(&path)?;
         // Lance's native API requires a URL at its boundary.
         let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
-        let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
-        let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
+        let provider = Arc::new(Provider::new(storage.clone(), sources, metrics.cloned()));
         for scheme in provider.schemes() {
             session.store_registry().insert(&scheme, provider.clone());
         }
@@ -40,7 +42,6 @@ impl LanceDestination {
             url,
             path,
             session,
-            io_tracker,
             new_destination: false,
         })
     }

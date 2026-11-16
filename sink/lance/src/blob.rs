@@ -17,24 +17,18 @@ use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 pub(crate) struct BlobSession {
     active: AtomicUsize,
     failed: AtomicBool,
-    io_tracker: Arc<crate::io_metrics::TrackedIo>,
     storage: Storage,
     relative_prefix: String,
     directory: ObjectPath,
     unattached: Mutex<HashSet<ObjectPath>>,
 }
 impl BlobSession {
-    pub fn new(
-        storage: Storage,
-        dataset: &ObjectPath,
-        io_tracker: Arc<crate::io_metrics::TrackedIo>,
-    ) -> Self {
+    pub fn new(storage: Storage, dataset: &ObjectPath) -> Self {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
         let directory = dataset.join(&relative_prefix).unwrap();
         Self {
             active: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
-            io_tracker,
             storage,
             relative_prefix,
             directory,
@@ -144,11 +138,6 @@ impl BlobWriter for NativeBlobWriter {
         self.state.check()?;
         self.session.check()?;
         let size = self.inner.close().await?;
-        self.session.io_tracker.record_write(
-            "streamed_blob",
-            object_store::path::Path::from(self.path.as_str()),
-            size,
-        );
         self.finished = true;
         Ok(BlobHandle::new(NativeBlob {
             session: self.session.clone(),

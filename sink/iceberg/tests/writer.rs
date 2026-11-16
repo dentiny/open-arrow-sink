@@ -18,6 +18,32 @@ use open_arrow_sink_core::{
 use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
 use open_arrow_sink_storage::opendal;
 
+async fn read_batches(table: &iceberg::table::Table) -> Vec<RecordBatch> {
+    table
+        .scan()
+        .build()
+        .unwrap()
+        .to_arrow()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap()
+}
+
+async fn data_files(table: &iceberg::table::Table) -> Vec<iceberg::scan::FileScanTask> {
+    table
+        .scan()
+        .build()
+        .unwrap()
+        .plan_files()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap()
+}
+
 type Row = (Option<i32>, Option<i64>);
 
 async fn table() -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
@@ -122,16 +148,7 @@ fn options() -> WriteOptions {
 
 async fn rows(catalog: &dyn Catalog, identifier: &TableIdent) -> Vec<Row> {
     let table = catalog.load_table(identifier).await.unwrap();
-    let batches: Vec<RecordBatch> = table
-        .scan()
-        .build()
-        .unwrap()
-        .to_arrow()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let batches: Vec<RecordBatch> = read_batches(&table).await;
     let mut rows = Vec::new();
     for batch in batches {
         let ids = batch
@@ -188,16 +205,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
     }
     async fn read(&self) -> Vec<RecordBatch> {
         let table = self.catalog.load_table(&self.identifier).await.unwrap();
-        table
-            .scan()
-            .build()
-            .unwrap()
-            .to_arrow()
-            .await
-            .unwrap()
-            .try_collect()
-            .await
-            .unwrap()
+        read_batches(&table).await
     }
     async fn assert_aborted(&self) {
         let table = self.catalog.load_table(&self.identifier).await.unwrap();
@@ -315,16 +323,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
     }
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
     let table = catalog.load_table(&identifier).await.unwrap();
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let files: Vec<_> = data_files(&table).await;
     assert_eq!(files.len(), file_count);
     let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(3);
     expected.sort_unstable();
@@ -405,16 +404,7 @@ async fn identity_partitions_round_trip_and_record_metadata(#[case] composite: b
         ]
     );
     let table = catalog.load_table(&identifier).await.unwrap();
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let files: Vec<_> = data_files(&table).await;
     let expected: HashSet<Struct> = if composite {
         [
             (Some(1), Some(10)),
@@ -489,16 +479,7 @@ async fn partitioned_empty_sessions_and_file_rolling(
     if empty {
         assert!(table.metadata().current_snapshot_id().is_none());
     } else {
-        let files: Vec<_> = table
-            .scan()
-            .build()
-            .unwrap()
-            .plan_files()
-            .await
-            .unwrap()
-            .try_collect()
-            .await
-            .unwrap();
+        let files: Vec<_> = data_files(&table).await;
         assert_eq!(files.len(), file_count);
         let mut expected = [(None, Some(20)), (Some(1), None), (Some(3), Some(30))].repeat(2);
         expected.sort_unstable();
@@ -570,16 +551,7 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     writer.write(data.slice(1, 1)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 6);
     let table = catalog.load_table(&identifier).await.unwrap();
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let files: Vec<_> = data_files(&table).await;
     let expected: HashSet<_> = expected_keys
         .into_iter()
         .map(|key| Struct::from_iter([Some(Literal::int(key))]))
@@ -593,16 +565,7 @@ async fn temporal_partitions_round_trip_and_record_metadata(
             .collect::<HashSet<_>>(),
         expected
     );
-    let batches: Vec<RecordBatch> = table
-        .scan()
-        .build()
-        .unwrap()
-        .to_arrow()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let batches: Vec<RecordBatch> = read_batches(&table).await;
     let mut actual = Vec::new();
     for batch in batches {
         let ids = batch
@@ -730,16 +693,7 @@ async fn assert_numeric_partition_round_trip(
     let expected_rows = ids.into_iter().map(Some).zip(values).collect::<Vec<_>>();
     assert_eq!(rows(catalog.as_ref(), &identifier).await, expected_rows);
     let table = catalog.load_table(&identifier).await.unwrap();
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let files: Vec<_> = data_files(&table).await;
     let expected: HashSet<_> = keys
         .into_iter()
         .map(|key| Struct::from_iter([key]))
@@ -805,16 +759,7 @@ async fn compression_survives_rolling_and_round_trips(
         table.metadata().properties(),
         before.metadata().properties()
     );
-    let files: Vec<_> = table
-        .scan()
-        .build()
-        .unwrap()
-        .plan_files()
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+    let files: Vec<_> = data_files(&table).await;
     assert!(!files.is_empty());
     for file in files {
         let bytes = table

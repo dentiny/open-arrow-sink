@@ -6,7 +6,7 @@ mod guard;
 pub use guard::{GuardedDataWriter, GuardedWriter};
 mod index;
 mod io_metrics;
-pub use io_metrics::{IoMetrics, IoMetricsRegistration, IoMetricsSource, IoSnapshot};
+pub use io_metrics::{IoMetrics, IoSnapshot};
 mod layer;
 mod poison;
 mod request;

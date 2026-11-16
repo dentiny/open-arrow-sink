@@ -41,6 +41,15 @@ struct State {
 }
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<State>>);
+impl Capture {
+    async fn writer(&self, schema: SchemaRef) -> Box<dyn Writer> {
+        self.clone()
+            .layer(download_layer(["url".to_owned()].into()))
+            .open((), schema, WriteOptions::default())
+            .await
+            .unwrap()
+    }
+}
 struct CaptureWriter {
     state: Capture,
     schema: SchemaRef,
@@ -274,14 +283,7 @@ async fn empty_payload_is_distinct_from_null() {
     let server = serve(|_, _| Reply::bytes(b"".as_slice())).await;
     let batch = batch(vec![Some(&server.url), None]);
     let capture = Capture::default();
-    let mut writer = capture
-        .clone()
-        .layer(download_layer(
-            ["url"].map(str::to_owned).into_iter().collect(),
-        ))
-        .open((), batch.schema(), WriteOptions::default())
-        .await
-        .unwrap();
+    let mut writer = capture.writer(batch.schema()).await;
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     let state = capture.0.lock().unwrap();
@@ -308,14 +310,7 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
     let server = fault_server(response, Duration::ZERO).await;
     let batch = batch(vec![None, Some(&server.url)]);
     let capture = Capture::default();
-    let mut writer = capture
-        .clone()
-        .layer(download_layer(
-            ["url"].map(str::to_owned).into_iter().collect(),
-        ))
-        .open((), batch.schema(), WriteOptions::default())
-        .await
-        .unwrap();
+    let mut writer = capture.writer(batch.schema()).await;
     writer.write(batch.slice(0, 1)).await.unwrap();
     assert!(writer.write(batch.clone()).await.is_err());
     assert!(writer.write(batch.slice(0, 1)).await.is_err());
@@ -363,14 +358,7 @@ async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
     for url in ["file:///tmp/blob", "not a url"] {
         let capture = Capture::default();
         let batch = batch(vec![Some(url)]);
-        let mut writer = capture
-            .clone()
-            .layer(download_layer(
-                ["url"].map(str::to_owned).into_iter().collect(),
-            ))
-            .open((), batch.schema(), WriteOptions::default())
-            .await
-            .unwrap();
+        let mut writer = capture.writer(batch.schema()).await;
         assert!(writer.write(batch).await.is_err());
         writer.abort().await.unwrap();
         assert!(capture.0.lock().unwrap().batches.is_empty());

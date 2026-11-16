@@ -111,6 +111,14 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
+        self.stream_with_metrics(source, None).await
+    }
+
+    pub(crate) async fn stream_with_metrics(
+        &self,
+        source: &str,
+        metrics: Option<open_arrow_sink_core::IoMetrics>,
+    ) -> Result<BoxStream<'static, Result<BlobChunk>>> {
         let url = Url::parse(source)
             .map_err(|error| Error::InvalidInput(format!("invalid blob URL: {error}")))?;
         let stream_slot = self
@@ -121,7 +129,13 @@ impl DownloadPool {
             .expect("pool is never closed");
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validate_download_url(source)?;
-            let operator = self.http.clone();
+            let operator = match &metrics {
+                Some(metrics) => self
+                    .http
+                    .clone()
+                    .layer(open_arrow_sink_storage::IoMetricsLayer(metrics.clone())),
+                None => self.http.clone(),
+            };
             let context = operator.base_context();
             let transport = HttpTransporter::new(UrlTransport {
                 uri,
@@ -131,6 +145,10 @@ impl DownloadPool {
             (operator.with_context(context), "blob".to_owned())
         } else {
             let storage = self.sources.resolve(&url)?;
+            let storage = match metrics {
+                Some(metrics) => storage.with_io_metrics(metrics),
+                None => storage,
+            };
             (
                 storage.operator(),
                 storage.resolve(&url)?.as_str().to_owned(),

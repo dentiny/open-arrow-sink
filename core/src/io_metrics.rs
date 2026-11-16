@@ -1,11 +1,7 @@
 //! Shared observation of measured payload I/O, independent of commit results.
 use std::{
-    collections::BTreeMap,
     fmt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 /// Measured logical payload bytes, including I/O from unsuccessful sessions.
@@ -22,23 +18,13 @@ impl IoSnapshot {
     }
 }
 
-/// A backend's non-resetting, thread-safe payload counter.
-pub trait IoMetricsSource: Send + Sync {
-    fn snapshot(&self) -> IoSnapshot;
-}
-#[derive(Default)]
-struct State {
-    completed: IoSnapshot,
-    active: BTreeMap<u64, Arc<dyn IoMetricsSource>>,
-}
-
 /// Cloneable observation handle passed through `WriteOptions`.
 /// Equality compares handle identity, not mutable counter values.
 #[derive(Clone)]
-pub struct IoMetrics(Vec<Arc<Mutex<State>>>);
+pub struct IoMetrics(Vec<Arc<Mutex<IoSnapshot>>>);
 impl Default for IoMetrics {
     fn default() -> Self {
-        Self(vec![Arc::new(Mutex::new(State::default()))])
+        Self(vec![Arc::new(Mutex::new(IoSnapshot::default()))])
     }
 }
 impl fmt::Debug for IoMetrics {
@@ -68,11 +54,7 @@ impl IoMetrics {
         let state = self.0[0]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut total = state.completed;
-        for source in state.active.values() {
-            total.add(source.snapshot());
-        }
-        total
+        *state
     }
     pub fn record_read(&self, bytes: u64) {
         self.record(IoSnapshot {
@@ -91,45 +73,7 @@ impl IoMetrics {
             state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .completed
                 .add(bytes);
-        }
-    }
-    /// Observe a fresh backend counter. Keep the registration alive until all its
-    /// I/O stops. Dropping it retains the final totals and releases the source.
-    /// Source snapshots must not call back into this handle.
-    pub fn track(&self, source: Arc<dyn IoMetricsSource>) -> IoMetricsRegistration {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        for state in &self.0 {
-            state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active
-                .insert(id, source.clone());
-        }
-        IoMetricsRegistration {
-            metrics: self.clone(),
-            id,
-        }
-    }
-}
-
-/// Keeps a backend source observable and folds its final totals on drop.
-#[must_use = "keep the registration alive until the source stops performing I/O"]
-pub struct IoMetricsRegistration {
-    metrics: IoMetrics,
-    id: u64,
-}
-impl Drop for IoMetricsRegistration {
-    fn drop(&mut self) {
-        for state in &self.metrics.0 {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(source) = state.active.remove(&self.id) {
-                state.completed.add(source.snapshot());
-            }
         }
     }
 }
