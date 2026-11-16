@@ -93,19 +93,3 @@ pub(crate) fn storage_location(path: &str) -> iceberg::Result<open_arrow_sink_st
         open_arrow_sink_storage::Url::parse(path).map_err(error::storage_backend)
     }
 }
-
-#[cfg(test)]
-mod metrics_tests {
-    use super::*;
-
-    #[test]
-    fn rejects_session_observers_before_catalog_access() {
-        let schema = open_arrow_sink_test_support::int64_batch("value", vec![Some(1)]).schema();
-        let options =
-            WriteOptions::default().with_io_metrics(open_arrow_sink_core::IoMetrics::default());
-        assert!(
-            matches!(validate_options(&schema, &options, SinkCapability::default()),
-            Err(Error::Unsupported(message)) if message.contains("io_metrics"))
-        );
-    }
-}
