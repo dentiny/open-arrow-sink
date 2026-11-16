@@ -191,7 +191,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         batch(self.schema.clone())
     }
     fn options(&self) -> WriteOptions {
-        WriteOptions::default().with_mode(open_arrow_sink_core::WriteMode::Append)
+        options()
     }
     async fn read(&self) -> Vec<RecordBatch> {
         let table = self.catalog.load_table(&self.identifier).await.unwrap();

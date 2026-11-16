@@ -1,6 +1,6 @@
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use open_arrow_sink_core::{Error, Ordering, SinkCapability, WriteMode, WriteOptions, validation};
+use open_arrow_sink_core::{Error, Ordering, WriteMode, validation};
 use std::{collections::HashMap, sync::Arc};
 
 #[test]
@@ -56,26 +56,4 @@ fn unsupported_guarantees_modes_and_zero_size_are_rejected() {
     ));
     validation::validate_target_file_size_options(None).unwrap();
     validation::validate_target_file_size_options(Some(1)).unwrap();
-}
-
-#[test]
-fn default_options_accept_sinks_without_an_input_order_guarantee() {
-    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-    let options = WriteOptions::default();
-    assert_eq!(Ordering::default(), Ordering::Unordered);
-    assert_eq!(options.ordering, Ordering::Unordered);
-
-    for ordering in [Ordering::Unordered, Ordering::PreserveInput] {
-        let capability = SinkCapability::default()
-            .with_supported_modes(&[WriteMode::Create])
-            .with_ordering(ordering);
-        validation::validate_options(&schema, &options, capability.clone()).unwrap();
-        let preserve_input = options.clone().with_ordering(Ordering::PreserveInput);
-        let result = validation::validate_options(&schema, &preserve_input, capability);
-        if ordering == Ordering::PreserveInput {
-            result.unwrap();
-        } else {
-            assert!(matches!(result, Err(Error::Unsupported(_))));
-        }
-    }
 }

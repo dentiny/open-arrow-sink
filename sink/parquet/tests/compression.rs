@@ -88,8 +88,8 @@ async fn option_layers_compose_before_backend_validation() {
     use open_arrow_sink_layer::{OrderingLayer, UnorderedWriteLayer};
     use std::num::NonZeroUsize;
 
-    // The compression layer replaces an invalid caller policy. Ordering layers
-    // explicitly select the policy passed to the backend.
+    // The compression layer replaces an invalid caller policy. Ordering is
+    // enabled by a layer so callers can retain WriteOptions' default ordering.
     let compression = CompressionLayer::new(CompressionOptions {
         global: Some(Codec::Uncompressed),
         ..Default::default()
