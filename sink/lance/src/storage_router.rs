@@ -1,4 +1,6 @@
 //! Select storage independently of Lance's object-store adapter.
+use std::sync::Arc;
+
 use open_arrow_sink_core::Result;
 use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 
@@ -8,11 +10,11 @@ use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 #[derive(Debug)]
 pub(crate) struct StorageRouter {
     destination: Storage,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
 }
 
 impl StorageRouter {
-    pub fn new(destination: Storage, sources: StorageResolver) -> Self {
+    pub fn new(destination: Storage, sources: Arc<StorageResolver>) -> Self {
         Self {
             destination,
             sources,
@@ -78,9 +80,11 @@ mod tests {
 
         let router = StorageRouter::new(
             destination,
-            StorageResolver::default()
-                .with_storage(overlap)
-                .with_storage(external),
+            Arc::new(
+                StorageResolver::default()
+                    .with_storage(overlap)
+                    .with_storage(external),
+            ),
         );
         assert_eq!(
             read_from(router.resolve(&local_url).unwrap(), &local_url).await,

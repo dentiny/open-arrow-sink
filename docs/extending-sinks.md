@@ -1,6 +1,6 @@
 # Extend a sink
 
-Implement a sink when adding a destination with its own encoding, reservation,
+Implement a sink when adding a destination with its own encoding, destination validation,
 publication, or cleanup semantics. Use a layer for a reusable policy around an
 existing destination. Extensions can live in an application or separate crate;
 no registration system or changes to core are required.

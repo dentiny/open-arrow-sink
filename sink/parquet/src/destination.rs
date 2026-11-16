@@ -5,16 +5,13 @@ use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
 
-const RESERVATION: &str = ".open-arrow-sink";
-
 /// Session-owned parts in a destination directory.
 pub(crate) struct Destination {
     storage: Storage,
     directory: ObjectPath,
     prefix: String,
-    // Create owns the destination. Append shares an existing directory and must
-    // preserve its reservation. Only owners create/remove the reservation and
-    // clean up the empty directory.
+    // Only Create may clean up the empty destination directory.
+    // Append shares an existing directory and must preserve it.
     owns_directory: bool,
     cleanup_on_error: bool,
 }
@@ -30,6 +27,9 @@ impl Destination {
         if directory.is_root() {
             return Err(crate::error::root_destination());
         }
+        if mode == WriteMode::Create && storage.prefix_exists(&directory).await? {
+            return Err(Error::DestinationExists);
+        }
         let (prefix, owns_directory) = match mode {
             WriteMode::Create => ("part-".into(), true),
             WriteMode::Append => {
@@ -38,31 +38,19 @@ impl Destination {
             }
             WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
         };
-        let destination = Self {
+        Ok(Self {
             storage,
             directory,
             prefix,
             owns_directory,
             cleanup_on_error,
-        };
-        if destination.owns_directory {
-            destination.reserve().await?;
-        }
-        Ok(destination)
+        })
     }
     fn child(&self, name: &str) -> ObjectPath {
         self.directory.join(name).unwrap()
     }
     fn file(&self, index: usize) -> ObjectPath {
         self.child(&format!("{}{index:05}.parquet", self.prefix))
-    }
-    async fn reserve(&self) -> Result<()> {
-        if self.storage.prefix_exists(&self.directory).await? {
-            return Err(Error::DestinationExists);
-        }
-        self.storage
-            .create(&self.child(RESERVATION), Bytes::new())
-            .await
     }
     pub(crate) async fn open_writer(
         &self,
@@ -82,30 +70,13 @@ impl Destination {
         }
         result
     }
-    pub(crate) async fn complete_reservation(&self) -> Result<()> {
-        if self.owns_directory {
-            self.storage.delete(&self.child(RESERVATION)).await?;
-        }
-        Ok(())
-    }
     pub(crate) async fn remove_file(&self, index: usize) -> Result<()> {
         self.storage.delete(&self.file(index)).await
     }
-    pub(crate) async fn remove_reservation(&self) -> Result<()> {
+    pub(crate) async fn remove_empty_directory(&self) -> Result<()> {
         if !self.owns_directory {
             return Ok(());
         }
-        let marker = self.child(RESERVATION);
-        if self
-            .storage
-            .list(&self.directory)
-            .await?
-            .iter()
-            .any(|url| url != &marker)
-        {
-            return Ok(());
-        }
-        self.storage.delete(&marker).await?;
         self.storage.remove_empty_directory(&self.directory).await
     }
 }

@@ -76,7 +76,7 @@ async fn shared_operator_commit_indexes_and_read_back() {
     values.sort_unstable();
     assert_eq!(values, vec![1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
     assert_eq!(dataset.load_indices().await.unwrap().len(), 1);
-    // Data and the reservation must resolve to the same physical namespace.
+    // Native data must resolve to the configured storage namespace.
     assert_gt!(
         storage
             .list(&storage.resolve(&url).unwrap())

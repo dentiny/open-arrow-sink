@@ -11,8 +11,8 @@ use arrow_array::{Array, ArrayRef, LargeBinaryArray};
 use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison,
-    RecordBatch, Result, SchemaRef, async_trait,
+    BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
+    SchemaRef, async_trait, is_blob_field,
 };
 use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 
@@ -140,18 +140,14 @@ pub(crate) async fn create_blob(
 
 pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
     crate::validation::validate_blob_schema(schema)?;
-    if !schema
-        .fields()
-        .iter()
-        .any(|field| field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true"))
-    {
+    if !schema.fields().iter().any(|field| is_blob_field(field)) {
         return Ok(schema.clone());
     }
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) != Some("true") {
+            if !is_blob_field(field) {
                 return field.clone();
             }
             let native = BlobDescriptorArrayBuilder::new(field.name())
@@ -227,7 +223,7 @@ pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
         .fields()
         .iter()
         .map(|field| {
-            if field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some("true") {
+            if is_blob_field(field) {
                 Arc::new(
                     field.as_ref().clone().with_data_type(
                         lance::blob::blob_field(field.name(), field.is_nullable())
