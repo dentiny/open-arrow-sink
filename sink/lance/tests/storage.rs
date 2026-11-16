@@ -5,7 +5,9 @@ use lance::{
     datatypes::BlobKind,
 };
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{IndexSpec, IndexType, Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_core::{
+    IndexSpec, IndexType, Ordering, ParallelSink, Sink, SinkExt, WriteOptions,
+};
 use open_arrow_sink_lance::{BlobHandleConfig, LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::opendal;
@@ -30,6 +32,54 @@ fn write_options() -> WriteOptions {
         ordering: Ordering::Unordered,
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn finished_fragments_wait_for_session_publication() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("uncommitted/").unwrap();
+    let mut session = sink
+        .open_writers(
+            url.clone(),
+            batch().schema(),
+            write_options(),
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut outputs = Vec::new();
+    for writer in &mut session.writers {
+        writer.write(batch()).await.unwrap();
+        outputs.push(writer.finish().await.unwrap());
+    }
+    assert!(
+        sink.dataset_builder(url.clone())
+            .unwrap()
+            .load()
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        session
+            .committer
+            .commit(outputs)
+            .await
+            .unwrap()
+            .rows_written,
+        6
+    );
+    assert_eq!(
+        sink.dataset_builder(url)
+            .unwrap()
+            .load()
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        6
+    );
 }
 
 #[tokio::test]
