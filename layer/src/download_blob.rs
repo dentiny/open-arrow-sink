@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
 
@@ -8,7 +9,7 @@ use arrow_array::{
     builder::LargeBinaryBuilder,
 };
 use arrow_schema::{DataType, Schema};
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Layer, RecordBatch, Result, SchemaRef, Sink,
     SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
@@ -82,6 +83,7 @@ pub struct DownloadBlobLayer {
     download_pool: Option<Arc<DownloadPool>>,
     failure_policy: DownloadFailurePolicy,
     metrics: DownloadMetrics,
+    batch_window: NonZeroUsize,
 }
 impl DownloadBlobLayer {
     pub fn new(columns: HashSet<String>) -> Self {
@@ -90,7 +92,17 @@ impl DownloadBlobLayer {
             download_pool: None,
             failure_policy: DownloadFailurePolicy::Fail,
             metrics: DownloadMetrics::default(),
+            batch_window: NonZeroUsize::new(1).unwrap(),
         }
+    }
+    /// Allow downloads from this many input batches to overlap. Defaults to one.
+    /// With a larger window, write success means accepted into the bounded queue;
+    /// downloads progress only while subsequent writes or commit are polled.
+    /// Completed batches are forwarded in input order. Retained input arrays and
+    /// completed blob handles are bounded by the window, not the transfer-byte pool.
+    pub fn with_batch_window(mut self, batches: NonZeroUsize) -> Self {
+        self.batch_window = batches;
+        self
     }
     pub fn with_failure_policy(mut self, policy: DownloadFailurePolicy) -> Self {
         self.failure_policy = policy;
@@ -178,6 +190,10 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             io_metrics,
             failure_policy: self.config.failure_policy,
             metrics: self.config.metrics.clone(),
+            batch_window: self.config.batch_window,
+            pending: VecDeque::new(),
+            active: FuturesUnordered::new(),
+            next_batch: 0,
         }))
     }
 }
@@ -192,6 +208,20 @@ struct DownloadBlobWriter {
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
     failure_policy: DownloadFailurePolicy,
     metrics: DownloadMetrics,
+    batch_window: NonZeroUsize,
+    pending: VecDeque<PendingBatch>,
+    active: FuturesUnordered<BoxFuture<'static, (u64, Result<DownloadResult>)>>,
+    next_batch: u64,
+}
+struct PendingBatch {
+    id: u64,
+    rows: usize,
+    columns: Vec<arrow_array::ArrayRef>,
+    jobs: VecDeque<(usize, usize, String)>,
+    remaining: usize,
+    blobs: Vec<BlobPlacement>,
+    failed_rows: HashSet<usize>,
+    failed_cells: HashSet<(usize, usize)>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
     match array.data_type() {
@@ -278,75 +308,96 @@ async fn download(
         blob,
     }))
 }
-#[async_trait]
-impl Writer for DownloadBlobWriter {
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
+impl DownloadBlobWriter {
+    fn enqueue(&mut self, batch: RecordBatch) {
+        let mut columns = batch.columns().to_vec();
+        let mut jobs = VecDeque::new();
+        for &column in &self.indices {
+            let array = batch.column(column);
+            let mut builder = LargeBinaryBuilder::new();
+            for row in 0..batch.num_rows() {
+                if array.is_null(row) {
+                    builder.append_null();
+                } else {
+                    builder.append_value([]);
+                    jobs.push_back((column, row, url_value(array.as_ref(), row).to_owned()));
+                }
+            }
+            columns[column] = Arc::new(builder.finish());
+        }
+        let id = self.next_batch;
+        self.next_batch += 1;
+        self.pending.push_back(PendingBatch {
+            id,
+            rows: batch.num_rows(),
+            columns,
+            remaining: jobs.len(),
+            jobs,
+            blobs: Vec::new(),
+            failed_rows: HashSet::new(),
+            failed_cells: HashSet::new(),
+        });
     }
-    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_download_writer(self.failed)?;
-        self.failed = true;
-        validation::validate_batch(&self.schema, &batch)?;
-        if self.indices.is_empty() {
-            self.inner.write(batch).await?;
-        } else {
-            let mut columns = batch.columns().to_vec();
-            let mut jobs = Vec::new();
-            for &column in &self.indices {
-                let array = batch.column(column);
-                let mut builder = LargeBinaryBuilder::new();
-                for row in 0..batch.num_rows() {
-                    if array.is_null(row) {
-                        builder.append_null();
-                    } else {
-                        builder.append_value([]);
-                        jobs.push((column, row));
-                    }
-                }
-                columns[column] = Arc::new(builder.finish());
-            }
-            let mut jobs = jobs.into_iter();
-            let mut active = FuturesUnordered::new();
-            let mut blobs = Vec::new();
-            let mut failed_rows = HashSet::new();
-            let mut failed_cells = HashSet::new();
-            loop {
-                while active.len() < self.pool.concurrency() {
-                    let Some((column, row)) = jobs.next() else {
-                        break;
-                    };
-                    let native = self.inner.create_blob().await?;
-                    let url = url_value(batch.column(column).as_ref(), row).to_owned();
-                    active.push(download(
-                        self.pool.clone(),
-                        url,
-                        native,
-                        self.schema.field(column).name().clone(),
-                        column,
-                        row,
-                        self.io_metrics.clone(),
-                    ));
-                }
-                match active.next().await {
-                    Some(result) => match result? {
-                        DownloadResult::Complete(blob) => blobs.push(blob),
-                        DownloadResult::SourceFailed {
-                            column,
-                            row,
-                            error,
-                            cleanup,
-                        } => {
-                            self.metrics.failure(failed_rows.insert(row));
-                            cleanup?;
-                            failed_cells.insert((column, row));
-                            if self.failure_policy == DownloadFailurePolicy::Fail {
-                                return Err(error);
-                            }
-                        }
-                    },
-                    None => break,
+    async fn schedule(&mut self) -> Result<()> {
+        while self.active.len() < self.pool.concurrency() {
+            let Some(batch) = self.pending.iter_mut().find(|batch| !batch.jobs.is_empty()) else {
+                break;
+            };
+            let id = batch.id;
+            let (column, row, url) = batch.jobs.pop_front().unwrap();
+            let native = self.inner.create_blob().await?;
+            let future = download(
+                self.pool.clone(),
+                url,
+                native,
+                self.schema.field(column).name().clone(),
+                column,
+                row,
+                self.io_metrics.clone(),
+            );
+            self.active.push(async move { (id, future.await) }.boxed());
+        }
+        Ok(())
+    }
+    fn completed(&mut self, id: u64, result: Result<DownloadResult>) -> Result<()> {
+        let batch = self
+            .pending
+            .iter_mut()
+            .find(|batch| batch.id == id)
+            .expect("an active download belongs to a queued batch");
+        batch.remaining -= 1;
+        match result? {
+            DownloadResult::Complete(blob) => batch.blobs.push(blob),
+            DownloadResult::SourceFailed {
+                column,
+                row,
+                error,
+                cleanup,
+            } => {
+                self.metrics.failure(batch.failed_rows.insert(row));
+                cleanup?;
+                batch.failed_cells.insert((column, row));
+                if self.failure_policy == DownloadFailurePolicy::Fail {
+                    return Err(error);
                 }
             }
+        }
+        Ok(())
+    }
+    async fn forward_ready(&mut self) -> Result<()> {
+        while self
+            .pending
+            .front()
+            .is_some_and(|batch| batch.remaining == 0)
+        {
+            let PendingBatch {
+                rows,
+                mut columns,
+                mut blobs,
+                failed_rows,
+                failed_cells,
+                ..
+            } = self.pending.pop_front().unwrap();
             if self.failure_policy == DownloadFailurePolicy::Null {
                 for &column in &self.indices {
                     let values = columns[column]
@@ -354,7 +405,7 @@ impl Writer for DownloadBlobWriter {
                         .downcast_ref::<arrow_array::LargeBinaryArray>()
                         .unwrap();
                     let mut builder = LargeBinaryBuilder::new();
-                    for row in 0..batch.num_rows() {
+                    for row in 0..rows {
                         if values.is_null(row) || failed_cells.contains(&(column, row)) {
                             builder.append_null();
                         } else {
@@ -368,13 +419,13 @@ impl Writer for DownloadBlobWriter {
                 RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
             if self.failure_policy == DownloadFailurePolicy::SkipRow && !failed_rows.is_empty() {
                 let keep = BooleanArray::from(
-                    (0..batch.num_rows())
+                    (0..rows)
                         .map(|row| !failed_rows.contains(&row))
                         .collect::<Vec<_>>(),
                 );
                 output =
                     arrow_select::filter::filter_record_batch(&output, &keep).map_err(backend)?;
-                let mut row_map = vec![None; batch.num_rows()];
+                let mut row_map = vec![None; rows];
                 let mut next = 0;
                 for (row, target) in row_map.iter_mut().enumerate() {
                     if !failed_rows.contains(&row) {
@@ -395,17 +446,76 @@ impl Writer for DownloadBlobWriter {
                 self.metrics.skipped(failed_rows.len());
             }
         }
+        Ok(())
+    }
+    async fn progress(&mut self, wait: bool) -> Result<()> {
+        self.schedule().await?;
+        self.forward_ready().await?;
+        let event = if wait {
+            self.active.next().await
+        } else {
+            self.active.next().now_or_never().flatten()
+        };
+        if let Some((id, result)) = event {
+            self.completed(id, result)?;
+        }
+        loop {
+            self.schedule().await?;
+            self.forward_ready().await?;
+            match self.active.next().now_or_never().flatten() {
+                Some((id, result)) => self.completed(id, result)?,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+    async fn drain(&mut self) -> Result<()> {
+        while !self.pending.is_empty() {
+            self.progress(true).await?;
+        }
+        Ok(())
+    }
+}
+#[async_trait]
+impl Writer for DownloadBlobWriter {
+    fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+    async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        crate::validation::validate_download_writer(self.failed)?;
+        // Cancellation and all errors are terminal, including queue backpressure.
+        self.failed = true;
+        validation::validate_batch(&self.schema, &batch)?;
+        if self.indices.is_empty() {
+            self.inner.write(batch).await?;
+        } else {
+            while self.pending.len() >= self.batch_window.get() {
+                self.progress(true).await?;
+            }
+            self.enqueue(batch);
+            self.progress(false).await?;
+            if self.batch_window.get() == 1 {
+                self.drain().await?;
+            }
+        }
         self.failed = false;
         Ok(())
     }
-    async fn commit(self: Box<Self>) -> Result<WriteSummary> {
+    async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
         if crate::validation::validate_download_writer(self.failed).is_err() {
-            let _ = self.inner.abort().await;
+            let _ = self.abort().await;
             return Err(error::download_aborted());
+        }
+        if let Err(error) = self.drain().await {
+            let _ = self.abort().await;
+            return Err(error);
         }
         self.inner.commit().await
     }
-    async fn abort(self: Box<Self>) -> Result<()> {
+    async fn abort(mut self: Box<Self>) -> Result<()> {
+        // Cancel every source/upload future before cleanup; nothing is detached.
+        self.active.clear();
+        self.pending.clear();
         self.inner.abort().await
     }
 }

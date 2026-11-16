@@ -11,14 +11,19 @@ use tokio::{
 };
 
 #[rstest::rstest]
-#[case::skip(DownloadFailurePolicy::SkipRow, false)]
-#[case::null(DownloadFailurePolicy::Null, false)]
-#[case::skip_all(DownloadFailurePolicy::SkipRow, true)]
-#[case::null_all(DownloadFailurePolicy::Null, true)]
+#[case::skip(DownloadFailurePolicy::SkipRow, false, false)]
+#[case::null(DownloadFailurePolicy::Null, false, false)]
+#[case::skip_all(DownloadFailurePolicy::SkipRow, true, false)]
+#[case::null_all(DownloadFailurePolicy::Null, true, false)]
+#[case::pipeline_skip(DownloadFailurePolicy::SkipRow, false, true)]
+#[case::pipeline_null(DownloadFailurePolicy::Null, false, true)]
+#[case::pipeline_skip_all(DownloadFailurePolicy::SkipRow, true, true)]
+#[case::pipeline_null_all(DownloadFailurePolicy::Null, true, true)]
 #[tokio::test]
 async fn failed_sources_are_discarded_without_poisoning_native_session(
     #[case] policy: DownloadFailurePolicy,
     #[case] all_failed: bool,
+    #[case] pipeline: bool,
 ) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -73,7 +78,8 @@ async fn failed_sources_are_discarded_without_poisoning_native_session(
     );
     let layer = DownloadBlobLayer::new(["left".into(), "right".into()].into())
         .with_download_pool(pool.clone())
-        .with_failure_policy(policy);
+        .with_failure_policy(policy)
+        .with_batch_window(NonZeroUsize::new(if pipeline { 2 } else { 1 }).unwrap());
     let metrics = layer.metrics();
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("dataset");
@@ -88,9 +94,14 @@ async fn failed_sources_are_discarded_without_poisoning_native_session(
         )
         .await
         .unwrap();
-    writer.write(input).await.unwrap();
-    assert_eq!(pool.buffered_bytes(), 0);
+    if pipeline {
+        writer.write(input.slice(0, 2)).await.unwrap();
+        writer.write(input.slice(2, 2)).await.unwrap();
+    } else {
+        writer.write(input).await.unwrap();
+    }
     let summary = writer.commit().await.unwrap();
+    assert_eq!(pool.buffered_bytes(), 0);
     server.abort();
     let failed = if all_failed { 4 } else { 2 };
     let expected_rows = if policy == DownloadFailurePolicy::SkipRow {

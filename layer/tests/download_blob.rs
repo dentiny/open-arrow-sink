@@ -1090,3 +1090,199 @@ async fn recoverable_policy_never_suppresses_destination_or_cleanup_errors(
     assert!(state.batches.is_empty());
     assert_eq!(metrics.snapshot().blobs_failed, u64::from(!upload));
 }
+
+async fn gated_response(
+    response: &'static [u8],
+) -> (Server, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let request_signal = requested.clone();
+    let response_gate = release.clone();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = socket.read(&mut request).await;
+        request_signal.notify_one();
+        response_gate.notified().await;
+        let _ = socket.write_all(response).await;
+    });
+    (Server { url, task }, requested, release)
+}
+
+#[tokio::test]
+async fn batch_window_overlaps_downloads_preserves_order_and_applies_backpressure() {
+    let _budget = REQUEST_BUDGET.lock().await;
+    let (slow, slow_requested, release_slow) =
+        gated_response(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow")
+            .await;
+    let (fast, fast_requested, release_fast) =
+        gated_response(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfast")
+            .await;
+    let (third, third_requested, release_third) =
+        gated_response(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlast")
+            .await;
+    let capture = Capture::default();
+    let layer =
+        download_layer(["url".into()].into()).with_batch_window(NonZeroUsize::new(2).unwrap());
+    let input = batch(vec![Some(&slow.url)]);
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    // Acceptance does not wait for this deliberately unreleased first response.
+    writer.write(input).await.unwrap();
+    writer.write(batch(vec![Some(&fast.url)])).await.unwrap();
+    let mut accepting_third = Box::pin(writer.write(batch(vec![Some(&third.url)])));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            _ = fast_requested.notified() => {},
+            result = &mut accepting_third => panic!("window did not apply backpressure: {result:?}"),
+        }
+        slow_requested.notified().await;
+    }).await.unwrap();
+    // The second batch started despite the first batch's slow URL. Neither can
+    // be forwarded out of order, and the third batch cannot be accepted yet.
+    assert!(capture.0.lock().unwrap().batches.is_empty());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), third_requested.notified())
+            .await
+            .is_err()
+    );
+    release_fast.notify_one();
+    // Continue polling while the fast response completes; the slow first batch
+    // still prevents both forwarding and accepting the third batch.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut accepting_third)
+            .await
+            .is_err()
+    );
+    assert!(capture.0.lock().unwrap().batches.is_empty());
+    release_slow.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), accepting_third)
+        .await
+        .unwrap()
+        .unwrap();
+    release_third.notify_one();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_written, 3);
+    let state = capture.0.lock().unwrap();
+    let payloads = state
+        .batches
+        .iter()
+        .map(|b| {
+            b.column(0)
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .unwrap()
+                .value(0)
+                .to_vec()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads,
+        [b"slow".to_vec(), b"fast".to_vec(), b"last".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn cancelling_batch_window_backpressure_poisoned_session_aborts_all_pending_work() {
+    let _budget = REQUEST_BUDGET.lock().await;
+    let (slow, requested, _release) =
+        gated_response(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx").await;
+    let capture = Capture::default();
+    let layer =
+        download_layer(["url".into()].into()).with_batch_window(NonZeroUsize::new(2).unwrap());
+    let input = batch(vec![Some(&slow.url)]);
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    writer.write(input.clone()).await.unwrap();
+    writer.write(input.clone()).await.unwrap();
+    let mut blocked = Box::pin(writer.write(input.clone()));
+    tokio::select! {
+        _ = requested.notified() => {},
+        result = &mut blocked => panic!("expected backpressure: {result:?}"),
+    }
+    drop(blocked);
+    assert!(writer.write(input).await.is_err());
+    assert!(writer.commit().await.is_err());
+    let state = capture.0.lock().unwrap();
+    assert!(state.aborted);
+    assert!(!state.committed);
+    assert!(state.batches.is_empty());
+}
+
+#[tokio::test]
+async fn commit_surfaces_deferred_pipeline_failure_and_aborts_inner() {
+    let _budget = REQUEST_BUDGET.lock().await;
+    let (bad, _requested, release) =
+        gated_response(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+    let capture = Capture::default();
+    let layer =
+        download_layer(["url".into()].into()).with_batch_window(NonZeroUsize::new(2).unwrap());
+    let metrics = layer.metrics();
+    let input = batch(vec![Some(&bad.url)]);
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    writer.write(input).await.unwrap();
+    release.notify_one();
+    assert!(writer.commit().await.is_err());
+    assert!(capture.0.lock().unwrap().aborted);
+    assert!(!capture.0.lock().unwrap().committed);
+    assert_eq!(metrics.snapshot().blobs_failed, 1);
+}
+
+#[rstest::rstest]
+#[case(open_arrow_sink_layer::DownloadFailurePolicy::SkipRow, 1)]
+#[case(open_arrow_sink_layer::DownloadFailurePolicy::Null, 2)]
+#[tokio::test]
+async fn pipeline_window_retains_optional_failure_policy_and_exact_statistics(
+    #[case] policy: open_arrow_sink_layer::DownloadFailurePolicy,
+    #[case] expected_rows: u64,
+) {
+    let _budget = REQUEST_BUDGET.lock().await;
+    let good = server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+        Duration::ZERO,
+    )
+    .await;
+    let bad = server(
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        Duration::ZERO,
+    )
+    .await;
+    let capture = Capture::default();
+    let layer = download_layer(["url".into()].into())
+        .with_failure_policy(policy)
+        .with_batch_window(NonZeroUsize::new(2).unwrap());
+    let metrics = layer.metrics();
+    let input = batch(vec![Some(&bad.url)]);
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    writer.write(input).await.unwrap();
+    writer.write(batch(vec![Some(&good.url)])).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_written, expected_rows);
+    let stats = metrics.snapshot();
+    assert_eq!(stats.blobs_failed, 1);
+    assert_eq!(stats.rows_failed_blobs, 1);
+    assert_eq!(
+        stats.rows_skipped,
+        u64::from(policy == open_arrow_sink_layer::DownloadFailurePolicy::SkipRow)
+    );
+}

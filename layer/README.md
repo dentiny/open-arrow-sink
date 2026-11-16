@@ -122,8 +122,21 @@ fail-fast/cancellation can stop work before every URL is attempted. For filtered
 row counts, place `MetricsLayer` inside `DownloadBlobLayer`; placing it outside
 counts accepted input rows.
 
-A failed or cancelled write poisons the session and cancels remaining downloads;
-commit then aborts the inner writer. Existing accepted batches may have created
+Downloads process one input batch at a time by default. Set
+`.with_batch_window(NonZeroUsize::new(4).unwrap())` to overlap URL downloads from
+up to four batches. The number of active blob downloads remains bounded by the
+pool concurrency. Completed batches are forwarded strictly in input order, so
+later fast URLs can download while an earlier batch has a slow URL. A full window
+applies backpressure to the next `write`; `commit` drains every accepted batch.
+With a window greater than one, `write` can return before that batch downloads;
+a later write or commit reports a deferred failure. Progress is caller-polled
+while write/commit runs, with no detached background workers. The window bounds
+retained batches and completed handles, not bytes; choose sensible batch sizes
+and include destination buffering in the memory budget. The transfer-byte pool
+continues to account for in-flight source chunks separately.
+
+A failed or cancelled write poisons the session. Abort drops pending downloads
+before cleaning up the inner writer; committing a poisoned session also aborts it. Existing accepted batches may have created
 output. Cleanup follows the native writer's guarantees. See the
 [complete download contracts](../docs/options.md#streaming-download-pool) and
 [Lance blob guide](../sink/lance/README.md#streaming-native-blobs).
