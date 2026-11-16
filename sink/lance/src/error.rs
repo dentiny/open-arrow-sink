@@ -2,15 +2,6 @@ use open_arrow_sink_core::Error;
 
 use std::io;
 
-use arrow_schema::ArrowError;
-
-pub(crate) fn aborted() -> ArrowError {
-    ArrowError::ExternalError(Box::new(io::Error::new(
-        io::ErrorKind::Interrupted,
-        "Lance writer aborted or dropped",
-    )))
-}
-
 pub(crate) fn worker_stopped() -> Error {
     Error::backend(io::Error::other("Lance write worker stopped"))
 }

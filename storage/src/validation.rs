@@ -111,26 +111,3 @@ pub(crate) fn validate_http_concurrency(limit: usize) -> Result<()> {
     }
     Ok(())
 }
-
-pub(crate) fn validate_download_limit(limit: std::num::NonZeroUsize) -> Result<()> {
-    if limit.get() > tokio::sync::Semaphore::MAX_PERMITS {
-        return Err(Error::InvalidConfig(
-            "download pool limits exceed semaphore capacity".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_download_url(source: &str) -> Result<http::Uri> {
-    let mut url =
-        url::Url::parse(source).map_err(|_| Error::InvalidInput("invalid blob URL".into()))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(Error::InvalidInput(
-            "blob URL must use HTTP or HTTPS".into(),
-        ));
-    }
-    url.set_fragment(None);
-    url.as_str()
-        .parse()
-        .map_err(|_| Error::InvalidInput("invalid blob URL".into()))
-}

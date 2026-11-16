@@ -48,17 +48,3 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
         Err(error) => Err(map_error("abort", path, error)),
     }
 }
-
-pub(crate) fn download_response(
-    response: http::Response<opendal::HttpBody>,
-) -> http::Response<opendal::HttpBody> {
-    if response.status().is_success() {
-        return response;
-    }
-    // OpenDAL collects error bodies for diagnostics. Discard an unbounded body.
-    let (parts, _) = response.into_parts();
-    http::Response::from_parts(
-        parts,
-        opendal::HttpBody::new(futures::stream::empty(), Some(0)),
-    )
-}

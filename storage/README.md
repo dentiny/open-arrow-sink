@@ -17,12 +17,28 @@ let destination = storage.url("new-output/part-00000.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+`Storage::stat(&url)` returns `Result<Option<Metadata>>`: `None` means only
+NotFound; permission, transport, and other failures remain errors. This replaces
+both `exists` and `stat_optional`. For a non-root destination,
+`inspect_directory(&url)` returns `DirectoryState::{Missing, File, Empty, NonEmpty}`
+with or without a trailing slash. It handles virtual prefixes and explicit empty
+directory markers, and an exact file takes precedence over children. Inspection
+stops at the first child (including empty subdirectories); it is a preflight
+observation, so callers must still use conditional creation to claim a destination.
+Use `list` when the file URLs themselves are needed. `remove_all` remains an
+owner-only recursive deletion; `remove_empty_directory` uses inspection and
+preserves missing paths, exact files, and nonempty directories.
+
 `Storage::from_url(&url)` resolves an operator rooted at the URL's origin. Local
 `file://` and ephemeral `memory://` are available by default. Each memory
 resolution constructs a fresh store; retain a configured `Storage` to share data.
 Enable storage features `aws`, `gcp`, or `azure` for S3, GCS, or Azure Blob URLs.
 For custom authentication and layers, supply your own operator with `Storage::new`.
-`StorageConfig::apply` optionally installs validated retry and timeout policies.
+Call `.with_config(StorageConfig)` after either constructor to install validated
+retry and timeout policies. `StorageConfig::apply` remains available for bare
+operators. Policies are opt-in; timeout runs inside retry so each attempt gets its
+own deadline. Configure storage once before cloning; repeated `with_config` calls
+add layers while preserving caller-supplied operator layers.
 
 URL resolution decodes spaces and Unicode, checks endpoint/root boundaries, and
 rejects query strings, fragments, embedded credentials, and path traversal.
@@ -54,14 +70,40 @@ Each storage instance defaults to 64 ongoing HTTP requests, shared by its clones
 Use `with_http_concurrency_limit(limit.clone())` to share a total budget across
 separately constructed storage instances. `operator()` returns a cloned operator
 wrapped with that same budget, including when a native sink SDK uses it.
-`Storage::try_new` applies the copied retry/timeout configuration before creating
-the storage binding. Errors retain operation/object context and their original
-OpenDAL source through the sink core's existing backend-error contract.
+`Storage::with_config` applies retry/timeout configuration to an existing storage
+binding, including one built by `from_url`. Errors retain operation/object context
+and their original OpenDAL source through the sink core's existing backend-error contract.
 
 The remaining additions support this repository's write contract: a URL-scoped
 namespace, streaming close/abort, conditional creation, and owned-output cleanup.
 The access repository's read-only `ByteReader` and `NamedFileAccessor` contracts
 are not exposed as write APIs here. No dependency on open-arrow-access is added.
+
+## Configure URL-derived stores
+
+`StorageResolver::default().with_config(config)?` applies policies to URL-derived
+stores, including existing cache entries. Explicit `with_storage` registrations
+keep their own policies. Resolver clones share cached backends and HTTP budgets,
+but changing one clone's config does not affect other clones or previously
+resolved storage.
+
+`ParquetDirectorySink::default().with_config(config)?` configures automatically
+resolved destinations. The same method also adds policies to explicit storage
+passed to `ParquetDirectorySink::new`.
+`DownloadPool::with_config(config)` configures both HTTP downloads and lazily
+resolved non-HTTP sources; explicitly registered source stores keep their policies.
+
+```rust
+use open_arrow_sink_storage::{RetryConfig, Storage, StorageConfig, TimeoutConfig, Url};
+
+let url = Url::parse("file:///tmp/output/")?;
+let storage = Storage::from_url(&url)?.with_config(StorageConfig {
+    retry: Some(RetryConfig::default()),
+    timeout: Some(TimeoutConfig::default()),
+})?;
+# let _ = storage;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ## Size the shared HTTP budget
 
@@ -121,27 +163,15 @@ storage upload policy as `Storage::writer()`.
 
 ## HTTP downloads
 
-A `DownloadPool` sends HTTP(S) downloads through a `Storage`, so they use the
-same retry, timeout, request-budget, and transport configuration as every other
-storage. Build it with `DownloadPool::http_storage(config)`, adjust it with
-`with_http_concurrency_limit` or `with_http_transport`, and install it with
-`with_http_storage`. Each request goes to the complete source URL, including
-signed queries.
+`DownloadPool` belongs to `open-arrow-sink-layer`; see its
+[download configuration](../docs/options.md#streaming-download-pool). It owns an
+HTTP operator and transport directly, with one pool stream limit and a separate
+transfer-buffer budget. Non-HTTP downloads use this crate's `StorageResolver`
+and retain their source storage policies.
 
-```rust,ignore
-use open_arrow_sink_storage::{DownloadPool, HttpConcurrencyLimitLayer, StorageConfig};
-
-let shared_limit = HttpConcurrencyLimitLayer::new(32)?;
-let http = DownloadPool::http_storage(StorageConfig::default())?
-    .with_http_concurrency_limit(shared_limit.clone())
-    .with_http_transport(transport);
-let pool = DownloadPool::with_defaults()?.with_http_storage(http)?;
-```
-
-`Storage::with_http_transport` replaces the provider transport for shared
-authentication, instrumentation, or in-memory test fixtures without installing a
-process-global default. The current request budget and operator layers still apply.
-Returned chunks retain the same buffer accounting.
+`Storage::with_http_transport` replaces the provider transport for authentication,
+instrumentation, or in-memory fixtures. Storage's request budget and operator
+layers still apply to its namespace operations.
 
 ## Shared source configuration
 
@@ -151,8 +181,8 @@ clones to `DownloadPool::with_source_resolver` and
 credentials, and the URL-derived cache across downloads and native Lance blob
 reads. See the [Lance example](../sink/lance/README.md#independent-blob-sources).
 `with_source_resolver` replaces prior registrations; `with_source_storage`
-subsequently adds a store only for that consumer. HTTP(S) downloads still use
-`with_http_storage` independently.
+subsequently adds a store only for that consumer. HTTP(S) download policies can be
+configured independently with `DownloadPool::with_http_config`.
 
 ## Related documentation
 
