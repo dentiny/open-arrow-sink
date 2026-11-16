@@ -75,20 +75,14 @@ impl Plan {
         let mut seen = HashSet::new();
         let mut steps = Vec::new();
         for remap in remaps {
-            let matches: Vec<_> = source
-                .fields()
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.name() == &remap.source)
-                .map(|(i, _)| i)
-                .collect();
-            if matches.len() != 1 || !seen.insert(remap.source.clone()) {
-                return Err(Error::InvalidInput(format!(
-                    "remap source must exist and be unique: {}",
-                    remap.source
-                )));
-            }
-            let index = matches[0];
+            let index = validation::unique_column_index(source, &remap.source)
+                .filter(|_| seen.insert(remap.source.clone()))
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "remap source must exist and be unique: {}",
+                        remap.source
+                    ))
+                })?;
             fields[index] = remap.target.clone();
             steps.push((index, remap.clone()));
         }
@@ -291,6 +285,17 @@ mod tests {
         assert!(Plan::new(&schema, &[remap("missing", "c")]).is_err());
         assert!(Plan::new(&schema, &[remap("a", "c"), remap("a", "d")]).is_err());
         assert!(Plan::new(&schema, &[remap("a", "b")]).is_err());
+        let ambiguous = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("a", DataType::Int32, false),
+        ]));
+        assert!(matches!(
+            Plan::new(&ambiguous, &[remap("a", "c")]),
+            Err(Error::InvalidInput(_))
+        ));
+        let literal = Arc::new(Schema::new(vec![Field::new("a.b", DataType::Int32, true)]));
+        let plan = Plan::new(&literal, &[remap("a.b", "c")]).unwrap();
+        assert_eq!(plan.target.field(0).name(), "c");
         let plan = Plan::new(&schema, &[remap("a", "b"), remap("b", "a")]).unwrap();
         assert_eq!(plan.target.field(0).name(), "b");
         assert_eq!(plan.target.field(1).name(), "a");

@@ -74,3 +74,25 @@ fn nested_paths_are_literal_and_cross_lists() {
         );
     }
 }
+
+#[test]
+fn nested_paths_reject_missing_or_ambiguous_siblings() {
+    use arrow_schema::Fields;
+    let field = |name| Arc::new(Field::new(name, DataType::Utf8, true));
+    for children in [
+        Fields::empty(),
+        vec![field("other")].into(),
+        vec![field("value"), field("other"), field("value")].into(),
+    ] {
+        let nested = DataType::Struct(children);
+        for container in [
+            nested.clone(),
+            DataType::List(Arc::new(Field::new("item", nested.clone(), true))),
+            DataType::LargeList(Arc::new(Field::new("item", nested.clone(), true))),
+            DataType::FixedSizeList(Arc::new(Field::new("item", nested.clone(), true)), 2),
+        ] {
+            let schema = Schema::new(vec![Field::new("root", container, true)]);
+            assert!(validation::nested_field(&schema, &["root".into(), "value".into()]).is_none());
+        }
+    }
+}
