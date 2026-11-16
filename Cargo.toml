@@ -17,6 +17,8 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
+hex = "0.4"
+lance-encoding = { version = "14.0.1", default-features = false }
 open-arrow-sink-test-support = { path = "test-support" }
 async-stream = "0.3"
 bytes = "1"

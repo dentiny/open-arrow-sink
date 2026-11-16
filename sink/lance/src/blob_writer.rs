@@ -143,7 +143,7 @@ impl Writer for BlobDatasetWriter {
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.blob_session.failed.store(true, Ordering::Release);
         drop(self.sender.take());
-        // Let native writing stop before removing only our reserved directory.
+        // Let native writing stop before cleaning up our new destination.
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }

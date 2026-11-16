@@ -316,7 +316,7 @@ built by `BlobDownloader::http_storage(config)` for retry, timeout, transport,
 and request-budget policies. No retry or timeout is enabled by default.
 `LanceDatasetSink::with_source_storage` supplies independent source credentials
 to both the downloader and SDK. The destination's own namespace remains readable
-through its configured operator. Error bodies are discarded before diagnostics
+through its configured operator, taking precedence over overlapping source roots. Error bodies are discarded before diagnostics
 can collect them without a bound.
 
 The component also exposes `download(url)` and `download_all(&urls, metrics)` for

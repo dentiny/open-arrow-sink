@@ -32,11 +32,16 @@ buffering is bounded by SDK defaults; this adapter never collects all input
 batches. `write` means accepted by the queue; encoding errors may surface on a
 later write or commit. Only `commit` sends a successful end-of-stream and allows
 Lance to publish a new manifest version. `abort` stops the worker and removes the
-reserved destination when `cleanup_on_error` is enabled. Dropping closes the stream with an error and never commits,
+new destination when `cleanup_on_error` is enabled. Dropping closes the stream
+with an error and never commits,
 but can leave orphan files for manual cleanup. Commit failures/cancellation can
 have an uncertain publication outcome; do not automatically retry.
 
 This sink supports Create, Append, and versioned Overwrite on local or remote datasets.
+Create checks that the destination prefix does not exist without creating marker
+files. Callers must exclude concurrent writes or directory replacement during a
+session. After a process crash, uncommitted output may require manual cleanup
+before another Create.
 Append requires the same schema; Overwrite retains historical dataset versions.
 The destination may contain uncommitted files before commit, but becomes readable
 as a Lance dataset only when the native manifest is published.
@@ -132,7 +137,7 @@ Lance managed-blob descriptors. Streaming values use dedicated storage without
 buffering the full payload to select inline or packed storage. Materialized binary
 inputs remain supported through Lance's prepared-blob path. Handles from another
 session and duplicate/null placements are rejected. Dropping an unfinished blob
-poisons the session. Abort or a rejected commit removes a freshly reserved dataset
+poisons the session. Abort or a rejected commit removes a new dataset
 when `cleanup_on_error` is enabled; existing datasets are preserved. Each session
 owns a separate `_blobs/<session>/` namespace, so abort also removes its attached
 streamed blobs when appending to or overwriting an existing dataset.
@@ -268,7 +273,7 @@ explicit `Storage` for memory URLs so reads and writes share the same store.
 Append requires the same effective schema, including compression metadata.
 Overwrite publishes a new version, retaining historical versions, and can also
 create a missing dataset. Abort waits for workers to stop and removes only a
-freshly reserved destination when `cleanup_on_error` is enabled. Existing
+new destination when `cleanup_on_error` is enabled. Existing
 datasets and files with an uncertain publication outcome are retained.
 
 Use `LanceDatasetSink::with_encoding_buffer_size(NonZeroUsize)` to set the SDK's
@@ -335,6 +340,33 @@ configured root. Destination credentials are never reused for unrelated sources.
 Unregistered sources use URL-configured storage cached by `StorageResolver`.
 The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
 adapts the selected storage to Lance.
+
+Configure sources once and pass the same `Arc<StorageResolver>` to the download
+pool and native Lance sink. Both paths then use the same source operators,
+credentials, and URL-derived cache:
+
+```rust
+use std::sync::Arc;
+use open_arrow_sink_lance::LanceDatasetSink;
+use open_arrow_sink_storage::{BlobDownloader, Storage, StorageResolver, opendal};
+
+let source = Storage::new(
+    opendal::Operator::new(opendal::services::Memory::default())?,
+    "memory://sources/".parse()?,
+)?;
+let sources = Arc::new(StorageResolver::default().with_storage(source));
+let pool = Arc::new(BlobDownloader::with_defaults()?.with_source_resolver(sources.clone()));
+let sink = LanceDatasetSink::default().with_source_resolver(sources)
+    .with_blob_downloader(Arc::new(pool));
+// Blob writes always use the configured downloader.
+# let _ = sink;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`with_source_resolver` replaces prior source registrations. Calling
+`with_source_storage` afterwards adds a store only to that consumer's resolver;
+configure all shared stores before wrapping the resolver in `Arc`.
+HTTP(S) downloads continue to use `BlobDownloader::with_http_storage`.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the

@@ -16,14 +16,14 @@ pub(crate) struct NativeStorage {
     pub url: Url,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
-    reserved: bool,
+    new_destination: bool,
     pub encoding_buffer_size: Option<std::num::NonZeroUsize>,
 }
 impl NativeStorage {
     pub fn new(
         storage: Storage,
         url: Url,
-        sources: StorageResolver,
+        sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
         let url = storage.directory_url(&url)?;
@@ -42,7 +42,7 @@ impl NativeStorage {
             url,
             session,
             io_tracker,
-            reserved: false,
+            new_destination: false,
             encoding_buffer_size: None,
         })
     }
@@ -69,10 +69,7 @@ impl NativeStorage {
                 }
             };
         }
-        self.storage
-            .create(&self.url.join(".open-arrow-sink").unwrap(), "".into())
-            .await?;
-        self.reserved = true;
+        self.new_destination = true;
         Ok(())
     }
     pub async fn validate_index_requests(
@@ -90,7 +87,7 @@ impl NativeStorage {
         Ok(())
     }
     pub async fn cleanup(&self) -> Result<()> {
-        if self.reserved {
+        if self.new_destination {
             self.storage.remove_all(&self.url).await?;
         }
         Ok(())
@@ -98,10 +95,10 @@ impl NativeStorage {
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {
         if let Some(bytes) = self.encoding_buffer_size {
-            let options = params
+            params
                 .file_writer_options
-                .get_or_insert_with(Default::default);
-            options.data_cache_bytes = Some(bytes.get() as u64);
+                .get_or_insert_with(Default::default)
+                .data_cache_bytes = Some(bytes.get() as u64);
         }
         WriteParams {
             session: Some(self.session.clone()),
@@ -131,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn session_routes_opendal_registered_service_without_explicit_source() {
         opendal::OperatorRegistry::get().register::<opendal::services::Memory>("lance-custom");
-        let sources = StorageResolver::default();
+        let sources = Arc::new(StorageResolver::default());
         let source_url: Url = "lance-custom://source/blob".parse().unwrap();
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();

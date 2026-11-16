@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 /// Resolution selects an operator; callers remain responsible for transferring
 /// bytes and choosing where to write them. No destination configuration is used.
 ///
+/// Share an `Arc<StorageResolver>` between a download pool and a sink to configure
+/// source credentials once and reuse the same registrations and URL-derived cache.
 /// Clones share the URL-derived cache but retain their own explicit registrations.
 #[derive(Clone, Debug, Default)]
 pub struct StorageResolver {
@@ -23,12 +25,6 @@ impl StorageResolver {
         self.configured.push(storage);
         self.configured
             .sort_by_key(|s| std::cmp::Reverse(s.base_url().path().len()));
-        self
-    }
-    pub(crate) fn merged(mut self, other: &Self) -> Self {
-        for storage in &other.configured {
-            self = self.with_storage(storage.clone());
-        }
         self
     }
     /// Schemes accepted by OpenDAL or explicitly configured namespaces.

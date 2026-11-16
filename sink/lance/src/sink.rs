@@ -14,7 +14,7 @@ use crate::{storage::NativeStorage, validation::validate_options, write_options}
 #[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
-    sources: StorageResolver,
+    sources: Arc<StorageResolver>,
     encoding_buffer_size: Option<NonZeroUsize>,
     downloader: Arc<BlobDownloader>,
 }
@@ -23,7 +23,7 @@ impl Default for LanceDatasetSink {
     fn default() -> Self {
         Self {
             storage: None,
-            sources: StorageResolver::default(),
+            sources: Arc::default(),
             encoding_buffer_size: None,
             downloader: Arc::new(
                 BlobDownloader::with_defaults().expect("valid default download limits"),
@@ -51,9 +51,14 @@ impl LanceDatasetSink {
         self.encoding_buffer_size = Some(bytes);
         self
     }
+    /// Replace source registrations and share their URL-derived cache.
+    pub fn with_source_resolver(mut self, sources: Arc<StorageResolver>) -> Self {
+        self.sources = sources;
+        self
+    }
     /// Configure an independent source namespace for native external blob ingestion.
     pub fn with_source_storage(mut self, storage: Storage) -> Self {
-        self.sources = self.sources.with_storage(storage);
+        self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
         self
     }
     fn resolve(&self, url: Url, options: &WriteOptions) -> Result<NativeStorage> {
@@ -73,8 +78,8 @@ impl LanceDatasetSink {
             self.downloader
                 .as_ref()
                 .clone()
-                .with_source_resolver(&self.sources)
-                .with_source_storage(storage),
+                .with_source_resolver(self.sources.clone())
+                .with_primary_storage(storage),
         );
         Ok(destination)
     }
