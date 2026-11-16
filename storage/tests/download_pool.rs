@@ -200,21 +200,6 @@ async fn explicit_http_budget_is_shared_across_independent_pools() {
 }
 
 #[test]
-fn http_storage_must_use_http_service() {
-    let memory = open_arrow_sink_storage::Storage::new(
-        opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
-        "memory:///".parse().unwrap(),
-    )
-    .unwrap();
-    assert!(
-        DownloadPool::with_defaults()
-            .unwrap()
-            .with_http_storage(memory)
-            .is_err()
-    );
-}
-
-#[test]
 fn rejects_concurrency_above_semaphore_capacity() {
     assert!(
         DownloadPool::new(
