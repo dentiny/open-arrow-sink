@@ -3,9 +3,7 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, LargeBinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use lance::datatypes::BlobHandling;
-use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode, WriteOptions,
-};
+use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobChunk, BlobPlacement, Sink, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_storage::opendal;
 
@@ -41,10 +39,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();
@@ -112,10 +107,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Overwrite,
-                ..options()
-            },
+            options().with_mode(open_arrow_sink_core::WriteMode::Overwrite),
         )
         .await
         .unwrap();
@@ -192,11 +184,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
             .unwrap();
     }
     let mut writer = sink
-        .open(
-            url.clone(),
-            input().schema(),
-            WriteOptions { mode, ..options() },
-        )
+        .open(url.clone(), input().schema(), options().with_mode(mode))
         .await
         .unwrap();
     writer.write(input()).await.unwrap();
@@ -216,10 +204,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
         .open(
             storage.url("io-failure").unwrap(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();

@@ -86,11 +86,47 @@ pub struct CompressionOptions {
 /// Supported codec scopes and structural encodings.
 /// An empty list means that scope is unsupported, including Uncompressed.
 /// Codec support does not imply support for every level; backends validate levels.
+/// Construct with [`Self::default`] and the `with_*` methods, or mutate fields.
+///
+/// ```compile_fail,E0639
+/// use open_arrow_sink_core::CompressionCapability;
+/// let capability = CompressionCapability {
+///     nested_columns: true,
+///     ..CompressionCapability::default()
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CompressionCapability {
     pub global: &'static [CompressionCodec],
     pub per_column: &'static [CompressionCodec],
     pub nested_columns: bool,
     /// Supported global and per-column structural encodings. Empty means unsupported.
     pub structural_encodings: &'static [StructuralEncoding],
+}
+
+impl CompressionCapability {
+    /// Set `global` while preserving all other options.
+    pub fn with_global(mut self, global: &'static [CompressionCodec]) -> Self {
+        self.global = global;
+        self
+    }
+    /// Set `per_column` while preserving all other options.
+    pub fn with_per_column(mut self, per_column: &'static [CompressionCodec]) -> Self {
+        self.per_column = per_column;
+        self
+    }
+    /// Set `nested_columns` while preserving all other options.
+    pub fn with_nested_columns(mut self, nested_columns: bool) -> Self {
+        self.nested_columns = nested_columns;
+        self
+    }
+    /// Set `structural_encodings` while preserving all other options.
+    pub fn with_structural_encodings(
+        mut self,
+        structural_encodings: &'static [StructuralEncoding],
+    ) -> Self {
+        self.structural_encodings = structural_encodings;
+        self
+    }
 }

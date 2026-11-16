@@ -42,11 +42,17 @@ impl NativeStorage {
             reserved: false,
         })
     }
-    pub async fn prepare(&mut self, schema: &SchemaRef, mode: WriteMode) -> Result<()> {
+    pub async fn prepare(
+        &mut self,
+        schema: &SchemaRef,
+        mode: WriteMode,
+        storage_version: Option<&str>,
+    ) -> Result<()> {
         if mode == WriteMode::Append {
             return crate::validation::validate_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
+                storage_version,
             )
             .await;
         }
@@ -54,7 +60,8 @@ impl NativeStorage {
             return match mode {
                 WriteMode::Create => Err(crate::error::destination_exists()),
                 _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None).await
+                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
+                        .await
                 }
             };
         }

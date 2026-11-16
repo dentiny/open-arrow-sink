@@ -45,10 +45,9 @@ impl DownloadPool {
         validation::validate_http_concurrency(concurrency.get())?;
         validation::validate_download_limit(max_buffered_bytes)?;
         opendal::install_default();
-        let operator =
-            Operator::new(Http::default().endpoint("https://download.invalid")).map_err(backend)?;
         Ok(Self {
-            operator,
+            operator: Operator::new(Http::default().endpoint("https://download.invalid"))
+                .map_err(backend)?,
             sources: crate::StorageResolver::default(),
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
@@ -99,7 +98,7 @@ impl DownloadPool {
     /// releases its stream slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
         let url = crate::Url::parse(source).map_err(backend)?;
-        let request = self
+        let stream_slot = self
             .stream_slots
             .clone()
             .acquire_owned()
@@ -132,7 +131,7 @@ impl DownloadPool {
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
-            let _request = request;
+            let _stream_slot = stream_slot;
             let mut reader = reader;
             let mut pending = Buffer::new();
             loop {

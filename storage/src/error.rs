@@ -87,9 +87,6 @@ fn invalid_config(message: &'static str) -> Error {
     invalid(message)
 }
 
-pub(crate) fn writer_inactive() -> Error {
-    invalid("writer is no longer active")
-}
 pub(crate) fn writer_closed() -> Error {
     invalid("writer is closed")
 }
