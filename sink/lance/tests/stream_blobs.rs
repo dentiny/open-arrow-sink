@@ -30,10 +30,7 @@ fn input() -> RecordBatch {
     .unwrap()
 }
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 
 #[tokio::test]
@@ -46,10 +43,7 @@ async fn shared_storage_streams_large_empty_and_null_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();
@@ -117,10 +111,7 @@ async fn overwrite_abort_removes_attached_session_blobs() {
         .open(
             url.clone(),
             input().schema(),
-            WriteOptions {
-                mode: open_arrow_sink_core::WriteMode::Overwrite,
-                ..options()
-            },
+            options().with_mode(open_arrow_sink_core::WriteMode::Overwrite),
         )
         .await
         .unwrap();
@@ -197,11 +188,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
             .unwrap();
     }
     let mut writer = sink
-        .open(
-            url.clone(),
-            input().schema(),
-            WriteOptions { mode, ..options() },
-        )
+        .open(url.clone(), input().schema(), options().with_mode(mode))
         .await
         .unwrap();
     writer.write(input()).await.unwrap();
@@ -221,10 +208,7 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
         .open(
             storage.url("io-failure").unwrap(),
             input().schema(),
-            WriteOptions {
-                io_metrics: Some(io.clone()),
-                ..options()
-            },
+            options().with_io_metrics(Some(io.clone())),
         )
         .await
         .unwrap();

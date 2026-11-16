@@ -9,10 +9,7 @@ mod testutil;
 use testutil::server;
 
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 fn pool() -> Arc<DownloadPool> {
     Arc::new(
