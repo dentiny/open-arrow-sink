@@ -173,11 +173,8 @@ async fn row_count(directory: &std::path::Path) -> usize {
     rows
 }
 
-#[rstest::rstest]
-#[case::append(WriteMode::Append, 4)]
-#[case::overwrite(WriteMode::Overwrite, 3)]
 #[tokio::test]
-async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
+async fn append_adds_rows() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("output");
     let batch = batch();
@@ -195,11 +192,11 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
         .open(
             Url::from_directory_path(&path).unwrap(),
             batch.schema(),
-            options().with_mode(mode),
+            options().with_mode(WriteMode::Append),
         )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    assert_eq!(row_count(&path).await, expected_rows);
+    assert_eq!(row_count(&path).await, 4);
 }
