@@ -43,7 +43,7 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     writer.write(expected.slice(1, 2)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);
 
-    let file = tokio::fs::File::open(directory.join("part-00000.parquet"))
+    let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
         .unwrap();
     let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();

@@ -61,7 +61,7 @@ async fn rolling_collision_is_preserved() {
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
-    let collision = directory.join("part-00001.parquet").unwrap();
+    let collision = directory.join("part-0-00001.parquet").unwrap();
     storage.create(&collision, "keep".into()).await.unwrap();
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
