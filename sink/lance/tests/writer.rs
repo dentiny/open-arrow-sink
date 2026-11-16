@@ -105,7 +105,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             expected.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();

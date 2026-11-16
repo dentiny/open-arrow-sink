@@ -27,7 +27,7 @@ async fn unordered_commit_preserves_all_rows() {
         .open(
             directory.clone(),
             make_batch(0).schema(),
-            open_arrow_sink_test_support::unordered_options().with_target_file_size(Some(1)),
+            open_arrow_sink_test_support::unordered_options().with_target_file_size(1),
         )
         .await
         .unwrap();

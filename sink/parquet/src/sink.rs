@@ -2,15 +2,15 @@ use open_arrow_sink_storage::{Storage, StorageConfig, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
-    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, Sink,
-    SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
+    CompressionCapability, DataWriter, Ordering, ParallelSink, Result, SchemaRef, SessionCommitter,
+    Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait, validation,
 };
 
 use crate::{
     committer::ParquetCommitter, destination::Destination, writer::ParquetDirectoryWriter,
 };
 
-/// Writes a URL destination containing `part-00000.parquet`, etc.
+/// Writes a URL destination containing `part-0-00000.parquet`, etc.
 /// Create and append are supported on every storage backend. Missing parents are created.
 /// Callers must exclude concurrent writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
@@ -72,10 +72,7 @@ impl Sink for ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        self.open_writers(directory, schema, options, NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(directory, schema, options).await
     }
 }
 
@@ -90,16 +87,7 @@ impl ParallelSink for ParquetDirectorySink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
-        let writers = self
-            .create_writers(directory, schema, options, count)
-            .await?;
-        Ok(WriteSession {
-            writers: writers
-                .into_iter()
-                .map(|w| Box::new(w) as Box<dyn DataWriter<Output = u64>>)
-                .collect(),
-            committer: Box::new(ParquetCommitter),
-        })
+        self.create_writers(directory, schema, options, count).await
     }
 }
 
@@ -110,7 +98,7 @@ impl ParquetDirectorySink {
         schema: SchemaRef,
         options: WriteOptions,
         count: NonZeroUsize,
-    ) -> Result<Vec<ParquetDirectoryWriter>> {
+    ) -> Result<WriteSession<u64>> {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let storage = match &self.storage {
@@ -119,42 +107,41 @@ impl ParquetDirectorySink {
         }
         .with_config(self.config.clone())?
         .with_write_options(&options);
-        let destination = Arc::new(
-            Destination::open(
-                storage,
-                directory,
-                &schema,
-                options.mode,
-                options.cleanup_on_error,
-            )
-            .await?,
-        );
+        let destination =
+            Arc::new(Destination::open(storage, directory, &schema, options.mode).await?);
+        let committer = Box::new(ParquetCommitter {
+            destination: destination.clone(),
+            cleanup_on_error: options.cleanup_on_error,
+        });
         let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
         for index in 0..count.get() {
             let opened = destination
-                .open_writer(index, schema.clone(), properties.clone())
+                .open_writer(index, 0, schema.clone(), properties.clone())
                 .await;
             match opened {
                 Ok(writer) => writers.push(ParquetDirectoryWriter::new(
                     destination.clone(),
                     schema.clone(),
                     writer,
-                    options.clone(),
+                    options.target_file_size,
                     properties.clone(),
                     index,
-                    count.get(),
                 )),
                 Err(error) => {
                     for writer in writers {
                         let _ = DataWriter::abort(Box::new(writer)).await;
                     }
-                    if options.cleanup_on_error {
-                        let _ = destination.remove_empty_directory().await;
-                    }
+                    let _ = committer.abort().await;
                     return Err(error);
                 }
             }
         }
-        Ok(writers)
+        Ok(WriteSession {
+            writers: writers
+                .into_iter()
+                .map(|writer| Box::new(writer) as Box<dyn DataWriter<Output = u64>>)
+                .collect(),
+            committer,
+        })
     }
 }

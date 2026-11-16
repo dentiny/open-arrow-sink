@@ -72,8 +72,8 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
             url.clone(),
             input.schema(),
             open_arrow_sink_test_support::unordered_options()
-                .with_storage_version(Some("2.2".into()))
-                .with_target_file_size(Some(1)),
+                .with_storage_version("2.2".into())
+                .with_target_file_size(1),
         )
         .await
         .unwrap();
@@ -297,7 +297,7 @@ async fn compressed_dataset() -> (tempfile::TempDir, lance::Dataset, RecordBatch
         .open(
             Url::from_directory_path(std::path::absolute(&path).unwrap()).unwrap(),
             schema.clone(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();

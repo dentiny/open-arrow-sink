@@ -30,11 +30,13 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
+    let mut write_options = options();
+    write_options.target_file_size = target_file_size;
     let mut writer = ParquetDirectorySink::default()
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            options().with_target_file_size(target_file_size),
+            write_options,
         )
         .await
         .unwrap();
@@ -43,7 +45,7 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     writer.write(expected.slice(1, 2)).await.unwrap();
     assert_eq!(writer.commit().await.unwrap().rows_written, 3);
 
-    let file = tokio::fs::File::open(directory.join("part-00000.parquet"))
+    let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
         .unwrap();
     let builder = ParquetRecordBatchStreamBuilder::new(file).await.unwrap();
@@ -122,7 +124,7 @@ async fn abort_removes_output_and_preserves_sibling_files() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             batch.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();
@@ -152,7 +154,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
         .open(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
-            options().with_target_file_size(Some(1)),
+            options().with_target_file_size(1),
         )
         .await
         .unwrap();
@@ -164,7 +166,14 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     assert_eq!(writer.commit().await.unwrap().rows_written, 9);
     let directory = Url::from_directory_path(&directory).unwrap();
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
-    assert_eq!(storage.list(&directory).await.unwrap().len(), 3);
+    assert_eq!(
+        storage
+            .list(&storage.resolve(&directory).unwrap())
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
     let batches = open_arrow_sink_test_support::read_parquet_dir(&storage, &directory).await;
     let mut offset = 0;
     for actual in batches {

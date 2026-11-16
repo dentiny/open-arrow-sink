@@ -37,7 +37,7 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
     sink.open(
         (),
         input.schema(),
-        options().with_blob_handle(Some(Default::default())),
+        options().with_blob_handle(Default::default()),
     )
     .await
     .unwrap()

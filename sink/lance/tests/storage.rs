@@ -25,8 +25,8 @@ fn batch() -> RecordBatch {
 fn write_options() -> WriteOptions {
     open_arrow_sink_test_support::unordered_options().with_upload(
         UploadConfig::default()
-            .with_part_size(NonZeroUsize::new(16 * 1024))
-            .with_concurrency(NonZeroUsize::new(2)),
+            .with_part_size(NonZeroUsize::new(16 * 1024).unwrap())
+            .with_concurrency(NonZeroUsize::new(2).unwrap()),
     )
 }
 
@@ -79,7 +79,7 @@ async fn shared_operator_records_read_and_write_metrics() {
         storage.url("output/").unwrap(),
         // Building the index forces reads within the measured session.
         write_options()
-            .with_io_metrics(Some(io.clone()))
+            .with_io_metrics(io.clone())
             .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
     )
     .await;
@@ -109,7 +109,14 @@ async fn native_files_use_the_configured_storage_namespace() {
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("雪 output%20/").unwrap();
     write_dataset(sink.clone(), url.clone(), write_options()).await;
-    assert_gt!(storage.list(&url).await.unwrap().len(), 1);
+    assert_gt!(
+        storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), 12);
 }
@@ -148,13 +155,26 @@ async fn shared_operator_abort_honors_cleanup(#[case] cleanup_on_error: bool) {
         .unwrap();
     writer.write(batch()).await.unwrap();
     let sibling = storage.url("keep").unwrap();
-    storage.write(&sibling, "keep".into()).await.unwrap();
+    storage
+        .write(&storage.resolve(&sibling).unwrap(), "keep".into())
+        .await
+        .unwrap();
     writer.abort().await.unwrap();
     assert_eq!(
-        storage.list(&url).await.unwrap().is_empty(),
+        storage
+            .list(&storage.resolve(&url).unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
         cleanup_on_error
     );
-    assert_eq!(storage.read(&sibling).await.unwrap(), "keep");
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&sibling).unwrap())
+            .await
+            .unwrap(),
+        "keep"
+    );
 }
 
 #[tokio::test]
@@ -168,7 +188,7 @@ async fn explicit_storage_version() {
             .open(
                 url.clone(),
                 batch().schema(),
-                write_options().with_storage_version(Some(version.into())),
+                write_options().with_storage_version(version.into()),
             )
             .await
             .unwrap();
@@ -184,7 +204,7 @@ async fn explicit_storage_version() {
         sink.open(
             storage.url("unsupported/").unwrap(),
             batch().schema(),
-            write_options().with_storage_version(Some("2.1".into()))
+            write_options().with_storage_version("2.1".into())
         )
         .await,
         Err(open_arrow_sink_core::Error::Unsupported(_))
@@ -205,7 +225,10 @@ async fn ingests_blob_with_configured_layout(
     let storage = storage();
     let source = storage.url("source.bin").unwrap();
     storage
-        .write(&source, payload.as_bytes().to_vec().into())
+        .write(
+            &storage.resolve(&source).unwrap(),
+            payload.as_bytes().to_vec().into(),
+        )
         .await
         .unwrap();
     let mut values = BlobArrayBuilder::new(1);
@@ -215,11 +238,11 @@ async fn ingests_blob_with_configured_layout(
         vec![values.finish().unwrap()],
     )
     .unwrap();
-    let options = write_options().with_blob_handle(Some(BlobHandleConfig {
+    let options = write_options().with_blob_handle(BlobHandleConfig {
         inline_size_threshold: Some(1),
         dedicated_size_threshold: NonZeroUsize::new(2),
         ..Default::default()
-    }));
+    });
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("ingested/").unwrap();
     let mut writer = if parallel {
@@ -233,7 +256,10 @@ async fn ingests_blob_with_configured_layout(
     .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    storage.delete(&source).await.unwrap();
+    storage
+        .delete(&storage.resolve(&source).unwrap())
+        .await
+        .unwrap();
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     let blobs = Arc::new(dataset)
         .take_blobs_by_indices(&[0], "blob")
@@ -254,7 +280,10 @@ async fn external_blobs_resolve_independent_buckets() {
     for (storage, bytes) in [(&first, "first"), (&second, "second")] {
         let uri = storage.url("same-key").unwrap();
         storage
-            .write(&uri, bytes.as_bytes().to_vec().into())
+            .write(
+                &storage.resolve(&uri).unwrap(),
+                bytes.as_bytes().to_vec().into(),
+            )
             .await
             .unwrap();
         values.push_uri(uri.as_str()).unwrap();
@@ -274,9 +303,12 @@ async fn external_blobs_resolve_independent_buckets() {
         .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
-    first.delete(&first.url("same-key").unwrap()).await.unwrap();
+    first
+        .delete(&first.resolve(&first.url("same-key").unwrap()).unwrap())
+        .await
+        .unwrap();
     second
-        .delete(&second.url("same-key").unwrap())
+        .delete(&second.resolve(&second.url("same-key").unwrap()).unwrap())
         .await
         .unwrap();
     let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());
@@ -305,7 +337,7 @@ async fn io_metrics_are_isolated_per_session() {
                 batch().schema(),
                 // Building the index forces reads within the measured session.
                 write_options()
-                    .with_io_metrics(Some(io.clone()))
+                    .with_io_metrics(io.clone())
                     .with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]),
             )
             .await

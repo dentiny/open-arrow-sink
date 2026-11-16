@@ -21,7 +21,9 @@ lists implemented modes, but destination-dependent restrictions still apply
 
 `Ordering::PreserveInput` is the default. It requires preservation of input row
 sequence in the backend's documented read order; it does not sort by column values.
-Single-writer backends can adapt their `WriteSession` with `into_writer()`.
+Parallel backends can delegate `Sink::open` to the default
+`ParallelSink::open_writer()`, which opens one writer and adapts its `WriteSession`
+with `into_writer()`.
 This shares write-failure, cancellation, finish, abort, and publication handling
 across sinks; backend data writers only produce output, and committers publish it.
 
@@ -98,6 +100,10 @@ overrides do not reset codecs or their levels. Both policies apply recursively t
 nested descendants. Empty policies preserve existing schema metadata and backend
 defaults. `CompressionLayer` replaces all four fields together.
 
+Lance accepts `Compression::Lz4Raw` as its native `lz4` policy for global,
+per-column, and nested overrides. Native framing and codec selection still apply:
+Miniblock uses LZ4, while some Fullzip per-value paths in Lance 14 substitute Zstd.
+
 `CompressionCapability.structural_encodings` advertises supported layouts for
 both scopes. Lance supports both; Parquet and Iceberg reject nonempty structural
 policy before destination I/O. Lance rejects structural overrides on native blob
@@ -121,7 +127,7 @@ let mut writer = sink
         schema,
         WriteOptions::default()
             .with_ordering(Ordering::Unordered)
-            .with_target_file_size(Some(256 * 1024 * 1024)),
+            .with_target_file_size(256 * 1024 * 1024),
     )
     .await?;
 writer.write(batch).await?;
@@ -205,7 +211,7 @@ use open_arrow_sink::{Ordering, WriteOptions};
 
 let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
-    .with_target_file_size(Some(256 * 1024 * 1024));
+    .with_target_file_size(256 * 1024 * 1024);
 ```
 
 This is a soft data-file target, not a strict maximum or a total-output limit.
@@ -432,8 +438,8 @@ let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
     .with_upload(
         UploadConfig::default()
-            .with_part_size(NonZeroUsize::new(16 * 1024 * 1024))
-            .with_concurrency(NonZeroUsize::new(4)),
+            .with_part_size(NonZeroUsize::new(16 * 1024 * 1024).unwrap())
+            .with_concurrency(NonZeroUsize::new(4).unwrap()),
     );
 ```
 

@@ -27,8 +27,9 @@ pub async fn read_parquet_dir(
     directory: &open_arrow_sink_storage::Url,
 ) -> Vec<arrow_array::RecordBatch> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    let mut files = storage.list(directory).await.unwrap();
-    files.retain(|file| file.path().ends_with(".parquet"));
+    let directory = storage.resolve(directory).unwrap();
+    let mut files = storage.list(&directory).await.unwrap();
+    files.retain(|file| file.as_str().ends_with(".parquet"));
     files.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     let mut batches = Vec::new();
     for file in files {

@@ -153,11 +153,11 @@ use std::num::NonZeroUsize;
 
 let options = WriteOptions::default()
     .with_ordering(Ordering::Unordered)
-    .with_blob_handle(Some(BlobHandleConfig {
+    .with_blob_handle(BlobHandleConfig {
         external_blob_mode: ExternalBlobMode::Ingest,
         inline_size_threshold: Some(16 * 1024),
         dedicated_size_threshold: NonZeroUsize::new(2 * 1024 * 1024),
-    }));
+    });
 ```
 
 Native logical blob source URIs are copied into destination-owned storage with
@@ -199,9 +199,9 @@ removing `validate_parallel_blob_schema` alone would not supply those guarantees
 
 ## Compression
 
-Supports global and per-column `Compression::Zstd { level }` and
-`Compression::Uncompressed`, directly in `WriteOptions.compression` or through
-`CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
+Supports global, per-column, and nested-column `Compression::Zstd { level }`,
+`Compression::Lz4Raw`, and `Compression::Uncompressed`, directly in
+`WriteOptions.compression` or through `CompressionLayer`. Zstandard levels 0 through 22 are supported; `None` uses
 Lance's codec default. Unsupported codecs and levels fail before destination
 creation. Empty compression options preserve existing field metadata and native
 defaults.
@@ -217,8 +217,8 @@ The adapter sets `lance-encoding:compression` and
 separate dictionary-value compression settings. `Uncompressed` disables native
 general-purpose compression. Structural encoding is independently controlled by
 `CompressionOptions.structural_encoding` and `.column_encodings`: `Miniblock`
-uses a block-oriented layout, while `Fullzip` uses a per-value layout. Neither
-setting changes the codec. Column overrides replace only the corresponding
+uses a block-oriented layout, while `Fullzip` uses a per-value layout.
+The requested codec is passed to Lance for either layout. Column overrides replace only the corresponding
 structural default, and both policies propagate to nested descendants.
 Unspecified structural settings preserve native/schema defaults. Native blob
 fields own their layout and reject explicit structural settings before I/O.
@@ -227,9 +227,11 @@ Append compares the effective metadata, so use the same policies as at creation.
 Batches reuse their existing value buffers with the internal schema, and readback
 includes the persisted encoding metadata. These settings survive file rolling.
 
-Snappy and Gzip are unsupported by Lance. `Lz4Raw` is not advertised: Lance's
-stable format can substitute Zstd for LZ4 on per-value paths, so it cannot honor
-that shared codec request consistently.
+`Lz4Raw` maps to Lance's native `lz4` policy. Native encoding determines the
+on-disk framing; this is not a Parquet-compatible raw LZ4 stream. Miniblock
+encoding uses LZ4, while some Fullzip per-value paths in Lance 14 substitute
+Zstd. The adapter preserves this native behavior and the requested `lz4` schema
+metadata. Snappy and Gzip are unsupported by Lance.
 
 ```rust
 use open_arrow_sink_core::{Compression, CompressionOptions, StructuralEncoding};
@@ -301,9 +303,12 @@ default version. This selects the file format, independently of the dataset's co
 ## Configuration adaptation
 
 The Lance `write_options` adapter translates shared configuration into native
-`WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression (`compression::apply_compression`), prepared blob fields, then explicit
-layout overrides (`write_options::writer_schema`). `LanceDestination` binds
+`WriteParams` and encoding metadata. Both writer paths prepare one
+`write_options::LanceSchemas` containing the original input schema, the logical
+schema for dataset validation, and the encoded schema for native writes.
+Compression is applied first; logical blob fields and encoded descriptors are then
+derived together with the same metadata and explicit layout overrides.
+`LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 

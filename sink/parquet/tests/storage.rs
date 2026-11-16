@@ -12,11 +12,11 @@ fn batch() -> RecordBatch {
 }
 fn options() -> WriteOptions {
     open_arrow_sink_test_support::unordered_options()
-        .with_target_file_size(Some(1))
+        .with_target_file_size(1)
         .with_upload(
             UploadConfig::default()
-                .with_part_size(NonZeroUsize::new(16))
-                .with_concurrency(NonZeroUsize::new(2)),
+                .with_part_size(NonZeroUsize::new(16).unwrap())
+                .with_concurrency(NonZeroUsize::new(2).unwrap()),
         )
 }
 
@@ -39,7 +39,11 @@ async fn shared_storage_abort_and_keep_policy(#[case] cleanup_on_error: bool) {
     writer.write(batch()).await.unwrap();
     writer.abort().await.unwrap();
     assert_eq!(
-        storage.list(&directory).await.unwrap().is_empty(),
+        storage
+            .list(&storage.resolve(&directory).unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
         cleanup_on_error
     );
 }
@@ -54,11 +58,20 @@ async fn rolling_collision_is_preserved() {
         .await
         .unwrap();
     writer.write(batch()).await.unwrap();
-    let collision = directory.join("part-00001.parquet").unwrap();
-    storage.create(&collision, "keep".into()).await.unwrap();
+    let collision = directory.join("part-0-00001.parquet").unwrap();
+    storage
+        .create(&storage.resolve(&collision).unwrap(), "keep".into())
+        .await
+        .unwrap();
     assert!(writer.write(batch()).await.is_err());
     writer.abort().await.unwrap();
-    assert_eq!(storage.read(&collision).await.unwrap(), "keep");
+    assert_eq!(
+        storage
+            .read(&storage.resolve(&collision).unwrap())
+            .await
+            .unwrap(),
+        "keep"
+    );
 }
 
 async fn rows(storage: &Storage, directory: &open_arrow_sink_parquet::Url) -> usize {

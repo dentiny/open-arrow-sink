@@ -4,8 +4,8 @@ use lance::{
     session::Session,
 };
 use lance_table::io::commit::ConditionalPutCommitHandler;
-use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{DirectoryState, Storage, StorageResolver, Url};
+use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageResolver, Url};
 use std::sync::Arc;
 
 /// Dataset location, native session, and owned publication reservation.
@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub(crate) struct LanceDestination {
     pub storage: Storage,
     pub url: Url,
+    pub path: ObjectPath,
     session: Arc<Session>,
     pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
     new_destination: bool,
@@ -24,7 +25,10 @@ impl LanceDestination {
         sources: Arc<StorageResolver>,
         metrics: Option<&open_arrow_sink_core::IoMetrics>,
     ) -> Result<Self> {
-        let url = storage.directory_url(&url)?;
+        let path = storage.resolve(&url)?.as_dir();
+        crate::validation::validate_destination_path(&path)?;
+        // Lance's native API requires a URL at its boundary.
+        let url = storage.url(path.as_str())?;
         let session = Arc::new(Session::default());
         let io_tracker = crate::io_metrics::TrackedIo::new(metrics);
         let provider = Arc::new(Provider::new(storage.clone(), sources, io_tracker.clone()));
@@ -34,6 +38,7 @@ impl LanceDestination {
         Ok(Self {
             storage,
             url,
+            path,
             session,
             io_tracker,
             new_destination: false,
@@ -43,45 +48,16 @@ impl LanceDestination {
         &mut self,
         schema: &SchemaRef,
         mode: WriteMode,
-        storage_version: Option<&str>,
-    ) -> Result<()> {
-        if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
-                self.dataset_builder(),
-                Some(schema),
-                storage_version,
-            )
-            .await;
-        }
-        if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
-            return match mode {
-                WriteMode::Create => Err(Error::DestinationExists),
-                _ => {
-                    crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
-                        .await
-                }
-            };
-        }
-        self.new_destination = true;
-        Ok(())
-    }
-    pub async fn validate_index_requests(
-        &self,
-        options: &open_arrow_sink_core::WriteOptions,
-    ) -> Result<()> {
-        if options.mode == WriteMode::Append && !options.indexes.is_empty() {
-            let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(Error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
-        }
-        Ok(())
+        storage_version: Option<lance_file::version::LanceFileVersion>,
+    ) -> Result<Option<lance::Dataset>> {
+        let existing =
+            crate::validation::validate_destination(self, schema, mode, storage_version).await?;
+        self.new_destination = existing.is_none();
+        Ok(existing)
     }
     pub async fn cleanup(&self) -> Result<()> {
         if self.new_destination {
-            self.storage.remove_all(&self.url).await?;
+            self.storage.remove_all(&self.path).await?;
         }
         Ok(())
     }
@@ -120,7 +96,10 @@ mod tests {
         // Seed the URL-derived cache; no source namespace is explicitly registered.
         let source = sources.resolve(&source_url).unwrap();
         source
-            .write(&source_url, "custom backend".into())
+            .write(
+                &source.resolve(&source_url).unwrap(),
+                "custom backend".into(),
+            )
             .await
             .unwrap();
         let destination = Storage::new(

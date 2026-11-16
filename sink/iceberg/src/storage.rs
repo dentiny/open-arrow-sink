@@ -16,13 +16,13 @@ use iceberg::{
     },
 };
 use open_arrow_sink_core::async_trait;
-use open_arrow_sink_storage::{Storage, StorageWriter, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 use uuid::Uuid;
 
 type SharedWriter = Arc<futures::lock::Mutex<StorageWriter>>;
 
 struct Upload {
-    path: String,
+    path: ObjectPath,
     writer: SharedWriter,
 }
 
@@ -43,6 +43,12 @@ impl Uploads {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedLocation {
+    location: Arc<str>,
+    path: ObjectPath,
+}
+
 /// Inject into `CatalogBuilder::with_storage_factory` so data, metadata, scans,
 /// and cleanup all share the same operator. This factory holds a live operator;
 /// FileIO serialization is deliberately unsupported instead of losing its state.
@@ -52,16 +58,39 @@ pub struct OpenDalStorageFactory {
     // Iceberg's FileWrite has no abort method. Retain unfinished native handles
     // across FileWrite drop so explicit prefix cleanup can still abort them.
     uploads: Arc<Uploads>,
+    // FileIO retains a string location; file handles retain its resolved path
+    // here so subsequent reads/writes do not revalidate the same URL.
+    resolved: Option<ResolvedLocation>,
 }
 impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
         Self {
             storage,
             uploads: Arc::default(),
+            resolved: None,
         }
     }
     pub fn file_io(&self) -> iceberg::io::FileIO {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
+    }
+
+    fn resolve(&self, path: &str) -> Result<ObjectPath> {
+        if let Some(resolved) = &self.resolved
+            && resolved.location.as_ref() == path
+        {
+            return Ok(resolved.path.clone());
+        }
+        self.storage.resolve(&location(path)?).map_err(backend)
+    }
+
+    fn for_location(&self, path: &str) -> Result<Self> {
+        let resolved = self.resolve(path)?;
+        let mut storage = self.clone();
+        storage.resolved = Some(ResolvedLocation {
+            location: Arc::from(path),
+            path: resolved,
+        });
+        Ok(storage)
     }
 }
 
@@ -89,7 +118,7 @@ impl StorageFactory for OpenDalStorageFactory {
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
         self.storage
-            .stat(&location(path)?)
+            .stat(&self.resolve(path)?)
             .await
             .map(|metadata| metadata.is_some())
             .map_err(backend)
@@ -97,7 +126,7 @@ impl IcebergStorage for OpenDalStorageFactory {
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let metadata = self
             .storage
-            .stat(&location(path)?)
+            .stat(&self.resolve(path)?)
             .await
             .map_err(backend)?
             .ok_or_else(|| {
@@ -111,27 +140,28 @@ impl IcebergStorage for OpenDalStorageFactory {
         })
     }
     async fn read(&self, path: &str) -> Result<Bytes> {
-        self.storage.read(&location(path)?).await.map_err(backend)
+        self.storage
+            .read(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
-        let url = location(path)?;
-        self.storage.path(&url).map_err(backend)?;
+        let path = self.resolve(path)?;
         Ok(Box::new(OpenDalReader {
             storage: self.storage.clone(),
-            url,
+            path,
         }))
     }
     async fn write(&self, path: &str, bytes: Bytes) -> Result<()> {
         self.storage
-            .write(&location(path)?, bytes)
+            .write(&self.resolve(path)?, bytes)
             .await
             .map_err(backend)
     }
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
-        let url = location(path)?;
-        let path = self.storage.path(&url).map_err(backend)?;
+        let path = self.resolve(path)?;
         let writer = Arc::new(futures::lock::Mutex::new(
-            self.storage.writer(&url).await.map_err(backend)?,
+            self.storage.writer(&path).await.map_err(backend)?,
         ));
         let id = Uuid::new_v4();
         self.uploads.lock().insert(
@@ -148,22 +178,24 @@ impl IcebergStorage for OpenDalStorageFactory {
         }))
     }
     async fn delete(&self, path: &str) -> Result<()> {
-        self.storage.delete(&location(path)?).await.map_err(backend)
+        self.storage
+            .delete(&self.resolve(path)?)
+            .await
+            .map_err(backend)
     }
     async fn delete_prefix(&self, path: &str) -> Result<()> {
-        let url = location(path)?;
-        let path = self.storage.path(&url).map_err(backend)?;
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path.trim_end_matches('/'))
-        };
+        let path = self.resolve(path)?;
+        // Reject the operator root before aborting any active upload.
+        if path.is_root() {
+            return self.storage.remove_all(&path).await.map_err(backend);
+        }
+        let prefix = path.as_dir();
         // Never hold the registry's synchronous mutex across storage I/O.
         let uploads: Vec<_> = self
             .uploads
             .lock()
             .iter()
-            .filter(|(_, upload)| upload.path.starts_with(&prefix))
+            .filter(|(_, upload)| upload.path.as_str().starts_with(prefix.as_str()))
             .map(|(id, upload)| (*id, upload.writer.clone()))
             .collect();
         let mut first_error = None;
@@ -173,7 +205,7 @@ impl IcebergStorage for OpenDalStorageFactory {
             }
             self.uploads.lock().remove(&id);
         }
-        if let Err(error) = self.storage.remove_all(&url).await {
+        if let Err(error) = self.storage.remove_all(&path).await {
             first_error.get_or_insert_with(|| backend(error));
         }
         first_error.map_or(Ok(()), Err)
@@ -185,23 +217,27 @@ impl IcebergStorage for OpenDalStorageFactory {
         Ok(())
     }
     fn new_input(&self, path: &str) -> Result<InputFile> {
-        self.storage.path(&location(path)?).map_err(backend)?;
-        Ok(InputFile::new(Arc::new(self.clone()), path.to_owned()))
+        Ok(InputFile::new(
+            Arc::new(self.for_location(path)?),
+            path.to_owned(),
+        ))
     }
     fn new_output(&self, path: &str) -> Result<OutputFile> {
-        self.storage.path(&location(path)?).map_err(backend)?;
-        Ok(OutputFile::new(Arc::new(self.clone()), path.to_owned()))
+        Ok(OutputFile::new(
+            Arc::new(self.for_location(path)?),
+            path.to_owned(),
+        ))
     }
 }
 struct OpenDalReader {
     storage: Storage,
-    url: Url,
+    path: ObjectPath,
 }
 #[async_trait]
 impl FileRead for OpenDalReader {
     async fn read(&self, range: Range<u64>) -> Result<Bytes> {
         self.storage
-            .read_range(&self.url, range)
+            .read_range(&self.path, range)
             .await
             .map_err(backend)
     }
@@ -283,7 +319,12 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .stat(&fixture.storage.url("session-a/abandoned").unwrap())
+                .stat(
+                    &fixture
+                        .storage
+                        .resolve(&fixture.storage.url("session-a/abandoned").unwrap())
+                        .unwrap()
+                )
                 .await
                 .unwrap()
                 .is_none()
@@ -302,7 +343,12 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .stat(&fixture.storage.url("session-a/active").unwrap())
+                .stat(
+                    &fixture
+                        .storage
+                        .resolve(&fixture.storage.url("session-a/active").unwrap())
+                        .unwrap()
+                )
                 .await
                 .unwrap()
                 .is_none()
@@ -313,7 +359,12 @@ mod tests {
         assert_eq!(
             fixture
                 .storage
-                .read(&fixture.storage.url("session-ab/keep").unwrap())
+                .read(
+                    &fixture
+                        .storage
+                        .resolve(&fixture.storage.url("session-ab/keep").unwrap())
+                        .unwrap()
+                )
                 .await
                 .unwrap(),
             "keep more"
@@ -330,7 +381,12 @@ mod tests {
         assert!(
             fixture
                 .storage
-                .stat(&fixture.storage.url("session-a/completed").unwrap())
+                .stat(
+                    &fixture
+                        .storage
+                        .resolve(&fixture.storage.url("session-a/completed").unwrap())
+                        .unwrap()
+                )
                 .await
                 .unwrap()
                 .is_none()

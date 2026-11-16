@@ -1,9 +1,8 @@
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
-use lance::dataset::{InsertBuilder, transaction::Transaction};
+use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{
-    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
-    validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, async_trait, validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -13,8 +12,7 @@ use crate::{
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
@@ -23,21 +21,20 @@ pub(crate) struct FragmentWriter {
 
 impl FragmentWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        encoding_schema: SchemaRef,
+        schemas: crate::write_options::LanceSchemas,
         destination: LanceDestination,
-        options: &WriteOptions,
-    ) -> Result<Self> {
+        params: WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         // Closing the channel ends fragment input; publication belongs to the committer.
         let batches = stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
         });
         let stream = Box::pin(RecordBatchStreamAdapter::new(
-            encoding_schema.clone(),
+            schemas.encoded.clone(),
             batches,
         )) as SendableRecordBatchStream;
-        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
+        let params = destination.bind_write_params(params);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
@@ -45,14 +42,13 @@ impl FragmentWriter {
                 .execute_uncommitted_stream(stream)
                 .await
         });
-        Ok(Self {
-            schema,
-            encoding_schema,
+        Self {
+            schemas,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
             state: Poison::default(),
-        })
+        }
     }
 }
 
@@ -60,13 +56,13 @@ impl FragmentWriter {
 impl DataWriter for FragmentWriter {
     type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
+        let batch = writer_batch(batch, &self.schemas.encoded)?;
         self.sender
             .as_ref()
             .unwrap()

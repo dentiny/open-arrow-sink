@@ -2,7 +2,7 @@
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use open_arrow_sink_core::{Error, Result, SchemaRef};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage};
 use parquet::{
     arrow::{
         ParquetRecordBatchStreamBuilder, arrow_reader::ArrowReaderOptions,
@@ -14,14 +14,14 @@ use std::{ops::Range, sync::Arc};
 
 struct Reader {
     storage: Storage,
-    url: Url,
+    path: ObjectPath,
     size: u64,
 }
 impl AsyncFileReader for Reader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         Box::pin(async move {
             self.storage
-                .read_range(&self.url, range)
+                .read_range(&self.path, range)
                 .await
                 .map_err(crate::error::parquet_backend)
         })
@@ -39,18 +39,22 @@ impl AsyncFileReader for Reader {
         })
     }
 }
-pub(crate) async fn schema(storage: Storage, url: Url) -> Result<SchemaRef> {
+pub(crate) async fn schema(storage: Storage, path: ObjectPath) -> Result<SchemaRef> {
     let size = storage
-        .stat(&url)
+        .stat(&path)
         .await?
         .ok_or_else(|| {
             Error::backend(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Parquet file does not exist: {url}"),
+                format!("Parquet file does not exist: {}", path.as_str()),
             ))
         })?
         .content_length();
-    let reader = Reader { storage, url, size };
+    let reader = Reader {
+        storage,
+        path,
+        size,
+    };
     Ok(ParquetRecordBatchStreamBuilder::new(reader)
         .await
         .map_err(Error::backend)?
