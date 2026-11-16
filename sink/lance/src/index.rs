@@ -8,7 +8,7 @@ use lance_index::{
     scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams},
 };
 use lance_linalg::distance::MetricType;
-use open_arrow_sink_core::{IndexCommitError, IndexSpec, IndexType};
+use open_arrow_sink_core::{ExistingIndexPolicy, IndexCommitError, IndexSpec, IndexType};
 use tokio::task::JoinSet;
 
 use crate::error::{index_creation, index_refresh, index_task};
@@ -54,7 +54,37 @@ pub(crate) async fn build_indexes(
     }
 }
 
+pub(crate) async fn validate_existing_indexes(
+    dataset: &Dataset,
+    indexes: &[IndexSpec],
+) -> open_arrow_sink_core::Result<()> {
+    let existing = dataset
+        .load_indices()
+        .await
+        .map_err(crate::error::backend)?;
+    for spec in indexes {
+        if spec.existing == ExistingIndexPolicy::Error
+            && existing.iter().any(|i| i.name == index_name(spec))
+        {
+            return Err(open_arrow_sink_core::Error::Unsupported(format!(
+                "index {} already exists; select Keep or Rebuild",
+                index_name(spec)
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<()> {
+    if spec.existing == ExistingIndexPolicy::Keep
+        && dataset
+            .load_indices()
+            .await?
+            .iter()
+            .any(|i| i.name == index_name(spec))
+    {
+        return Ok(());
+    }
     let (lance_type, params): (_, Box<dyn IndexParams>) = match spec.index_type {
         IndexType::Scalar => (
             LanceIndexType::BTree,
@@ -82,14 +112,14 @@ async fn create_index(dataset: &mut Dataset, spec: &IndexSpec) -> lance::Result<
             )),
         ),
     };
-    // Never replace an existing index.
+    // Replacement is explicit; the default continues to reject duplicates.
     dataset
         .create_index(
             &[&spec.column],
             lance_type,
             Some(index_name(spec)),
             params.as_ref(),
-            /*replace=*/ false,
+            /*replace=*/ spec.existing == ExistingIndexPolicy::Rebuild,
         )
         .await?;
     Ok(())

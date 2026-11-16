@@ -328,6 +328,17 @@ or Lance defaults. `blob_handle: None` still uses `Ingest`. Lance advertises
 configuration before destination I/O. Native schema and parallel-session restrictions
 still apply. See the [Lance blob options](../sink/lance/README.md#external-blob-ingestion).
 
+### Existing indexes
+
+`IndexSpec::new` defaults to `ExistingIndexPolicy::Error`. Use
+`.with_existing_policy(ExistingIndexPolicy::Keep)` to retain an existing named
+index or `Rebuild` to recreate it over all committed rows. Lance preflights
+Append name conflicts for Error before accepting data. Index work still occurs
+after publication; training or storage failures return `IndexCommitError` and
+leave committed data visible. Keep can leave appended fragments unindexed.
+
+`IndexSpec` gains an `existing` field; constructors preserve the default behavior.
+
 ### Nested Lance compression overrides
 
 `CompressionOptions.nested_columns` uses literal path segments, for example
