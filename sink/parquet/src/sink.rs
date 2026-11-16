@@ -106,7 +106,7 @@ impl ParquetDirectorySink {
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
-            None => self.resolved.resolve(&directory)?,
+            None => self.resolved.storage_for(&directory)?,
         }
         .with_config(self.config.clone())?
         .with_write_options(&options);

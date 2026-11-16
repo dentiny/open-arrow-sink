@@ -54,12 +54,12 @@ impl DownloadContext {
     /// Resolve a registered source, preferring a backend's own namespace.
     pub fn resolve_source(&self, url: &Url) -> Result<(Storage, ObjectPath)> {
         if let Some(storage) = &self.primary
-            && let Ok(path) = storage.resolve(url)
+            && let Ok(path) = storage.path(url)
         {
             return Ok((self.source_storage(storage.clone()), path));
         }
-        let storage = self.sources.resolve(url)?;
-        let path = storage.resolve(url)?;
+        let storage = self.sources.storage_for(url)?;
+        let path = storage.path(url)?;
         Ok((self.source_storage(storage), path))
     }
 }

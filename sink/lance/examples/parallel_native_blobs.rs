@@ -10,7 +10,7 @@ use lance::{
 };
 use open_arrow_sink_core::{BlobHandleConfig, Ordering, ParallelSink, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
-use open_arrow_sink_storage::{BlobDownloader, opendal};
+use open_arrow_sink_storage::{BlobDownloader, ObjectPath, opendal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,16 +25,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         opendal::Operator::new(opendal::services::Memory::default())?,
         "memory://destination/".parse()?,
     )?;
-    let packed_source = source.url("packed.bin")?;
-    let dedicated_source = source.url("dedicated.bin")?;
+    let packed_source = source.url(&ObjectPath::parse("packed.bin")?)?;
+    let dedicated_source = source.url(&ObjectPath::parse("dedicated.bin")?)?;
     source
-        .write(&source.resolve(&packed_source)?, b"pack".to_vec().into())
+        .write(&source.path(&packed_source)?, b"pack".to_vec().into())
         .await?;
     source
-        .write(
-            &source.resolve(&dedicated_source)?,
-            b"large".to_vec().into(),
-        )
+        .write(&source.path(&dedicated_source)?, b"large".to_vec().into())
         .await?;
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::UInt64, false),
@@ -56,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_source_storage(source.clone())
         .with_blob_downloader(downloader.clone())
         .with_encoding_buffer_size(NonZeroUsize::new(4 * 1024 * 1024).unwrap());
-    let url = destination.url("dataset/")?;
+    let url = destination.url(&ObjectPath::parse("dataset/")?)?;
     // Field updates also support the non-exhaustive options API.
     #[allow(clippy::field_reassign_with_default)]
     let options = {
@@ -128,8 +125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(writers);
     let summary = committed?;
     assert_eq!(downloader.buffered_bytes(), 0);
-    source.delete(&source.resolve(&packed_source)?).await?;
-    source.delete(&source.resolve(&dedicated_source)?).await?;
+    source.delete(&source.path(&packed_source)?).await?;
+    source.delete(&source.path(&dedicated_source)?).await?;
 
     let dataset = Arc::new(sink.dataset_builder(url)?.load().await?);
     let rows = WRITERS * ROWS_PER_WRITER;

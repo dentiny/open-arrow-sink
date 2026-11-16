@@ -19,7 +19,7 @@ impl Destination {
         schema: &SchemaRef,
         mode: WriteMode,
     ) -> Result<Self> {
-        let directory = storage.resolve(&directory)?.as_dir();
+        let directory = storage.path(&directory)?.as_dir();
         if directory.is_root() {
             return Err(Error::InvalidInput(
                 "destination must not be the storage root".into(),
@@ -28,9 +28,7 @@ impl Destination {
         let prefix = match mode {
             WriteMode::Create => {
                 if storage.inspect_directory(&directory).await? != DirectoryState::Missing {
-                    return Err(Error::AlreadyExists(
-                        storage.url(directory.as_str())?.to_string(),
-                    ));
+                    return Err(Error::AlreadyExists(storage.url(&directory)?.to_string()));
                 }
                 "part-".into()
             }

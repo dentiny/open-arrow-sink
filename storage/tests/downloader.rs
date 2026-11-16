@@ -3,7 +3,7 @@ use http::{Request, Response, StatusCode};
 use open_arrow_sink_core::{IoMetrics, IoObservers, Result, async_trait};
 use open_arrow_sink_storage::{
     BlobDownloader, DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer,
-    OpenDalDownloader, RetryConfig, StorageConfig, opendal,
+    ObjectPath, OpenDalDownloader, RetryConfig, StorageConfig, opendal,
 };
 use opendal::{Buffer, HttpBody, HttpTransport, HttpTransporter};
 use std::{sync::Arc, time::Duration};
@@ -255,9 +255,9 @@ async fn shared_source_observers_count_each_download_once() {
     let independent = IoMetrics::default();
     let observers = IoObservers::from(shared.clone()).combine(independent.clone());
     let memory = open_arrow_sink_test_support::memory_storage("memory://source/");
-    let url = memory.url("blob").unwrap();
+    let url = memory.url(&ObjectPath::parse("blob").unwrap()).unwrap();
     memory
-        .write(&memory.resolve(&url).unwrap(), BODY.into())
+        .write(&memory.path(&url).unwrap(), BODY.into())
         .await
         .unwrap();
     let http = OpenDalDownloader::http_storage(StorageConfig::default())

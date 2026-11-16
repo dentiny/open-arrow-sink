@@ -33,12 +33,12 @@ impl Provider {
     }
 
     /// The destination owns its namespace, even with a more specific source.
-    pub fn resolve(&self, url: &Url) -> Result<Storage> {
-        if self.destination.resolve(url).is_ok() {
+    pub fn storage_for(&self, url: &Url) -> Result<Storage> {
+        if self.destination.path(url).is_ok() {
             Ok(self.destination.clone())
         } else {
             self.sources
-                .resolve(url)
+                .storage_for(url)
                 .map(|storage| match &self.metrics {
                     Some(metrics) => storage.with_io_metrics(metrics.clone()),
                     None => storage,
@@ -54,7 +54,7 @@ impl ObjectStoreProvider for Provider {
         base_path: Url,
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
-        let storage = self.resolve(&base_path).map_err(native)?;
+        let storage = self.storage_for(&base_path).map_err(native)?;
         let object_store = storage.object_store();
         let mut store = ObjectStore::new(
             object_store,
@@ -77,9 +77,9 @@ impl ObjectStoreProvider for Provider {
         // OpendalStore decodes object-store keys. Encode literal percent signs
         // as PathParts so a URL containing %2520 stays a literal "%20" key.
         Ok(Path::from(
-            self.resolve(url)
+            self.storage_for(url)
                 .map_err(native)?
-                .resolve(url)
+                .path(url)
                 .map_err(native)?
                 .as_str(),
         ))
@@ -89,6 +89,10 @@ impl ObjectStoreProvider for Provider {
         url: &Url,
         _: Option<&std::collections::HashMap<String, String>>,
     ) -> lance::Result<String> {
-        Ok(self.resolve(url).map_err(native)?.base_url().to_string())
+        Ok(self
+            .storage_for(url)
+            .map_err(native)?
+            .base_url()
+            .to_string())
     }
 }
