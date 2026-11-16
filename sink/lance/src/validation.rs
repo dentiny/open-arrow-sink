@@ -1,9 +1,7 @@
 //! Configuration, destination, transaction, and writer-state validation.
-use arrow_schema::{DataType, FieldRef, Fields, Schema};
-use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
+use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    CompressionOptions, CompressionSpec, Error, IndexSpec, IndexType, Result, SinkCapability,
-    WriteOptions, is_blob_field, validation,
+    Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, is_blob_field, validation,
 };
 
 use lance::index::DatasetIndexExt;
@@ -18,45 +16,9 @@ pub(crate) fn validate_options(
 ) -> Result<Option<LanceFileVersion>> {
     validation::validate_options(schema, options, capability)?;
     let storage_version = parse_storage_version(options.storage_version.as_deref())?;
-    validate_encoding(schema, &options.compression)?;
+    crate::compression::validate_encoding(schema, &options.compression)?;
     validate_indexes(schema, &options.indexes)?;
     Ok(storage_version)
-}
-
-fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
-    // Native blob descriptors are opaque to Lance users. Keep this backend rule
-    // here rather than teaching core's Arrow path resolver about Lance metadata.
-    for path in options.nested_columns.keys() {
-        if (1..path.len()).any(|end| {
-            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2")
-            })
-        }) {
-            return Err(error::nested_blob_compression(path));
-        }
-    }
-    for field in schema.fields() {
-        let encoding = options
-            .column_encodings
-            .get(field.name())
-            .copied()
-            .or(options.structural_encoding);
-        if encoding.is_some()
-            && (is_blob_field(field)
-                || field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2"))
-        {
-            return Err(error::blob_structural_encoding(field.name()));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
@@ -258,69 +220,6 @@ pub(crate) fn parse_storage_version(
         Some("2.2") => Ok(Some(LanceFileVersion::V2_2)),
         Some("2.3") => Ok(Some(LanceFileVersion::V2_3)),
         Some(version) => Err(error::unsupported_storage_version(version)),
-    }
-}
-
-/// Convert shared codec requests to native Lance parameters before schema conversion.
-pub(crate) fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
-    let (scheme, level) = match compression {
-        CompressionSpec::Uncompressed => (CompressionScheme::None, None),
-        // Preserve Lance's native codec policy, including Fullzip's native fallback.
-        CompressionSpec::Lz4Raw => (CompressionScheme::Lz4, None),
-        CompressionSpec::Zstd { level } => {
-            // Lance also accepts 0 as the native Zstd default.
-            if let Some(level) = level
-                && level != 0
-                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-            {
-                return Err(error::invalid_compression_level(level));
-            }
-            (CompressionScheme::Zstd, level)
-        }
-        _ => {
-            return Err(error::unsupported_compression(compression));
-        }
-    };
-    Ok(CompressionConfig::new(scheme, level))
-}
-
-pub(crate) fn validate_nested_compression_path(path: &[String]) -> Result<()> {
-    if path.len() < 2 {
-        return Err(error::invalid_compression_path(path));
-    }
-    Ok(())
-}
-
-pub(crate) fn nested_compression_field<'a, 'p>(
-    fields: &'a Fields,
-    path: &'p [String],
-) -> Result<(usize, &'a FieldRef, &'p [String])> {
-    let (name, rest) = path
-        .split_first()
-        .ok_or_else(|| error::invalid_compression_path(path))?;
-    let index = validation::unique_field_index(fields, name)
-        .ok_or_else(|| error::invalid_compression_path(path))?;
-    let field = &fields[index];
-    Ok((index, field, rest))
-}
-
-pub(crate) enum CompressionContainer<'a> {
-    Struct(&'a Fields),
-    List(&'a FieldRef),
-    LargeList(&'a FieldRef),
-    FixedSizeList(&'a FieldRef, i32),
-}
-
-pub(crate) fn compression_container<'a>(
-    field: &'a FieldRef,
-    path: &[String],
-) -> Result<CompressionContainer<'a>> {
-    match field.data_type() {
-        DataType::Struct(children) => Ok(CompressionContainer::Struct(children)),
-        DataType::List(item) => Ok(CompressionContainer::List(item)),
-        DataType::LargeList(item) => Ok(CompressionContainer::LargeList(item)),
-        DataType::FixedSizeList(item, size) => Ok(CompressionContainer::FixedSizeList(item, *size)),
-        _ => Err(error::invalid_compression_path(path)),
     }
 }
 
