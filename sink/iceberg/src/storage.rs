@@ -43,6 +43,12 @@ impl Uploads {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedLocation {
+    location: Arc<str>,
+    path: ObjectPath,
+}
+
 /// Inject into `CatalogBuilder::with_storage_factory` so data, metadata, scans,
 /// and cleanup all share the same operator. This factory holds a live operator;
 /// FileIO serialization is deliberately unsupported instead of losing its state.
@@ -54,7 +60,7 @@ pub struct OpenDalStorageFactory {
     uploads: Arc<Uploads>,
     // FileIO retains a string location; file handles retain its resolved path
     // here so subsequent reads/writes do not revalidate the same URL.
-    resolved: Option<(Arc<str>, ObjectPath)>,
+    resolved: Option<ResolvedLocation>,
 }
 impl OpenDalStorageFactory {
     pub fn new(storage: Storage) -> Self {
@@ -69,10 +75,10 @@ impl OpenDalStorageFactory {
     }
 
     fn resolve(&self, path: &str) -> Result<ObjectPath> {
-        if let Some((location, resolved)) = &self.resolved
-            && location.as_ref() == path
+        if let Some(resolved) = &self.resolved
+            && resolved.location.as_ref() == path
         {
-            return Ok(resolved.clone());
+            return Ok(resolved.path.clone());
         }
         self.storage.resolve(&location(path)?).map_err(backend)
     }
@@ -80,7 +86,10 @@ impl OpenDalStorageFactory {
     fn for_location(&self, path: &str) -> Result<Self> {
         let resolved = self.resolve(path)?;
         let mut storage = self.clone();
-        storage.resolved = Some((Arc::from(path), resolved));
+        storage.resolved = Some(ResolvedLocation {
+            location: Arc::from(path),
+            path: resolved,
+        });
         Ok(storage)
     }
 }
