@@ -9,6 +9,10 @@ use open_arrow_sink_core::{
 /// Pre-open independent writers and dispatch batches to available writers.
 /// At most one batch per writer is in flight. Work progresses while write or
 /// commit is polled; this layer does not spawn background tasks.
+/// Parquet and Iceberg encoding/compression therefore runs in the caller's task:
+/// multiple writers overlap I/O, but do not provide CPU parallelism. Backends
+/// such as Lance may schedule their own workers. See the layer guide for
+/// application-managed task scheduling and its cleanup responsibilities.
 #[derive(Debug, Clone, Copy)]
 pub struct UnorderedWriteLayer {
     writers: NonZeroUsize,
