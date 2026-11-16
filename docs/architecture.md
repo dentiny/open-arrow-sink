@@ -14,7 +14,7 @@ separate transaction for every worker.
 | `open-arrow-sink-core` / `core` | Sink/writer/session/layer traits, options, capabilities, validation, blob contracts | Backend I/O or catalog transactions |
 | `open-arrow-sink-layer` / `layer` | Option overrides, bounded concurrent dispatch, URL-to-blob transformation | File naming or native publication metadata |
 | `open-arrow-sink-storage` / `storage` | OpenDAL byte streams, URL namespaces, HTTP budgets, I/O policies | Arrow encoding or destination write modes |
-| `open-arrow-sink-parquet` / `sink/parquet` | Directory reservation, Parquet encoding/rolling, append/overwrite cleanup | A table catalog |
+| `open-arrow-sink-parquet` / `sink/parquet` | Directory reservation, Parquet encoding/rolling, append cleanup | A table catalog |
 | `open-arrow-sink-iceberg` / `sink/iceberg` | Existing-table validation, partition routing, native fast append | Table creation or schema evolution |
 | `open-arrow-sink-lance` / `sink/lance` | Fragment/blob writers, native manifests, optional indexes | Input production or general schema reconciliation |
 
@@ -82,8 +82,8 @@ to replay.
 
 Validate capabilities before destination I/O, then backend parameters and the
 actual destination. Capabilities describe the configured sink, but request-time
-restrictions still apply: for example, URL-resolved Parquet Overwrite requires a
-filesystem destination. Every batch must exactly match the session schema,
+restrictions still apply: for example, Lance Append requires an existing dataset.
+Every batch must exactly match the session schema,
 including order, types, nullability, and metadata. No implicit cast occurs.
 
 ```mermaid
@@ -106,7 +106,7 @@ to the backend committer: deleting files on an ambiguous error could destroy
 already committed data. Reconcile with the destination before retrying.
 
 Publication is backend-specific. Parquet files may be visible while writing;
-commit completes footers (filesystem Overwrite adds staging). Iceberg publishes
+commit completes footers. Iceberg publishes
 all files in a single fast-append transaction. Lance publishes one data manifest,
 then requested indexes in separate native commits. An index failure can therefore
 mean data and some indexes are already committed.
