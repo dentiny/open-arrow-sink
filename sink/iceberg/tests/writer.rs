@@ -115,11 +115,9 @@ fn batch(schema: SchemaRef) -> RecordBatch {
 }
 
 fn options() -> WriteOptions {
-    WriteOptions {
-        mode: open_arrow_sink_core::WriteMode::Append,
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    }
+    WriteOptions::default()
+        .with_mode(open_arrow_sink_core::WriteMode::Append)
+        .with_ordering(Ordering::Unordered)
 }
 
 async fn rows(catalog: &dyn Catalog, identifier: &TableIdent) -> Vec<Row> {
@@ -250,10 +248,7 @@ async fn target_file_size_rolls_files_without_losing_rows(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                target_file_size,
-                ..options()
-            },
+            options().with_target_file_size(target_file_size),
         )
         .await
         .unwrap();
@@ -293,10 +288,7 @@ fn identity_spec(composite: bool) -> UnboundPartitionSpec {
 }
 
 fn partition_options() -> WriteOptions {
-    WriteOptions {
-        partition: Some(PartitionOptions::default()),
-        ..options()
-    }
+    options().with_partition(Some(PartitionOptions::default()))
 }
 
 #[rstest::rstest]
@@ -420,11 +412,9 @@ async fn partitioned_empty_sessions_and_file_rolling(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                target_file_size: Some(1),
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
+            options()
+                .with_target_file_size(Some(1))
+                .with_partition(Some(PartitionOptions { partition_type })),
         )
         .await
         .unwrap();
@@ -511,10 +501,7 @@ async fn temporal_partitions_round_trip_and_record_metadata(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
+            options().with_partition(Some(PartitionOptions { partition_type })),
         )
         .await
         .unwrap();
@@ -668,10 +655,7 @@ async fn assert_numeric_partition_round_trip(
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                partition: Some(PartitionOptions { partition_type }),
-                ..options()
-            },
+            options().with_partition(Some(PartitionOptions { partition_type })),
         )
         .await
         .unwrap();
@@ -845,7 +829,7 @@ async fn write_mode(#[case] mode: WriteMode) {
         .open(
             identifier.clone(),
             schema.clone(),
-            WriteOptions { mode, ..options() },
+            options().with_mode(mode),
         )
         .await;
     assert!(matches!(
