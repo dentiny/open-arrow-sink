@@ -23,7 +23,7 @@ impl LanceDestination {
         storage: Storage,
         url: Url,
         sources: Arc<StorageResolver>,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<Self> {
         let path = storage.resolve(&url)?.as_dir();
         crate::validation::validate_destination_path(&path)?;

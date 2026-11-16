@@ -1,6 +1,6 @@
 use futures::{poll, stream};
 use http::{Request, Response, StatusCode};
-use open_arrow_sink_core::{IoMetrics, Result, async_trait};
+use open_arrow_sink_core::{IoMetrics, IoObservers, Result, async_trait};
 use open_arrow_sink_storage::{
     BlobDownloader, DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer,
     OpenDalDownloader, RetryConfig, StorageConfig, opendal,
@@ -187,8 +187,10 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
         let second = make();
         let a = IoMetrics::default();
         let b = IoMetrics::default();
-        let mut held = Box::pin(first.download_all(&[URL], Some(&a)));
-        let mut waiting = Box::pin(second.download_all(&[URL], Some(&b)));
+        let a_observers = IoObservers::from(a.clone());
+        let b_observers = IoObservers::from(b.clone());
+        let mut held = Box::pin(first.download_all(&[URL], Some(&a_observers)));
+        let mut waiting = Box::pin(second.download_all(&[URL], Some(&b_observers)));
         assert!(poll!(&mut held).is_pending());
         assert_eq!(a.snapshot().bytes_read, BODY.len() as u64);
         assert!(poll!(&mut waiting).is_pending());
@@ -251,7 +253,7 @@ async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
 async fn shared_source_observers_count_each_download_once() {
     let shared = IoMetrics::default();
     let independent = IoMetrics::default();
-    let observers = shared.clone().combine(independent.clone());
+    let observers = IoObservers::from(shared.clone()).combine(independent.clone());
     let memory = open_arrow_sink_test_support::memory_storage("memory://source/");
     let url = memory.url("blob").unwrap();
     memory
@@ -277,9 +279,14 @@ async fn shared_source_observers_count_each_download_once() {
             )),
         ),
     ];
+    let session = IoObservers::from(shared.clone());
     for (index, (url, downloads)) in downloads.into_iter().enumerate() {
         assert_eq!(
-            downloads.download_all(&[url], Some(&shared)).await.unwrap()[0].as_ref(),
+            downloads
+                .download_all(&[url], Some(&session))
+                .await
+                .unwrap()[0]
+                .as_ref(),
             BODY
         );
         let expected = (index as u64 + 1) * BODY.len() as u64;

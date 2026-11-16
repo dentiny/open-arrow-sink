@@ -146,7 +146,13 @@ async fn session_observer_counts_parquet_output() {
         .unwrap();
     writer.write(batch()).await.unwrap();
     writer.commit().await.unwrap();
-    assert!(metrics.snapshot().bytes_written > 0);
+    let directory = storage.resolve(&storage.url("measured/").unwrap()).unwrap();
+    let mut output_bytes = 0;
+    for file in storage.list(&directory).await.unwrap() {
+        output_bytes += storage.stat(&file).await.unwrap().unwrap().content_length();
+    }
+    assert!(output_bytes > 0);
+    assert_eq!(metrics.snapshot().bytes_written, output_bytes);
 }
 
 #[rstest::rstest]

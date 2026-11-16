@@ -8,7 +8,7 @@ use arrow_array::{
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field};
 use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
-use open_arrow_sink_core::{ExternalBlobMode, IoMetrics, RecordBatch, Result, SchemaRef};
+use open_arrow_sink_core::{ExternalBlobMode, IoObservers, RecordBatch, Result, SchemaRef};
 use open_arrow_sink_storage::{BlobDownload, BlobDownloader};
 
 use open_arrow_sink_core::Error;
@@ -110,7 +110,7 @@ pub(crate) async fn send_rows(
     schema: &SchemaRef,
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
-    metrics: Option<&IoMetrics>,
+    metrics: Option<&IoObservers>,
     recovery: Option<&open_arrow_sink_core::DownloadRecovery>,
     worker: &mut crate::worker::FragmentTask,
 ) -> Result<()> {
@@ -156,7 +156,7 @@ async fn materialize_batch(
     schema: &SchemaRef,
     downloader: &BlobDownloader,
     mode: ExternalBlobMode,
-    metrics: Option<&IoMetrics>,
+    metrics: Option<&IoObservers>,
     recovery: Option<&open_arrow_sink_core::DownloadRecovery>,
 ) -> Result<RecordBatch> {
     let input = crate::blob::logical_batch(batch.slice(range.start, range.len()), schema)?;
@@ -202,7 +202,7 @@ fn materialize<'a>(
     field: &'a Field,
     group: &'a mut BlobDownload,
     mode: ExternalBlobMode,
-    metrics: Option<&'a IoMetrics>,
+    metrics: Option<&'a IoObservers>,
     parent_nulls: Option<NullBuffer>,
 ) -> BoxFuture<'a, Result<ArrayRef>> {
     Box::pin(async move {

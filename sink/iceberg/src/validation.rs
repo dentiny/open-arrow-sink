@@ -13,6 +13,11 @@ pub(crate) fn validate_options(
     options: &WriteOptions,
     capability: SinkCapability,
 ) -> Result<()> {
+    if options.io_metrics.is_some() {
+        return Err(Error::Unsupported(
+            "Iceberg session io_metrics: configure the catalog's OpenDalStorageFactory with Storage::with_io_metrics instead".into(),
+        ));
+    }
     validation::validate_options(schema, options, capability)?;
     if let Some(Compression::Zstd { level: Some(level) }) = options.compression.global
         && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
@@ -86,5 +91,21 @@ pub(crate) fn storage_location(path: &str) -> iceberg::Result<open_arrow_sink_st
         })
     } else {
         open_arrow_sink_storage::Url::parse(path).map_err(error::storage_backend)
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_session_observers_before_catalog_access() {
+        let schema = open_arrow_sink_test_support::int64_batch("value", vec![Some(1)]).schema();
+        let options =
+            WriteOptions::default().with_io_metrics(open_arrow_sink_core::IoMetrics::default());
+        assert!(
+            matches!(validate_options(&schema, &options, SinkCapability::default()),
+            Err(Error::Unsupported(message)) if message.contains("io_metrics"))
+        );
     }
 }

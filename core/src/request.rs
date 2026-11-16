@@ -92,9 +92,9 @@ impl UploadConfig {
 pub struct WriteOptions {
     /// Recovery for selected source URLs; destination and budget errors remain terminal.
     pub download_recovery: Option<crate::DownloadRecovery>,
-    /// Optional shared I/O observer. Layers forward it; instrumented backends
+    /// Optional distinct I/O observers. Layers forward them; instrumented backends
     /// record measured payloads independently of commit success.
-    pub io_metrics: Option<crate::IoMetrics>,
+    pub io_metrics: Option<crate::IoObservers>,
     /// Native blob options for this session. None uses BlobHandleConfig defaults
     /// on supporting backends, including Ingest for external blob URIs.
     /// Explicit configuration requires `SinkCapability.supports_blob_handle`.
@@ -122,9 +122,10 @@ pub struct WriteOptions {
 }
 
 impl WriteOptions {
-    /// Set `io_metrics` while preserving all other options.
-    pub fn with_io_metrics(mut self, io_metrics: crate::IoMetrics) -> Self {
-        self.io_metrics = Some(io_metrics);
+    /// Set distinct I/O observers while preserving all other options.
+    /// Accepts either one `IoMetrics` handle or an `IoObservers` collection.
+    pub fn with_io_metrics(mut self, io_metrics: impl Into<crate::IoObservers>) -> Self {
+        self.io_metrics = Some(io_metrics.into());
         self
     }
     /// Set `blob_handle` while preserving all other options.

@@ -10,13 +10,13 @@ use std::sync::Arc;
 pub(crate) struct Provider {
     destination: Storage,
     sources: Arc<StorageResolver>,
-    metrics: Option<open_arrow_sink_core::IoMetrics>,
+    metrics: Option<open_arrow_sink_core::IoObservers>,
 }
 impl Provider {
     pub fn new(
         destination: Storage,
         sources: Arc<StorageResolver>,
-        metrics: Option<open_arrow_sink_core::IoMetrics>,
+        metrics: Option<open_arrow_sink_core::IoObservers>,
     ) -> Self {
         Self {
             destination,
@@ -64,6 +64,8 @@ impl ObjectStoreProvider for Provider {
             params.use_constant_size_upload_parts,
             false,
             lance_io::object_store::DEFAULT_CLOUD_IO_PARALLELISM,
+            // These retries run above the adapter and can count a fresh read.
+            // Storage excludes only retries inside its OpenDAL retry layer.
             lance_io::object_store::DEFAULT_DOWNLOAD_RETRY_COUNT,
             None,
         );

@@ -4,7 +4,8 @@ use opendal::{Buffer, BytesRange, Capability, Metadata, OperationContext, Result
 use std::sync::Arc;
 
 /// Count bytes returned by reads and accepted by writes on any OpenDAL backend.
-/// Install outside retry layers to avoid counting internal retries. Metadata,
+/// Install outside OpenDAL retry layers to exclude their internal retries.
+/// Higher-level retries (including Lance downloads) issue fresh, counted reads. Metadata,
 /// server-side copies, and HTTP framing do not contribute payload bytes.
 #[derive(Clone, Debug)]
 pub struct IoMetricsLayer(pub IoMetrics);

@@ -166,7 +166,7 @@ impl BlobDownloader {
     pub async fn download_all(
         &self,
         sources: &[&str],
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<Vec<bytes::Bytes>> {
         if sources.is_empty() {
             return Ok(Vec::new());
@@ -210,7 +210,7 @@ impl BlobDownloader {
     fn context(
         &self,
         chunk_bytes: usize,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> DownloadContext {
         DownloadContext {
             chunk_bytes,
@@ -224,7 +224,7 @@ impl BlobDownloader {
         &self,
         source: &str,
         chunk_bytes: usize,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<DownloadStream> {
         self.backend
             .open(source, self.context(chunk_bytes, metrics))
@@ -315,7 +315,7 @@ impl BlobDownload {
     pub async fn download(
         &mut self,
         source: &str,
-        metrics: Option<&open_arrow_sink_core::IoMetrics>,
+        metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<bytes::Bytes> {
         let source_error = |error| Error::backend(crate::SourceDownloadError(error));
         let mut reader = self
