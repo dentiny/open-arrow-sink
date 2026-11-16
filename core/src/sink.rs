@@ -10,6 +10,21 @@ pub trait ParallelSink: Sink {
     /// Backend-owned metadata, such as Iceberg data files or Lance fragments.
     type Output: Send + 'static;
 
+    /// Open one data writer using the parallel session lifecycle.
+    /// `Sink::open` can delegate here unless it needs a specialized writer.
+    /// Invalid writer counts are rejected and the returned session is aborted.
+    async fn open_writer(
+        &self,
+        request: Self::Request,
+        schema: SchemaRef,
+        options: WriteOptions,
+    ) -> Result<Box<dyn Writer>> {
+        self.open_writers(request, schema, options, NonZeroUsize::MIN)
+            .await?
+            .into_writer()
+            .await
+    }
+
     /// Validate effective options and the schema before destination I/O, just as
     /// `Sink::open` does. Layers may override options before delegating here.
     async fn open_writers(

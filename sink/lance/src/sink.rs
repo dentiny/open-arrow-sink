@@ -98,28 +98,29 @@ impl Sink for LanceDatasetSink {
     ) -> Result<Box<dyn Writer>> {
         if crate::blob::requires_streaming_writer(&schema) {
             validate_options(&schema, &options, self.capability())?;
-            let encoding_schema = write_options::writer_schema(&schema, &options)?;
+            let schemas = write_options::LanceSchemas::new(schema, &options)?;
             let mut destination = self.resolve(url, &options)?;
-            destination
+            let existing = destination
                 .prepare(
-                    &crate::blob::logical_schema(&encoding_schema),
+                    &schemas.logical,
                     options.mode,
                     options.storage_version.as_deref(),
                 )
                 .await?;
-            destination.validate_index_requests(&options).await?;
+            if options.mode == WriteMode::Append
+                && !options.indexes.is_empty()
+                && let Some(dataset) = existing.as_ref()
+            {
+                crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
+            }
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
-                schema,
-                encoding_schema,
+                schemas,
                 destination,
                 options,
             )?));
         }
         // Use the same fragment writing and publication path for every session.
-        self.open_writers(url, schema, options, NonZeroUsize::MIN)
-            .await?
-            .into_writer()
-            .await
+        self.open_writer(url, schema, options).await
     }
 }
 
@@ -135,21 +136,25 @@ impl ParallelSink for LanceDatasetSink {
     ) -> Result<WriteSession<Self::Output>> {
         validate_options(&schema, &options, self.capability())?;
         crate::validation::validate_parallel_blob_schema(&schema)?;
-        let encoding_schema = write_options::writer_schema(&schema, &options)?;
+        let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let mut destination = self.resolve(url, &options)?;
-        destination
+        let existing = destination
             .prepare(
-                &encoding_schema,
+                &schemas.logical,
                 options.mode,
                 options.storage_version.as_deref(),
             )
             .await?;
-        destination.validate_index_requests(&options).await?;
+        if options.mode == WriteMode::Append
+            && !options.indexes.is_empty()
+            && let Some(dataset) = existing.as_ref()
+        {
+            crate::index::validate_existing_indexes(dataset, &options.indexes).await?;
+        }
         let writers = (0..count.get())
             .map(|_| {
                 Ok(Box::new(crate::parallel::FragmentWriter::new(
-                    schema.clone(),
-                    encoding_schema.clone(),
+                    schemas.clone(),
                     destination.clone(),
                     &options,
                 )?)

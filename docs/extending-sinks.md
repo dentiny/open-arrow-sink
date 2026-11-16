@@ -102,9 +102,11 @@ publish on drop or rely on drop for async cleanup.
 
 ## 5. Expose ordinary and parallel entry points
 
-Build a `WriteSession { writers, committer }`. For ordinary `Sink::open`, return
-exactly one data writer and adapt it using `session.into_writer().await`. The
-adapter handles poisoned writes, finish errors, and pre-publication aborts.
+Build a `WriteSession { writers, committer }`. Ordinary `Sink::open` can delegate
+to the default `ParallelSink::open_writer(request, schema, options).await`, which
+requests one data writer and adapts the session with `into_writer`. The adapter
+handles poisoned writes, finish errors, and pre-publication aborts. It rejects
+invalid writer counts and aborts every returned writer and the committer.
 A backend can implement `Writer` directly for a specialized lifecycle, but must
 provide all equivalent failure, cancellation, consuming commit/abort, and optional
 blob-method behavior itself.

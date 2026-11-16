@@ -13,8 +13,7 @@ use crate::{
 
 /// Writes uncommitted fragments. No worker can publish a dataset manifest.
 pub(crate) struct FragmentWriter {
-    schema: SchemaRef,
-    encoding_schema: SchemaRef,
+    schemas: crate::write_options::LanceSchemas,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
     rows: u64,
@@ -23,8 +22,7 @@ pub(crate) struct FragmentWriter {
 
 impl FragmentWriter {
     pub(crate) fn new(
-        schema: SchemaRef,
-        encoding_schema: SchemaRef,
+        schemas: crate::write_options::LanceSchemas,
         destination: LanceDestination,
         options: &WriteOptions,
     ) -> Result<Self> {
@@ -34,7 +32,7 @@ impl FragmentWriter {
             receiver.recv().await.map(|batch| (Ok(batch), receiver))
         });
         let stream = Box::pin(RecordBatchStreamAdapter::new(
-            encoding_schema.clone(),
+            schemas.encoded.clone(),
             batches,
         )) as SendableRecordBatchStream;
         let params = destination.bind_write_params(crate::write_options::write_params(options)?);
@@ -46,8 +44,7 @@ impl FragmentWriter {
                 .await
         });
         Ok(Self {
-            schema,
-            encoding_schema,
+            schemas,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
@@ -60,13 +57,13 @@ impl FragmentWriter {
 impl DataWriter for FragmentWriter {
     type Output = LanceFragments;
     fn schema(&self) -> &SchemaRef {
-        &self.schema
+        &self.schemas.input
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.state.begin()?;
-        validation::validate_batch(&self.schema, &batch)?;
+        validation::validate_batch(&self.schemas.input, &batch)?;
         let rows = batch.num_rows() as u64;
-        let batch = writer_batch(batch, &self.encoding_schema)?;
+        let batch = writer_batch(batch, &self.schemas.encoded)?;
         self.sender
             .as_ref()
             .unwrap()

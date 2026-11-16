@@ -7,13 +7,12 @@ use std::{
 };
 
 use arrow_array::{Array, ArrayRef, LargeBinaryArray};
-use arrow_schema::Schema;
 use lance::blob::{BlobDescriptor, BlobDescriptorArrayBuilder};
 use open_arrow_sink_core::{
     BlobChunk, BlobHandle, BlobPlacement, BlobWriter, Error, Poison, RecordBatch, Result,
     SchemaRef, async_trait, is_blob_field,
 };
-use open_arrow_sink_storage::{Storage, StorageWriter, Url};
+use open_arrow_sink_storage::{ObjectPath, Storage, StorageWriter};
 
 pub(crate) struct BlobSession {
     active: AtomicUsize,
@@ -21,13 +20,13 @@ pub(crate) struct BlobSession {
     io_tracker: Arc<crate::io_metrics::TrackedIo>,
     storage: Storage,
     relative_prefix: String,
-    directory: Url,
-    unattached: Mutex<HashSet<Url>>,
+    directory: ObjectPath,
+    unattached: Mutex<HashSet<ObjectPath>>,
 }
 impl BlobSession {
     pub fn new(
         storage: Storage,
-        dataset: &Url,
+        dataset: &ObjectPath,
         io_tracker: Arc<crate::io_metrics::TrackedIo>,
     ) -> Self {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
@@ -61,18 +60,21 @@ impl BlobSession {
         Ok(())
     }
 
-    pub async fn create_blob(self: &Arc<Self>, directory: &Url) -> Result<Box<dyn BlobWriter>> {
+    pub async fn create_blob(
+        self: &Arc<Self>,
+        directory: &ObjectPath,
+    ) -> Result<Box<dyn BlobWriter>> {
         self.check()?;
         let relative = format!("{}{}.blob", self.relative_prefix, uuid::Uuid::new_v4());
-        let url = directory.join(&relative).unwrap();
+        let path = directory.join(&relative)?;
         // Retain ownership before opening: cancellation can leave an object behind.
-        self.unattached.lock().unwrap().insert(url.clone());
-        let inner = self.storage.writer(&url).await?;
+        self.unattached.lock().unwrap().insert(path.clone());
+        let inner = self.storage.writer(&path).await?;
         self.active.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(NativeBlobWriter {
             inner,
             session: self.clone(),
-            url,
+            path,
             relative,
             finished: false,
             state: Poison::default(),
@@ -80,7 +82,7 @@ impl BlobSession {
     }
 
     fn attach(&self, blob: &NativeBlob) {
-        self.unattached.lock().unwrap().remove(&blob.url);
+        self.unattached.lock().unwrap().remove(&blob.path);
     }
 
     fn release_writer(&self, finished: bool) {
@@ -97,8 +99,8 @@ impl BlobSession {
     }
     pub async fn cleanup(&self) -> Result<()> {
         let files: Vec<_> = self.unattached.lock().unwrap().drain().collect();
-        for url in files {
-            self.storage.delete(&url).await?;
+        for path in files {
+            self.storage.delete(&path).await?;
         }
         Ok(())
     }
@@ -107,13 +109,13 @@ impl BlobSession {
 pub(crate) struct NativeBlob {
     pub session: Arc<BlobSession>,
     pub descriptor: BlobDescriptor,
-    url: Url,
+    path: ObjectPath,
 }
 
 struct NativeBlobWriter {
     inner: StorageWriter,
     session: Arc<BlobSession>,
-    url: Url,
+    path: ObjectPath,
     relative: String,
     finished: bool,
     state: Poison,
@@ -142,7 +144,7 @@ impl BlobWriter for NativeBlobWriter {
         let size = self.inner.close().await?;
         self.session.io_tracker.record_write(
             "streamed_blob",
-            object_store::path::Path::from(self.url.path()),
+            object_store::path::Path::from(self.path.as_str()),
             size,
         );
         self.finished = true;
@@ -154,12 +156,12 @@ impl BlobWriter for NativeBlobWriter {
                 offset: 0,
                 size,
             },
-            url: self.url.clone(),
+            path: self.path.clone(),
         }))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         let upload = self.inner.abort().await;
-        let file = self.session.storage.delete(&self.url).await;
+        let file = self.session.storage.delete(&self.path).await;
         upload.and(file)
     }
 }
@@ -167,35 +169,6 @@ impl BlobWriter for NativeBlobWriter {
 /// Marked binary columns require the session-owned streaming blob writer.
 pub(crate) fn requires_streaming_writer(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|field| is_blob_field(field))
-}
-
-pub(crate) fn storage_schema(schema: &SchemaRef) -> Result<SchemaRef> {
-    crate::validation::validate_blob_schema(schema)?;
-    if !requires_streaming_writer(schema) {
-        return Ok(schema.clone());
-    }
-    let fields = schema
-        .fields()
-        .iter()
-        .map(|field| {
-            if !is_blob_field(field) {
-                return field.clone();
-            }
-            let native = BlobDescriptorArrayBuilder::new(field.name())
-                .field()
-                .clone();
-            let mut metadata = field.metadata().clone();
-            metadata.extend(native.metadata().clone());
-            Arc::new(
-                native
-                    .with_nullable(field.is_nullable())
-                    .with_metadata(metadata),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut metadata = schema.metadata().clone();
-    metadata.insert("lance.blob.managed".into(), "true".into());
-    Ok(Arc::new(Schema::new_with_metadata(fields, metadata)))
 }
 
 pub(crate) fn storage_batch(
@@ -250,26 +223,4 @@ pub(crate) fn storage_batch(
         session.attach(native);
     }
     Ok(output)
-}
-
-/// Lance persists logical blob fields, rather than the prepared descriptor shape.
-pub(crate) fn logical_schema(schema: &SchemaRef) -> SchemaRef {
-    let fields = schema
-        .fields()
-        .iter()
-        .map(|field| {
-            if is_blob_field(field) {
-                Arc::new(
-                    field.as_ref().clone().with_data_type(
-                        lance::blob::blob_field(field.name(), field.is_nullable())
-                            .data_type()
-                            .clone(),
-                    ),
-                )
-            } else {
-                field.clone()
-            }
-        })
-        .collect::<Vec<_>>();
-    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }

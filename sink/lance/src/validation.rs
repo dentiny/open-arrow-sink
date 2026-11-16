@@ -155,7 +155,7 @@ pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
     storage_version: Option<&str>,
-) -> Result<()> {
+) -> Result<lance::Dataset> {
     let dataset = builder.load().await.map_err(Error::backend)?;
     if !matches!(
         dataset.manifest().data_storage_format.version,
@@ -179,7 +179,7 @@ pub(crate) async fn validate_existing_dataset(
     {
         return Err(Error::SchemaMismatch);
     }
-    Ok(())
+    Ok(dataset)
 }
 
 pub(crate) fn validate_transaction_compatibility(

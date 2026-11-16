@@ -156,7 +156,7 @@ let options = WriteOptions::default()
         global: Some(Compression::Zstd { level: Some(9) }),
         ..Default::default()
     })
-    .with_target_file_size(Some(256 * 1024 * 1024));
+    .with_target_file_size(256 * 1024 * 1024);
 ```
 
 With Parquet this needs `parquet-zstd`. Empty compression options preserve backend
