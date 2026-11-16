@@ -33,11 +33,24 @@ pub(crate) fn preserve_input_unsupported() -> Error {
 }
 
 /// Index construction failed after data was committed.
-/// Returned inside `Error::Backend`; downcast to inspect the error context.
+/// Returned inside `Error::Backend`; downcast to inspect the committed summary.
+/// Data is already visible: retry index construction rather than the data write.
 #[derive(Debug, thiserror::Error)]
 #[error("data committed; index construction failed: {message}")]
+#[non_exhaustive]
 pub struct IndexCommitError {
     pub message: String,
+    /// The data write succeeded before index construction failed.
+    pub summary: crate::WriteSummary,
+}
+
+impl IndexCommitError {
+    pub fn new(message: impl Into<String>, summary: crate::WriteSummary) -> Self {
+        Self {
+            message: message.into(),
+            summary,
+        }
+    }
 }
 
 pub(crate) fn unsupported_partition(partition: crate::PartitionType) -> Error {
