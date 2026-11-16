@@ -15,7 +15,6 @@ azure = ["open-arrow-sink-storage/azure"]
 [dependencies]
 bytes.workspace = true
 futures.workspace = true
-open-arrow-sink-layer.workspace = true
 open-arrow-sink-storage.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 lance-file = { version = "14.0.1", default-features = false }
@@ -32,7 +31,9 @@ lance = { version = "14.0.1", default-features = false }
 tokio = { version = "1", features = ["fs", "rt", "sync"] }
 
 [dev-dependencies]
+open-arrow-sink-test-support.workspace = true
 more-asserts.workspace = true
+open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

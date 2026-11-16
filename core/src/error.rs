@@ -1,7 +1,23 @@
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A write error. Callers matching individual variants must retain a fallback
+/// arm so future error categories can be added without breaking their code.
+///
+/// ```compile_fail,E0004
+/// use open_arrow_sink_core::Error;
+/// fn inspect(error: Error) {
+///     match error {
+///         Error::Unsupported(_) => (),
+///         Error::SchemaMismatch => (),
+///         Error::Backend(_) => (),
+///     }
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
+    #[error("writer failed, was cancelled, or is already finished; abort or drop it")]
+    Poisoned,
     #[error("unsupported operation: {0}")]
     Unsupported(String),
     #[error("batch schema does not match the write session schema")]

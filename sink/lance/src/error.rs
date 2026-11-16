@@ -22,10 +22,6 @@ pub(crate) fn aborted() -> ArrowError {
     )))
 }
 
-pub(crate) fn failed() -> Error {
-    backend(io::Error::other("writer failed; abort or drop it"))
-}
-
 pub(crate) fn worker_stopped() -> Error {
     backend(io::Error::other("Lance write worker stopped"))
 }
@@ -107,9 +103,6 @@ pub(crate) fn invalid_blob(message: &'static str) -> Error {
 pub(crate) fn invalid_blob_column(column: &str) -> Error {
     Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
 }
-pub(crate) fn blob_failed() -> Error {
-    invalid_blob("blob session failed; abort or drop it")
-}
 pub(crate) fn unfinished_blobs() -> Error {
     backend(io::Error::other(
         "writer failed or has unfinished blobs; session aborted",
@@ -149,5 +142,14 @@ pub(crate) fn duplicate_blob_placement() -> Error {
 pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Error {
     Error::Unsupported(format!(
         "Lance storage version must be 2.2 or 2.3: {version}"
+    ))
+}
+
+pub(crate) fn storage_version_mismatch(
+    requested: impl std::fmt::Display,
+    existing: impl std::fmt::Display,
+) -> Error {
+    Error::Unsupported(format!(
+        "Lance append storage version {requested} does not match existing dataset version {existing}"
     ))
 }

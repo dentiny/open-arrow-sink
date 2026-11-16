@@ -22,11 +22,11 @@ futures.workspace = true
 open-arrow-sink-storage.workspace = true
 open-arrow-sink-core.workspace = true
 parquet = { workspace = true, features = ["arrow", "async"] }
-tokio = { workspace = true, features = ["fs", "io-util"] }
 
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+open-arrow-sink-test-support.workspace = true
 open-arrow-sink-layer.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
