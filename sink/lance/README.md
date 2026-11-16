@@ -7,12 +7,12 @@ Keep exclusive ownership of the destination until the session ends, including
 index construction.
 
 ```rust,ignore
-use open_arrow_sink::{Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
+use open_arrow_sink::{Sink, WriteOptions, lance::LanceDatasetSink};
 
 let mut writer = LanceDatasetSink::default().open(
     "file:///tmp/new.lance".parse()?,
     schema,
-    WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
+    WriteOptions::default(),
 ).await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;

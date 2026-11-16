@@ -32,7 +32,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```rust,no_run
 use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use open_arrow_sink::{Ordering, Sink, WriteOptions, parquet::{ParquetDirectorySink, Url}};
+use open_arrow_sink::{Sink, WriteOptions, parquet::{ParquetDirectorySink, Url}};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = ParquetDirectorySink::default().open(
         destination,
         batch.schema(),
-        WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
+        WriteOptions::default(),
     ).await?;
     if let Err(error) = writer.write(batch).await {
         let _ = writer.abort().await;
@@ -60,8 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 publishes according to the backend's rules. Drop never commits or performs async
 cleanup. After a failed or cancelled write, abort or drop that writer.
 
-All bundled sinks require explicit `Ordering::Unordered`; none guarantees input
-row order on scans. The shared default is `PreserveInput`, so it is rejected.
+Ordering defaults to `Unordered`; none of the bundled sinks guarantees input
+row order on scans. Explicit `PreserveInput` requests are rejected.
 The default write mode is `Create`. Iceberg requires explicit `WriteMode::Append`.
 
 ## Choose a destination

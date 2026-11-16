@@ -41,7 +41,7 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
             expected.schema(),
             WriteOptions {
                 target_file_size,
-                ..options()
+                ..WriteOptions::default()
             },
         )
         .await

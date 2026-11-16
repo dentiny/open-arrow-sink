@@ -19,8 +19,9 @@ lists implemented modes, but destination-dependent restrictions still apply
 
 ## Ordering
 
-`Ordering::PreserveInput` is the default. It requires preservation of input row
-sequence in the backend's documented read order; it does not sort by column values.
+`Ordering::Unordered` is the default and is supported by all bundled sinks.
+Explicit `Ordering::PreserveInput` requires preservation of input row sequence in
+the backend's documented read order; it does not sort by column values.
 Single-writer backends can adapt their `WriteSession` with `into_writer()`.
 This shares write-failure, cancellation, finish, abort, and publication handling
 across sinks; backend data writers only produce output, and committers publish it.

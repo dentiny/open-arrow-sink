@@ -215,7 +215,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
 }
 
 #[rstest::rstest]
-#[case::preserve_input(WriteOptions::default())]
+#[case::preserve_input(WriteOptions { ordering: Ordering::PreserveInput, ..options() })]
 #[case::zero_target(WriteOptions { target_file_size: Some(0), ..options() })]
 #[tokio::test]
 async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: WriteOptions) {

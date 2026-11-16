@@ -18,9 +18,10 @@ pub enum WriteMode {
 /// In `WriteOptions` this is requested policy; in `SinkCapability` it is a guarantee.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Ordering {
-    #[default]
+    /// Require input row order in the backend's documented read order.
     PreserveInput,
     /// Allow batches and rows to be reordered, without loss or duplication.
+    #[default]
     Unordered,
 }
 
