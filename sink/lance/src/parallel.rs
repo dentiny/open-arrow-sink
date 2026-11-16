@@ -175,7 +175,7 @@ mod tests {
             .await
             .unwrap();
         let options = {
-            let mut review_options = Default::default();
+            let mut review_options = open_arrow_sink_core::WriteOptions::default();
             review_options.mode = WriteMode::Append;
             review_options.ordering = Ordering::Unordered;
             review_options
