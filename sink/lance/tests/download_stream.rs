@@ -2,18 +2,13 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
 use lance::{Dataset, datatypes::BlobHandling};
-use open_arrow_sink_core::{Ordering, Sink, SinkExt, WriteOptions};
+use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_layer::{DownloadBlobLayer, DownloadPool};
 mod testutil;
 use testutil::server;
 
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 fn pool() -> Arc<DownloadPool> {
     Arc::new(
         DownloadPool::new(

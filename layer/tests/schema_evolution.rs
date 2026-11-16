@@ -19,12 +19,7 @@ fn layer() -> SchemaEvolutionLayer {
         Ok,
     )])
 }
-fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: open_arrow_sink_core::Ordering::Unordered,
-        ..Default::default()
-    }
-}
+use open_arrow_sink_test_support::unordered_options as options;
 
 #[tokio::test]
 async fn single_and_parallel_sessions_keep_input_schema_and_commit() {
