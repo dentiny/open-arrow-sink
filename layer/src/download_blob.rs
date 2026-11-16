@@ -1,11 +1,7 @@
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashSet, sync::Arc};
 
 use arrow_array::{
-    Array, BooleanArray, LargeStringArray, StringArray, StringViewArray,
-    builder::LargeBinaryBuilder,
+    Array, BooleanArray, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray,
 };
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -15,7 +11,7 @@ use open_arrow_sink_core::{
 };
 
 use crate::{
-    DownloadPool,
+    DownloadMetrics, DownloadPool,
     error::{self, backend},
     validation::validate_download_config,
 };
@@ -31,44 +27,6 @@ pub enum DownloadFailurePolicy {
     SkipRow,
     /// Replace each failed blob with null. Selected output fields become nullable.
     Null,
-}
-
-/// Observations across sessions using a download metrics handle.
-/// A source can fail after transferring bytes. Destination failures and input
-/// nulls do not count as source-download failures.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct DownloadSnapshot {
-    pub blobs_failed: u64,
-    /// Unique failed rows within each input batch, even with multiple failed URLs.
-    pub rows_failed_blobs: u64,
-    /// Rows omitted from successfully forwarded batches by SkipRow.
-    pub rows_skipped: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DownloadMetrics(Arc<Mutex<DownloadSnapshot>>);
-impl DownloadMetrics {
-    pub fn snapshot(&self) -> DownloadSnapshot {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-    fn failure(&self, new_row: bool) {
-        let mut snapshot = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        snapshot.blobs_failed += 1;
-        snapshot.rows_failed_blobs += u64::from(new_row);
-    }
-    fn skipped(&self, rows: usize) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rows_skipped += rows as u64;
-    }
 }
 
 /// Stream selected URL columns into native blobs and attach their descriptors.
@@ -228,43 +186,35 @@ async fn download(
     row: usize,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 ) -> Result<DownloadResult> {
-    // Only source failures are recoverable. Never suppress destination failures
-    // or restart an upload after bytes have been accepted by its writer.
-    let mut stream = match pool.stream(&url).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            let cleanup = native.abort().await;
-            return Ok(DownloadResult::SourceFailed {
-                column,
-                row,
-                error: error::download_context(&name, row, error),
-                cleanup,
-            });
-        }
-    };
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                drop(stream);
-                let cleanup = native.abort().await;
-                return Ok(DownloadResult::SourceFailed {
-                    column,
-                    row,
-                    error: error::download_context(&name, row, error),
-                    cleanup,
-                });
+    // Drop the source stream before cleaning up a failed download. Destination
+    // writes still return directly: only source errors can be recovered.
+    let source_error = match pool.stream(&url).await {
+        Ok(mut stream) => loop {
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    if let Some(metrics) = &io_metrics {
+                        metrics.record_read(chunk.as_ref().len() as u64);
+                    }
+                    native
+                        .write(chunk)
+                        .await
+                        .map_err(|error| error::download_context(&name, row, error))?;
+                }
+                Some(Err(error)) => break Some(error),
+                None => break None,
             }
-        };
-        if let Some(metrics) = &io_metrics {
-            metrics.record_read(chunk.as_ref().len() as u64);
-        }
-        native
-            .write(chunk)
-            .await
-            .map_err(|error| error::download_context(&name, row, error))?;
+        },
+        Err(error) => Some(error),
+    };
+    if let Some(error) = source_error {
+        let cleanup = native.abort().await;
+        return Ok(DownloadResult::SourceFailed {
+            column,
+            row,
+            error: error::download_context(&name, row, error),
+            cleanup,
+        });
     }
-    drop(stream);
     let blob = native
         .finish()
         .await
@@ -286,22 +236,11 @@ impl Writer for DownloadBlobWriter {
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
         } else {
-            let mut columns = batch.columns().to_vec();
-            let mut jobs = Vec::new();
-            for &column in &self.indices {
+            let mut jobs = self.indices.iter().flat_map(|&column| {
                 let array = batch.column(column);
-                let mut builder = LargeBinaryBuilder::new();
-                for row in 0..batch.num_rows() {
-                    if array.is_null(row) {
-                        builder.append_null();
-                    } else {
-                        builder.append_value([]);
-                        jobs.push((column, row));
-                    }
-                }
-                columns[column] = Arc::new(builder.finish());
-            }
-            let mut jobs = jobs.into_iter();
+                (0..batch.num_rows())
+                    .filter_map(move |row| array.is_valid(row).then_some((column, row)))
+            });
             let mut active = FuturesUnordered::new();
             let mut blobs = Vec::new();
             let mut failed_rows = HashSet::new();
@@ -343,30 +282,21 @@ impl Writer for DownloadBlobWriter {
                     None => break,
                 }
             }
-            if self.failure_policy == DownloadFailurePolicy::Null {
-                for &column in &self.indices {
-                    let values = columns[column]
-                        .as_any()
-                        .downcast_ref::<arrow_array::LargeBinaryArray>()
-                        .unwrap();
-                    let mut builder = LargeBinaryBuilder::new();
-                    for row in 0..batch.num_rows() {
-                        if values.is_null(row) || failed_cells.contains(&(column, row)) {
-                            builder.append_null();
-                        } else {
-                            builder.append_value([]);
-                        }
-                    }
-                    columns[column] = Arc::new(builder.finish());
-                }
+            let mut columns = batch.columns().to_vec();
+            for &column in &self.indices {
+                let input = batch.column(column);
+                let values = (0..batch.num_rows()).map(|row| {
+                    let failed = self.failure_policy == DownloadFailurePolicy::Null
+                        && failed_cells.contains(&(column, row));
+                    (input.is_valid(row) && !failed).then_some(b"".as_slice())
+                });
+                columns[column] = Arc::new(LargeBinaryArray::from_iter(values));
             }
             let mut output =
                 RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
             if self.failure_policy == DownloadFailurePolicy::SkipRow && !failed_rows.is_empty() {
-                let keep = BooleanArray::from(
-                    (0..batch.num_rows())
-                        .map(|row| !failed_rows.contains(&row))
-                        .collect::<Vec<_>>(),
+                let keep = BooleanArray::from_iter(
+                    (0..batch.num_rows()).map(|row| Some(!failed_rows.contains(&row))),
                 );
                 output =
                     arrow_select::filter::filter_record_batch(&output, &keep).map_err(backend)?;
