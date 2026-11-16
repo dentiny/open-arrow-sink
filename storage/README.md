@@ -113,10 +113,9 @@ to 5 MiB parts and one concurrent request per writer. Use
 buffering grows with part size and concurrency. This replaces the native Lance
 adapter's previous implicit concurrency of eight. Clones carry both settings.
 
-The optional `object-store` feature provides `Storage::object_store()` for native
-SDKs. The adapter delegates ordinary object operations to `OpendalStore`, while
-multipart uploads use the same storage upload policy as `Storage::writer()`.
-Parquet and Iceberg do not enable this dependency.
+`Storage::object_store()` is always available for native SDKs. The adapter delegates
+ordinary object operations to `OpendalStore`, while multipart uploads use the same
+storage upload policy as `Storage::writer()`.
 
 ## HTTP downloads
 

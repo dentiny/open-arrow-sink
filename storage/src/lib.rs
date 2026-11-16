@@ -18,10 +18,8 @@ pub use url::Url;
 mod download_pool;
 pub use download_pool::DownloadPool;
 
-#[cfg(feature = "object-store")]
 mod object_store;
 
-#[cfg(feature = "object-store")]
 impl Storage {
     /// Adapt this namespace's operator to the object_store API. Multipart uploads
     /// share the byte writer's part-size and concurrency settings; other operations

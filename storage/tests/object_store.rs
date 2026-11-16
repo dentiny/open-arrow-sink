@@ -1,5 +1,3 @@
-#![cfg(feature = "object-store")]
-
 use std::num::NonZeroUsize;
 
 use futures::future::join;
