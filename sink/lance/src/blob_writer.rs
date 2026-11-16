@@ -115,18 +115,18 @@ impl BlobDatasetWriter {
         encoding_schema: SchemaRef,
         destination: NativeStorage,
         options: SessionOptions,
-    ) -> Result<Self> {
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
         };
-        let params = destination.bind_write_params(crate::write_options::write_params(&options)?);
+        let params = destination.bind_write_params(crate::write_options::write_params(&options));
         let uri = destination.url.to_string();
         let task =
             tokio::spawn(async move { Dataset::write(reader, uri.as_str(), Some(params)).await });
-        Ok(Self {
+        Self {
             schema,
             storage_schema,
             encoding_schema,
@@ -141,6 +141,6 @@ impl BlobDatasetWriter {
             failed: false,
             destination,
             options,
-        })
+        }
     }
 }

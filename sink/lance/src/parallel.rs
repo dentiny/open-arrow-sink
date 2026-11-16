@@ -1,4 +1,3 @@
-use crate::config::SessionOptions;
 use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
@@ -8,7 +7,6 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::{
     compression::writer_batch,
     error::{aborted, backend, failed, worker_stopped},
-    storage::NativeStorage,
 };
 
 type Output = (u64, Transaction);
@@ -66,17 +64,16 @@ impl FragmentWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        destination: NativeStorage,
-        options: &SessionOptions,
-    ) -> Result<Self> {
+        uri: String,
+        params: lance::dataset::WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         let reader = ChannelReader {
             schema: encoding_schema.clone(),
             receiver,
             finished: false,
         };
-        let params = destination.bind_write_params(crate::write_options::write_params(options)?);
-        let uri = destination.url.to_string();
+
         let task = tokio::spawn(async move {
             InsertBuilder::new(uri.as_str())
                 .with_params(&params)
@@ -85,14 +82,14 @@ impl FragmentWriter {
                 )
                 .await
         });
-        Ok(Self {
+        Self {
             schema,
             encoding_schema,
             sender: Some(sender),
             task: Some(task),
             rows: 0,
             failed: false,
-        })
+        }
     }
 }
 

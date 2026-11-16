@@ -64,20 +64,6 @@ impl NativeStorage {
         self.reserved = true;
         Ok(())
     }
-    pub async fn validate_index_requests(
-        &self,
-        options: &crate::config::SessionOptions,
-    ) -> Result<()> {
-        if options.mode == WriteMode::Append && !options.indexes.is_empty() {
-            let dataset = self
-                .dataset_builder()
-                .load()
-                .await
-                .map_err(crate::error::backend)?;
-            crate::index::validate_existing_indexes(&dataset, &options.indexes).await?;
-        }
-        Ok(())
-    }
     pub async fn cleanup(&self) -> Result<()> {
         if self.reserved {
             self.storage.remove_all(&self.url).await?;

@@ -14,16 +14,16 @@ use open_arrow_sink_core::{Result, SchemaRef, WriteMode};
 /// Apply compression before preparing blob descriptors, then attach layout options.
 /// Both ordinary and blob-handle writers use this encoding schema pipeline.
 pub(crate) fn writer_schema(schema: &SchemaRef, options: &SessionOptions) -> Result<SchemaRef> {
-    let compressed = crate::compression::writer_schema(schema, &options.compression);
+    let compressed = crate::compression::writer_schema(schema, &options.compression)?;
     let prepared = crate::blob::storage_schema(&compressed)?;
     Ok(blob_schema(&prepared, options.blob_handle.as_ref()))
 }
 
-pub(crate) fn write_params(options: &SessionOptions) -> Result<WriteParams> {
+pub(crate) fn write_params(options: &SessionOptions) -> WriteParams {
     let defaults = WriteParams::default();
     let default_blob = BlobHandleConfig::default();
     let blob = options.blob_handle.as_ref().unwrap_or(&default_blob);
-    Ok(WriteParams {
+    WriteParams {
         external_blob_mode: match blob.external_blob_mode {
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
@@ -38,7 +38,7 @@ pub(crate) fn write_params(options: &SessionOptions) -> Result<WriteParams> {
             .target_file_size
             .unwrap_or(defaults.max_bytes_per_file),
         ..defaults
-    })
+    }
 }
 
 /// Apply per-write layout options to top-level native logical or prepared blob fields.

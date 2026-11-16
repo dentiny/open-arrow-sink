@@ -88,14 +88,14 @@ impl Sink for LanceDatasetSink {
             destination
                 .prepare(&crate::blob::logical_schema(&encoding_schema), options.mode)
                 .await?;
-            destination.validate_index_requests(&options).await?;
+            crate::index::validate_index_requests(&destination, &options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
                 storage_schema,
                 encoding_schema,
                 destination,
                 options,
-            )?));
+            )));
         }
         // Use the same fragment writing and publication path for every session.
         self.open_writers(url, schema, options, NonZeroUsize::MIN)
@@ -121,18 +121,18 @@ impl ParallelSink for LanceDatasetSink {
         let encoding_schema = write_options::writer_schema(&schema, &options)?;
         let mut destination = self.resolve(url, options.io_metrics.as_ref())?;
         destination.prepare(&encoding_schema, options.mode).await?;
-        destination.validate_index_requests(&options).await?;
+        crate::index::validate_index_requests(&destination, &options).await?;
+        let params = destination.bind_write_params(write_options::write_params(&options));
         let writers = (0..count.get())
             .map(|_| {
-                Ok(Box::new(crate::parallel::FragmentWriter::new(
+                Box::new(crate::parallel::FragmentWriter::new(
                     schema.clone(),
                     encoding_schema.clone(),
-                    destination.clone(),
-                    &options,
-                )?)
-                    as Box<dyn DataWriter<Output = Self::Output>>)
+                    destination.url.to_string(),
+                    params.clone(),
+                )) as Box<dyn DataWriter<Output = Self::Output>>
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         Ok(WriteSession {
             writers,
             committer: Box::new(crate::committer::LanceCommitter {

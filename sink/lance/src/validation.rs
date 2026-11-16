@@ -1,9 +1,9 @@
-//! Configuration, destination, transaction, and writer-state validation.
+//! Configuration, destination, and blob validation.
 use crate::config::SessionOptions;
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Compression, CompressionOptions, IndexSpec, IndexType, Result, SinkCapability,
-    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Compression, CompressionOptions, Result, SinkCapability, ZSTD_COMPRESSION_LEVEL_RANGE,
+    validation,
 };
 
 use crate::error;
@@ -25,7 +25,7 @@ pub(crate) fn validate_options(
     }
     validate_encoding(schema, &options.compression)?;
     validate_compression(&options.compression)?;
-    validate_indexes(schema, &options.indexes)
+    crate::index::validate_indexes(schema, &options.indexes)
 }
 
 fn validate_compression(options: &CompressionOptions) -> Result<()> {
@@ -91,73 +91,6 @@ fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()
     Ok(())
 }
 
-use crate::error::{missing_index_column, unsupported_index};
-
-pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
-    use DataType::*;
-    validation::validate_indexes(schema, indexes)?;
-    for index in indexes {
-        let field = schema
-            .field_with_name(&index.column)
-            .map_err(|_| missing_index_column(&index.column))?;
-        let supported = match index.index_type {
-            IndexType::Scalar => matches!(
-                field.data_type(),
-                Boolean
-                    | Int8
-                    | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float16
-                    | Float32
-                    | Float64
-                    | Decimal128(_, _)
-                    | Utf8
-                    | LargeUtf8
-                    | Utf8View
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-            // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
-            // Int8 is rejected even though the older reference allowed it.
-            IndexType::Vector => {
-                matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
-            }
-            IndexType::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
-            IndexType::BloomFilter => matches!(
-                field.data_type(),
-                Int8 | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float32
-                    | Float64
-                    | Utf8
-                    | LargeUtf8
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-        };
-        if !supported {
-            return Err(unsupported_index(index, field.data_type()));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
@@ -180,45 +113,11 @@ pub(crate) async fn validate_existing_dataset(
     Ok(())
 }
 
-pub(crate) fn validate_transaction_compatibility(
-    target: &lance::dataset::transaction::Transaction,
-    incoming: &lance::dataset::transaction::Transaction,
-) -> Result<()> {
-    use lance::dataset::transaction::Operation;
-    if target.read_version != incoming.read_version {
-        return Err(error::different_dataset_versions());
-    }
-    if !matches!(
-        (&target.operation, &incoming.operation),
-        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
-            | (Operation::Append { .. }, Operation::Append { .. })
-    ) {
-        return Err(error::invalid_create_fragments());
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
     if failed {
         return Err(error::failed());
     }
     Ok(())
-}
-
-pub(crate) fn write_fragments(
-    operation: &mut lance::dataset::transaction::Operation,
-) -> Result<&mut Vec<lance_table::format::Fragment>> {
-    match operation {
-        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
-        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
-        _ => Err(error::invalid_create_fragments()),
-    }
-}
-
-pub(crate) fn validate_session_transaction(
-    transaction: Option<lance::dataset::transaction::Transaction>,
-) -> Result<lance::dataset::transaction::Transaction> {
-    transaction.ok_or_else(error::empty_writer_session)
 }
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {

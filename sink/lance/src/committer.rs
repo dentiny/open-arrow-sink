@@ -19,15 +19,15 @@ impl SessionCommitter<Output> for LanceCommitter {
         for (rows, mut transaction) in outputs {
             rows_written += rows;
             if let Some(target) = &mut combined {
-                crate::validation::validate_transaction_compatibility(target, &transaction)?;
-                let fragments = crate::validation::write_fragments(&mut target.operation)?;
-                let incoming = crate::validation::write_fragments(&mut transaction.operation)?;
+                validate_transaction_compatibility(target, &transaction)?;
+                let fragments = write_fragments(&mut target.operation)?;
+                let incoming = write_fragments(&mut transaction.operation)?;
                 fragments.append(incoming);
             } else {
                 combined = Some(transaction);
             }
         }
-        let transaction = crate::validation::validate_session_transaction(combined)?;
+        let transaction = combined.ok_or_else(crate::error::empty_writer_session)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
         let mut builder = self.destination.commit_builder();
@@ -47,5 +47,33 @@ impl SessionCommitter<Output> for LanceCommitter {
             self.destination.cleanup().await?;
         }
         Ok(())
+    }
+}
+
+fn validate_transaction_compatibility(
+    target: &lance::dataset::transaction::Transaction,
+    incoming: &lance::dataset::transaction::Transaction,
+) -> Result<()> {
+    use lance::dataset::transaction::Operation;
+    if target.read_version != incoming.read_version {
+        return Err(crate::error::different_dataset_versions());
+    }
+    if !matches!(
+        (&target.operation, &incoming.operation),
+        (Operation::Overwrite { .. }, Operation::Overwrite { .. })
+            | (Operation::Append { .. }, Operation::Append { .. })
+    ) {
+        return Err(crate::error::invalid_create_fragments());
+    }
+    Ok(())
+}
+
+fn write_fragments(
+    operation: &mut lance::dataset::transaction::Operation,
+) -> Result<&mut Vec<lance_table::format::Fragment>> {
+    match operation {
+        lance::dataset::transaction::Operation::Overwrite { fragments, .. }
+        | lance::dataset::transaction::Operation::Append { fragments } => Ok(fragments),
+        _ => Err(crate::error::invalid_create_fragments()),
     }
 }
