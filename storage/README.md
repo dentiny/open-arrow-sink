@@ -63,14 +63,21 @@ namespace, streaming close/abort, conditional creation, and owned-output cleanup
 The access repository's read-only `ByteReader` and `NamedFileAccessor` contracts
 are not exposed as write APIs here. No dependency on open-arrow-access is added.
 
-## Upload part size
+## Multipart uploads
 
 `Storage::with_upload_part_size(NonZeroUsize)` sets the streaming upload buffer
 size in bytes for shared storage writers and Lance's native multipart uploads.
 For example, use `NonZeroUsize::new(16 * 1024 * 1024).unwrap()` for 16 MiB parts.
-OpenDAL enforces service-specific part-size limits. Without an explicit setting,
-shared storage writers retain their 5 MiB buffer and native Lance retains its
-adapter defaults. All clones of the configured storage carry the setting.
+OpenDAL enforces service-specific part-size limits. All upload paths now default
+to 5 MiB parts and one concurrent request per writer. Use
+`Storage::with_upload_concurrency(NonZeroUsize)` to raise that limit deliberately;
+buffering grows with part size and concurrency. This replaces the native Lance
+adapter's previous implicit concurrency of eight. Clones carry both settings.
+
+The optional `object-store` feature provides `Storage::object_store()` for native
+SDKs. The adapter delegates ordinary object operations to `OpendalStore`, while
+multipart uploads use the same storage upload policy as `Storage::writer()`.
+Parquet and Iceberg do not enable this dependency.
 
 ## Download transports
 

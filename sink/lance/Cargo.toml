@@ -16,13 +16,12 @@ azure = ["open-arrow-sink-storage/azure"]
 bytes.workspace = true
 futures.workspace = true
 open-arrow-sink-layer.workspace = true
-open-arrow-sink-storage.workspace = true
+open-arrow-sink-storage = { workspace = true, features = ["object-store"] }
 uuid = { workspace = true, features = ["v4"] }
 lance-file = { version = "14.0.1", default-features = false }
 lance-table = { version = "14.0.1", default-features = false }
 lance-io = { version = "14.0.1", default-features = false }
 object_store = { version = "0.14.2", default-features = false }
-object_store_opendal = { version = "0.60.2", default-features = false }
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

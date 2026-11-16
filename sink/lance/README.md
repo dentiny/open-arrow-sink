@@ -282,7 +282,10 @@ owns handles, placements, and cleanup.
 Configure `Storage::with_upload_part_size(NonZeroUsize)` before constructing the
 sink to control the native data-file and sidecar multipart upload buffers, as
 well as streamed blob uploads through the shared storage writer. For example, select a 16 MiB part
-size to tune buffering for your workload. Conditional manifest writes retain
+size to tune buffering for your workload. Uploads default to 5 MiB parts and one
+concurrent request per writer; use `Storage::with_upload_concurrency` to increase
+parallelism within your memory budget. This shared default replaces the native
+adapter's previous implicit concurrency of eight. Conditional manifest writes retain
 the ordinary OpenDAL adapter; multipart parts preserve their submission order.
 
 ## Related documentation

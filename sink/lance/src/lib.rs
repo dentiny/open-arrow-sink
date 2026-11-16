@@ -7,7 +7,6 @@ mod compression;
 mod error;
 mod provider;
 mod sink;
-mod upload;
 mod validation;
 mod write_options;
 
