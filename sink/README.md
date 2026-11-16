@@ -10,7 +10,7 @@ and cleanup. Start with [usage](../docs/usage.md) and the
 | `IcebergTableSink` | Existing catalog table | Append; existing partition specs supported | [Iceberg](iceberg/README.md) |
 | `LanceDatasetSink` | Local/cloud dataset URL | Create, Append, versioned Overwrite | [Lance](lance/README.md) |
 
-All three require explicit `Ordering::Unordered` and implement `ParallelSink`.
+All three support the default `Ordering::Unordered` and implement `ParallelSink`.
 Iceberg additionally requires `WriteMode::Append`; the shared default Create is
 unsupported. [Write layers](../layer/README.md) add reusable policy and execution.
 To add another destination, follow [extend a sink](../docs/extending-sinks.md).
