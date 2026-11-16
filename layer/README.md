@@ -103,6 +103,25 @@ per pool, and exclude SDK/HTTP/encoding buffers. Share an `Arc<DownloadPool>` wh
 writers should share one transfer budget. No retry or timeout is installed by
 default; OpenDAL I/O policies can be applied to the pool.
 
+The default `DownloadFailurePolicy::Fail` makes a failed write terminal.
+For unreliable source URLs, configure `.with_failure_policy(DownloadFailurePolicy::SkipRow)`
+to omit a whole row if any selected URL fails, or `DownloadFailurePolicy::Null`
+to replace failed blobs with null (selected output fields become nullable).
+Payloads still stream directly into native uploads; no whole-blob buffering is added.
+Only source-download errors are recoverable, after successful explicit blob abort.
+Destination write/finish/cleanup failures and cancellation remain terminal.
+The backend must keep a session usable after a healthy explicit blob abort and
+clean up completed handles discarded by skipped rows; the Lance backend does both.
+
+Call `layer.metrics()` before applying the layer to retain a `DownloadMetrics`
+handle. Its live `snapshot()` reports observed `blobs_failed`, unique
+`rows_failed_blobs` within each input batch, and `rows_skipped` from successfully
+forwarded batches. Input nulls and destination failures do not count as failed
+source downloads. Counters aggregate sessions opened through clones of the layer;
+fail-fast/cancellation can stop work before every URL is attempted. For filtered
+row counts, place `MetricsLayer` inside `DownloadBlobLayer`; placing it outside
+counts accepted input rows.
+
 A failed or cancelled write poisons the session and cancels remaining downloads;
 commit then aborts the inner writer. Existing accepted batches may have created
 output. Cleanup follows the native writer's guarantees. See the

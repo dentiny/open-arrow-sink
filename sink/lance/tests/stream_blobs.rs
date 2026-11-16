@@ -242,3 +242,35 @@ async fn finished_blob_io_survives_abort_or_failed_commit(#[case] fail_commit: b
     }
     assert!(io.snapshot().bytes_written >= 4096);
 }
+
+#[tokio::test]
+async fn explicit_blob_abort_never_clears_another_blob_failure() {
+    use open_arrow_sink_core::BlobChunk;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("aborted");
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("blob", arrow_schema::DataType::LargeBinary, true).with_metadata(
+            [(
+                open_arrow_sink_core::BLOB_METADATA_KEY.into(),
+                "true".into(),
+            )]
+            .into(),
+        ),
+    ]));
+    let mut options = WriteOptions::default();
+    options.ordering = Ordering::Unordered;
+    let mut writer = LanceDatasetSink::default()
+        .open(
+            open_arrow_sink_lance::Url::from_directory_path(path).unwrap(),
+            schema,
+            options,
+        )
+        .await
+        .unwrap();
+    let mut healthy = writer.create_blob().await.unwrap();
+    healthy.write(BlobChunk::new("healthy")).await.unwrap();
+    let failed = writer.create_blob().await.unwrap();
+    drop(failed);
+    healthy.abort().await.unwrap();
+    assert!(writer.commit().await.is_err());
+}

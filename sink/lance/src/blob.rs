@@ -114,7 +114,14 @@ impl BlobWriter for NativeBlobWriter {
     async fn abort(mut self: Box<Self>) -> Result<()> {
         let upload = self.inner.abort().await;
         let file = self.session.storage.delete(&self.url).await;
-        upload.and(file)
+        let result = upload.and(file);
+        // A source download can fail after successfully writing some chunks.
+        // Explicit successful cleanup discards that blob without poisoning the
+        // session. Never clear failed writes or another blob's failure flag.
+        if result.is_ok() && !self.failed {
+            self.finished = true;
+        }
+        result
     }
 }
 

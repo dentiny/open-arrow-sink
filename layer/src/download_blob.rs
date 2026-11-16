@@ -1,7 +1,11 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use arrow_array::{
-    Array, LargeStringArray, StringArray, StringViewArray, builder::LargeBinaryBuilder,
+    Array, BooleanArray, LargeStringArray, StringArray, StringViewArray,
+    builder::LargeBinaryBuilder,
 };
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -16,20 +20,84 @@ use crate::{
     validation::validate_download_config,
 };
 
+/// Treatment of a source URL that cannot be downloaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DownloadFailurePolicy {
+    /// Fail the session (default).
+    #[default]
+    Fail,
+    /// Drop the entire row if any selected URL fails; retain order of other rows.
+    SkipRow,
+    /// Replace each failed blob with null. Selected output fields become nullable.
+    Null,
+}
+
+/// Observations across sessions using a download metrics handle.
+/// A source can fail after transferring bytes. Destination failures and input
+/// nulls do not count as source-download failures.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DownloadSnapshot {
+    pub blobs_failed: u64,
+    /// Unique failed rows within each input batch, even with multiple failed URLs.
+    pub rows_failed_blobs: u64,
+    /// Rows omitted from successfully forwarded batches by SkipRow.
+    pub rows_skipped: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DownloadMetrics(Arc<Mutex<DownloadSnapshot>>);
+impl DownloadMetrics {
+    pub fn snapshot(&self) -> DownloadSnapshot {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn failure(&self, new_row: bool) {
+        let mut snapshot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        snapshot.blobs_failed += 1;
+        snapshot.rows_failed_blobs += u64::from(new_row);
+    }
+    fn skipped(&self, rows: usize) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rows_skipped += rows as u64;
+    }
+}
+
 /// Stream selected URL columns into native blobs and attach their descriptors.
 /// Requires a sink supporting `Writer::create_blob` and `write_with_blobs`.
-/// Input batch boundaries, row order, nulls, and unselected columns are preserved.
+/// By default input boundaries, order, nulls, and unselected columns are preserved.
+/// Optional failure policies discard only source-download failures; destination
+/// write, finish, and cleanup failures remain terminal.
 #[derive(Clone, Debug)]
 pub struct DownloadBlobLayer {
     columns: HashSet<String>,
     download_pool: Option<Arc<DownloadPool>>,
+    failure_policy: DownloadFailurePolicy,
+    metrics: DownloadMetrics,
 }
 impl DownloadBlobLayer {
     pub fn new(columns: HashSet<String>) -> Self {
         Self {
             columns,
             download_pool: None,
+            failure_policy: DownloadFailurePolicy::Fail,
+            metrics: DownloadMetrics::default(),
         }
+    }
+    pub fn with_failure_policy(mut self, policy: DownloadFailurePolicy) -> Self {
+        self.failure_policy = policy;
+        self
+    }
+    pub fn metrics(&self) -> DownloadMetrics {
+        self.metrics.clone()
     }
     pub fn with_download_pool(mut self, pool: Arc<DownloadPool>) -> Self {
         self.download_pool = Some(pool);
@@ -83,6 +151,10 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
                 field
                     .clone()
                     .with_data_type(DataType::LargeBinary)
+                    .with_nullable(
+                        field.is_nullable()
+                            || self.config.failure_policy == DownloadFailurePolicy::Null,
+                    )
                     .with_metadata(metadata),
             );
         }
@@ -104,6 +176,8 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             pool,
             failed: false,
             io_metrics,
+            failure_policy: self.config.failure_policy,
+            metrics: self.config.metrics.clone(),
         }))
     }
 }
@@ -116,6 +190,8 @@ struct DownloadBlobWriter {
     pool: Arc<DownloadPool>,
     failed: bool,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+    failure_policy: DownloadFailurePolicy,
+    metrics: DownloadMetrics,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
     match array.data_type() {
@@ -137,6 +213,15 @@ fn url_value(array: &dyn Array, row: usize) -> &str {
         _ => unreachable!("validated at open"),
     }
 }
+enum DownloadResult {
+    Complete(BlobPlacement),
+    SourceFailed {
+        column: usize,
+        row: usize,
+        error: open_arrow_sink_core::Error,
+        cleanup: Result<()>,
+    },
+}
 async fn download(
     pool: Arc<DownloadPool>,
     url: String,
@@ -145,25 +230,53 @@ async fn download(
     column: usize,
     row: usize,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
-) -> Result<BlobPlacement> {
-    let result = async {
-        let mut stream = pool.stream(&url).await?;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if let Some(metrics) = &io_metrics {
-                metrics.record_read(chunk.as_ref().len() as u64);
-            }
-            native.write(chunk).await?;
+) -> Result<DownloadResult> {
+    // Only source failures are recoverable. Never suppress destination failures
+    // or restart an upload after bytes have been accepted by its writer.
+    let mut stream = match pool.stream(&url).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let cleanup = native.abort().await;
+            return Ok(DownloadResult::SourceFailed {
+                column,
+                row,
+                error: error::download_context(&name, row, error),
+                cleanup,
+            });
         }
-        Ok(BlobPlacement {
-            column,
-            row,
-            blob: native.finish().await?,
-        })
+    };
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop(stream);
+                let cleanup = native.abort().await;
+                return Ok(DownloadResult::SourceFailed {
+                    column,
+                    row,
+                    error: error::download_context(&name, row, error),
+                    cleanup,
+                });
+            }
+        };
+        if let Some(metrics) = &io_metrics {
+            metrics.record_read(chunk.as_ref().len() as u64);
+        }
+        native
+            .write(chunk)
+            .await
+            .map_err(|error| error::download_context(&name, row, error))?;
     }
-    .await
-    .map_err(|error| error::download_context(&name, row, error))?;
-    Ok(result)
+    drop(stream);
+    let blob = native
+        .finish()
+        .await
+        .map_err(|error| error::download_context(&name, row, error))?;
+    Ok(DownloadResult::Complete(BlobPlacement {
+        column,
+        row,
+        blob,
+    }))
 }
 #[async_trait]
 impl Writer for DownloadBlobWriter {
@@ -195,6 +308,8 @@ impl Writer for DownloadBlobWriter {
             let mut jobs = jobs.into_iter();
             let mut active = FuturesUnordered::new();
             let mut blobs = Vec::new();
+            let mut failed_rows = HashSet::new();
+            let mut failed_cells = HashSet::new();
             loop {
                 while active.len() < self.pool.concurrency() {
                     let Some((column, row)) = jobs.next() else {
@@ -213,13 +328,72 @@ impl Writer for DownloadBlobWriter {
                     ));
                 }
                 match active.next().await {
-                    Some(result) => blobs.push(result?),
+                    Some(result) => match result? {
+                        DownloadResult::Complete(blob) => blobs.push(blob),
+                        DownloadResult::SourceFailed {
+                            column,
+                            row,
+                            error,
+                            cleanup,
+                        } => {
+                            self.metrics.failure(failed_rows.insert(row));
+                            cleanup?;
+                            failed_cells.insert((column, row));
+                            if self.failure_policy == DownloadFailurePolicy::Fail {
+                                return Err(error);
+                            }
+                        }
+                    },
                     None => break,
                 }
             }
-            let output =
+            if self.failure_policy == DownloadFailurePolicy::Null {
+                for &column in &self.indices {
+                    let values = columns[column]
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeBinaryArray>()
+                        .unwrap();
+                    let mut builder = LargeBinaryBuilder::new();
+                    for row in 0..batch.num_rows() {
+                        if values.is_null(row) || failed_cells.contains(&(column, row)) {
+                            builder.append_null();
+                        } else {
+                            builder.append_value([]);
+                        }
+                    }
+                    columns[column] = Arc::new(builder.finish());
+                }
+            }
+            let mut output =
                 RecordBatch::try_new(self.output_schema.clone(), columns).map_err(backend)?;
+            if self.failure_policy == DownloadFailurePolicy::SkipRow && !failed_rows.is_empty() {
+                let keep = BooleanArray::from(
+                    (0..batch.num_rows())
+                        .map(|row| !failed_rows.contains(&row))
+                        .collect::<Vec<_>>(),
+                );
+                output =
+                    arrow_select::filter::filter_record_batch(&output, &keep).map_err(backend)?;
+                let mut row_map = vec![None; batch.num_rows()];
+                let mut next = 0;
+                for (row, target) in row_map.iter_mut().enumerate() {
+                    if !failed_rows.contains(&row) {
+                        *target = Some(next);
+                        next += 1;
+                    }
+                }
+                blobs.retain_mut(|blob| match row_map[blob.row] {
+                    Some(row) => {
+                        blob.row = row;
+                        true
+                    }
+                    None => false,
+                });
+            }
             self.inner.write_with_blobs(output, blobs).await?;
+            if self.failure_policy == DownloadFailurePolicy::SkipRow {
+                self.metrics.skipped(failed_rows.len());
+            }
         }
         self.failed = false;
         Ok(())

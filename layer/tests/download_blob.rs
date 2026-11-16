@@ -40,6 +40,9 @@ struct State {
     batches: Vec<RecordBatch>,
     committed: bool,
     aborted: bool,
+    fail_upload: bool,
+    fail_blob_abort: bool,
+    blobs_aborted: usize,
 }
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<State>>);
@@ -87,7 +90,10 @@ impl Writer for CaptureWriter {
         &self.schema
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        Ok(Box::new(CaptureBlob(Vec::new())))
+        Ok(Box::new(CaptureBlob {
+            bytes: Vec::new(),
+            state: self.state.clone(),
+        }))
     }
     async fn write_with_blobs(
         &mut self,
@@ -136,17 +142,32 @@ impl Writer for CaptureWriter {
     }
 }
 
-struct CaptureBlob(Vec<u8>);
+struct CaptureBlob {
+    bytes: Vec<u8>,
+    state: Capture,
+}
 #[async_trait]
 impl BlobWriter for CaptureBlob {
     async fn write(&mut self, chunk: BlobChunk) -> Result<()> {
-        self.0.extend_from_slice(chunk.as_ref());
+        if self.state.0.lock().unwrap().fail_upload {
+            return Err(open_arrow_sink_core::Error::Backend(Box::new(
+                std::io::Error::other("destination failed"),
+            )));
+        }
+        self.bytes.extend_from_slice(chunk.as_ref());
         Ok(())
     }
     async fn finish(self: Box<Self>) -> Result<BlobHandle> {
-        Ok(BlobHandle::new(self.0))
+        Ok(BlobHandle::new(self.bytes))
     }
     async fn abort(self: Box<Self>) -> Result<()> {
+        let mut state = self.state.0.lock().unwrap();
+        state.blobs_aborted += 1;
+        if state.fail_blob_abort {
+            return Err(open_arrow_sink_core::Error::Backend(Box::new(
+                std::io::Error::other("abort failed"),
+            )));
+        }
         Ok(())
     }
 }
@@ -923,4 +944,149 @@ async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: 
     assert!(writer.commit().await.is_err());
     assert_eq!(metrics.snapshot().bytes_read, 3);
     assert_eq!(metrics.snapshot().rows_committed, 0);
+}
+
+#[rstest::rstest]
+#[case::skip(open_arrow_sink_layer::DownloadFailurePolicy::SkipRow)]
+#[case::null(open_arrow_sink_layer::DownloadFailurePolicy::Null)]
+#[tokio::test]
+async fn optional_failure_policy_counts_cells_and_unique_rows_and_keeps_session_usable(
+    #[case] policy: open_arrow_sink_layer::DownloadFailurePolicy,
+) {
+    use open_arrow_sink_layer::DownloadFailurePolicy;
+    let _request_budget = REQUEST_BUDGET.lock().await;
+    let good = server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        Duration::ZERO,
+    )
+    .await;
+    let bad = server(
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        Duration::ZERO,
+    )
+    .await;
+    let input = RecordBatch::try_from_iter([
+        (
+            "left",
+            Arc::new(StringArray::from(vec![
+                good.url.as_str(),
+                bad.url.as_str(),
+                bad.url.as_str(),
+            ])) as ArrayRef,
+        ),
+        (
+            "right",
+            Arc::new(StringArray::from(vec![
+                good.url.as_str(),
+                bad.url.as_str(),
+                good.url.as_str(),
+            ])) as ArrayRef,
+        ),
+        (
+            "id",
+            Arc::new(Int32Array::from(vec![10, 11, 12])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let capture = Capture::default();
+    let layer = download_layer(["left".into(), "right".into()].into()).with_failure_policy(policy);
+    let metrics = layer.metrics();
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    writer.write(input.clone()).await.unwrap();
+    writer.write(input.slice(0, 1)).await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(
+        summary.rows_written,
+        if policy == DownloadFailurePolicy::SkipRow {
+            2
+        } else {
+            4
+        }
+    );
+    let metrics = metrics.snapshot();
+    assert_eq!(metrics.blobs_failed, 3);
+    assert_eq!(metrics.rows_failed_blobs, 2);
+    assert_eq!(
+        metrics.rows_skipped,
+        if policy == DownloadFailurePolicy::SkipRow {
+            2
+        } else {
+            0
+        }
+    );
+    let state = capture.0.lock().unwrap();
+    assert_eq!(state.blobs_aborted, 3);
+    let first = &state.batches[0];
+    let ids = first
+        .column(2)
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    let left = first
+        .column(0)
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .unwrap();
+    let right = first
+        .column(1)
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .unwrap();
+    assert_eq!(left.value(0), b"ok");
+    assert_eq!(right.value(0), b"ok");
+    if policy == DownloadFailurePolicy::SkipRow {
+        assert_eq!(ids.values().as_ref(), &[10]);
+    } else {
+        assert_eq!(ids.values().as_ref(), &[10, 11, 12]);
+        assert!(first.schema().field(0).is_nullable());
+        assert!(left.is_null(1) && left.is_null(2));
+        assert!(right.is_null(1));
+        assert_eq!(right.value(2), b"ok");
+    }
+}
+
+#[rstest::rstest]
+#[case::skip_upload(open_arrow_sink_layer::DownloadFailurePolicy::SkipRow, true)]
+#[case::null_upload(open_arrow_sink_layer::DownloadFailurePolicy::Null, true)]
+#[case::skip_cleanup(open_arrow_sink_layer::DownloadFailurePolicy::SkipRow, false)]
+#[case::null_cleanup(open_arrow_sink_layer::DownloadFailurePolicy::Null, false)]
+#[tokio::test]
+async fn recoverable_policy_never_suppresses_destination_or_cleanup_errors(
+    #[case] policy: open_arrow_sink_layer::DownloadFailurePolicy,
+    #[case] upload: bool,
+) {
+    let _request_budget = REQUEST_BUDGET.lock().await;
+    let response = if upload {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".as_slice()
+    } else {
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    };
+    let source = server(response, Duration::ZERO).await;
+    let input = batch(vec![Some(source.url.as_str())]);
+    let capture = Capture::default();
+    {
+        let mut state = capture.0.lock().unwrap();
+        state.fail_upload = upload;
+        state.fail_blob_abort = !upload;
+    }
+    let layer = download_layer(["url".into()].into()).with_failure_policy(policy);
+    let metrics = layer.metrics();
+    let mut writer = capture
+        .clone()
+        .layer(layer)
+        .open((), input.schema(), WriteOptions::default())
+        .await
+        .unwrap();
+    assert!(writer.write(input).await.is_err());
+    assert!(writer.commit().await.is_err());
+    let state = capture.0.lock().unwrap();
+    assert!(state.aborted);
+    assert!(!state.committed);
+    assert!(state.batches.is_empty());
+    assert_eq!(metrics.snapshot().blobs_failed, u64::from(!upload));
 }

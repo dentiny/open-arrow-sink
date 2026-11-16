@@ -311,6 +311,22 @@ native handles, not those arrays. Sinks without streaming blob support are rejec
 when opening the layer. Blob ingestion currently uses single-writer sessions;
 the underlying sink controls the final scan ordering.
 
+Download failures default to terminal (`DownloadFailurePolicy::Fail`). Opt in to
+`SkipRow` to remove the entire row if any selected source fails, or `Null` to
+null only failed cells (selected output fields become nullable). Only source
+errors followed by successful native blob abort are recoverable; destination
+write/finish/abort errors and cancellation remain terminal. Downloads retain
+bounded streaming behavior. Skipped rows keep the relative order of survivors.
+The native backend owns cleanup of partial and unused completed blobs.
+
+`DownloadBlobLayer::metrics()` returns a cloneable live counter handle:
+`blobs_failed` counts observed source failures; `rows_failed_blobs` counts each
+failed row once per input batch even if multiple selected URLs fail; `rows_skipped`
+counts omitted rows after a filtered batch is accepted by the inner writer.
+Original nulls and destination failures are excluded. Counters aggregate layer
+clones/sessions; fail-fast and cancellation may leave some URLs unattempted.
+Place a general `MetricsLayer` inside this layer to observe filtered row counts.
+
 A failed or cancelled write poisons the session and cancels remaining downloads;
 commit then aborts the inner writer. Earlier batches may already have been accepted.
 Dropping chunks releases the shared byte budget, and native blob cleanup follows
