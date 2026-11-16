@@ -17,6 +17,18 @@ let destination = storage.url("new-output/part-00000.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+`Storage::stat(&url)` returns `Result<Option<Metadata>>`: `None` means only
+NotFound; permission, transport, and other failures remain errors. This replaces
+both `exists` and `stat_optional`. For a non-root destination,
+`inspect_directory(&url)` returns `DirectoryState::{Missing, File, Empty, NonEmpty}`
+with or without a trailing slash. It handles virtual prefixes and explicit empty
+directory markers, and an exact file takes precedence over children. Inspection
+stops at the first child (including empty subdirectories); it is a preflight
+observation, so callers must still use conditional creation to claim a destination.
+Use `list` when the file URLs themselves are needed. `remove_all` remains an
+owner-only recursive deletion; `remove_empty_directory` uses inspection and
+preserves missing paths, exact files, and nonempty directories.
+
 `Storage::from_url(&url)` resolves an operator rooted at the URL's origin. Local
 `file://` and ephemeral `memory://` are available by default. Each memory
 resolution constructs a fresh store; retain a configured `Storage` to share data.

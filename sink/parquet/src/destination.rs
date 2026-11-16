@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use open_arrow_sink_core::{Error, Result, SchemaRef, WriteMode};
-use open_arrow_sink_storage::{Storage, Url};
+use open_arrow_sink_storage::{DirectoryState, Storage, Url};
 use parquet::{arrow::AsyncArrowWriter, file::properties::WriterProperties};
 
 use crate::file_writer::FileWriter;
@@ -54,7 +54,7 @@ impl Destination {
         self.child(&format!("{}{index:05}.parquet", self.prefix))
     }
     async fn reserve(&self) -> Result<()> {
-        if self.storage.prefix_exists(&self.directory).await? {
+        if self.storage.inspect_directory(&self.directory).await? != DirectoryState::Missing {
             return Err(Error::DestinationExists);
         }
         self.storage
