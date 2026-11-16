@@ -8,7 +8,9 @@ publish = false
 [dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
+arrow-ord.workspace = true
+arrow-select.workspace = true
 open-arrow-sink-core.workspace = true
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+axum.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "sync", "time"] }

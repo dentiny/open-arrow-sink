@@ -15,3 +15,10 @@ Deliberately malformed HTTP framing remains in the owning failure tests: an axum
 response cannot represent a truncated chunk header or a false Content-Length.
 Lifecycle-specific mocks also stay near their tests rather than growing a shared
 mock with switches for every backend and layer.
+
+`sort_batch(batch, keys)` and `concat_sorted(schema, batches, keys)` normalize
+unordered readback without dropping duplicate rows. Include enough key columns
+to break ties when tied rows have different values. Backend scan setup remains
+in the backend tests; this crate does not depend on Lance or another sink.
+`seeded_bytes(seed, len)` generates reproducible payloads for rolling/compression
+fixtures without duplicating a PRNG loop.

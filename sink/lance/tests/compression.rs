@@ -1,3 +1,4 @@
+use arrow_array::cast::AsArray;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
@@ -108,32 +109,11 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
     let ids = actual
         .column_by_name("id")
         .unwrap()
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let raw = actual
-        .column_by_name("raw")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    let nested = actual
-        .column_by_name("nested")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .unwrap();
-    let nested_text = nested
-        .column(0)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
-    let expected = input
-        .column_by_name("raw")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
+        .as_primitive::<arrow_array::types::Int64Type>();
+    let raw = actual.column_by_name("raw").unwrap().as_string::<i32>();
+    let nested = actual.column_by_name("nested").unwrap().as_struct();
+    let nested_text = nested.column(0).as_string::<i32>();
+    let expected = input.column_by_name("raw").unwrap().as_string::<i32>();
     let mut occurrences = vec![0; input.num_rows()];
     for row in 0..actual.num_rows() {
         let id = usize::try_from(ids.value(row)).unwrap();
@@ -260,15 +240,7 @@ async fn nested_override_preserves_sibling_policy_and_rows() {
         "zstd"
     );
     assert_eq!(actual.num_rows(), input.num_rows());
-    let nested = actual
-        .column(1)
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .unwrap();
-    let expected = input
-        .column(1)
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .unwrap();
+    let nested = actual.column(1).as_struct();
+    let expected = input.column(1).as_struct();
     assert_eq!(nested.column(0), expected.column(0));
 }

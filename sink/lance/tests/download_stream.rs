@@ -1,6 +1,7 @@
+use arrow_array::cast::AsArray;
 use std::{num::NonZeroUsize, sync::Arc};
 
-use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray};
 use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
@@ -80,16 +81,10 @@ async fn downloads_larger_than_budget_round_trip_as_owned_native_blobs() {
         .try_into_batch()
         .await
         .unwrap();
-    let values = actual
-        .column(0)
-        .as_any()
-        .downcast_ref::<LargeBinaryArray>()
-        .unwrap();
+    let values = actual.column(0).as_binary::<i64>();
     let ids = actual
         .column(1)
-        .as_any()
-        .downcast_ref::<Int32Array>()
-        .unwrap();
+        .as_primitive::<arrow_array::types::Int32Type>();
     for row in 0..actual.num_rows() {
         match ids.value(row) {
             0 => {
