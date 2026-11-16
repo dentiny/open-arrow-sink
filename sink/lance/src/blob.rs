@@ -16,9 +16,9 @@ use open_arrow_sink_core::{
 use open_arrow_sink_storage::{Storage, StorageWriter, Url};
 
 pub(crate) struct BlobSession {
+    active: AtomicUsize,
     failed: AtomicBool,
     io_tracker: Arc<crate::io_metrics::TrackedIo>,
-    active: AtomicUsize,
     storage: Storage,
     relative_prefix: String,
     directory: Url,
@@ -33,9 +33,9 @@ impl BlobSession {
         let relative_prefix = format!("_blobs/{}/", uuid::Uuid::new_v4());
         let directory = dataset.join(&relative_prefix).unwrap();
         Self {
+            active: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
             io_tracker,
-            active: AtomicUsize::new(0),
             storage,
             relative_prefix,
             directory,
