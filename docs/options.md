@@ -376,12 +376,17 @@ are accumulated wall time of operations and can overlap with parallel writers.
 
 Payload-byte observations are separate from `WriteSummary`, which only returns
 `rows_written`. `MetricsLayer` passes a shared `IoMetrics` handle through
-`WriteOptions.io_metrics`; backends and the built-in downloader report I/O independently of
-commit success. You can also supply your own handle without installing the layer.
+`WriteOptions.io_metrics` as an `IoObservers` collection; backends and the built-in
+downloader report I/O independently of commit success. You can also supply your
+own handle with `with_io_metrics(handle)` without installing the layer.
+`IoMetrics` owns one pair of atomic counters; `IoObservers` deduplicates handles for
+nested observation layers. Snapshot the individual handles, not the collection.
+Direct `io_metrics: Some(handle)` assignments now require `Some(handle.into())`.
 Existing complete `WriteOptions` literals should add `io_metrics: None` or
 `..Default::default()`.
 
-`Storage` uses one OpenDAL `IoMetricsLayer` for byte observations across backends.
+`Storage` installs one OpenDAL `IoMetricsLayer` per distinct observer across backends.
+It caches the exported operator and rebuilds it when policies or observers change.
 Lance and Parquet attach the session handle from `WriteOptions`; native adapters,
 parallel fragments, metadata payloads, and index work use the same operator layer.
 The old `IoMetricsSource`, `IoMetricsRegistration`, and `IoMetrics::track` APIs are
@@ -390,7 +395,8 @@ consumed source chunks, including transfers before failure or cancellation.
 
 For Iceberg, configure the catalog's `OpenDalStorageFactory` with
 `storage.with_io_metrics(metrics.clone())`. Its FileIO belongs to the caller's
-catalog, so `WriteOptions.io_metrics` cannot replace that FileIO. The configured
+catalog, so `WriteOptions.io_metrics` is rejected before catalog access. This also
+applies to `MetricsLayer`, which supplies that option automatically. The configured
 handle covers data, manifest, and metadata I/O, including catalog work and readback;
 use a separate catalog/storage observer when isolation is needed. Custom sinks
 that bypass instrumented Storage still contribute no bytes.
@@ -400,16 +406,18 @@ writes, including transfers before a later failure, cancellation, abort, or drop
 Buffered writes contribute when OpenDAL accepts them; acceptance does not imply
 publication or a successful close. Streaming readers may fetch more bytes than a
 consumer ultimately uses. Metadata operations, server-side copies, HTTP framing,
-and internal retries are excluded. These are payload observations, not network
-totals or bytes inferred from Arrow batches. Install the layer outside retry layers;
+and retries inside OpenDAL retry layers are excluded. Higher-level retries,
+including Lance ObjectStore download retries and application retries, issue fresh
+reads above the adapter and count successful payload transfers again. These are
+payload observations, not network totals or bytes inferred from Arrow batches. Install the layer outside retry layers;
 `Storage` does this when exporting an operator. Snapshots do not reset counters.
 
 The layer forwards schema, capabilities, native blob APIs, and parallel sessions.
 Install one observation layer at the boundary you want to measure. The built-in
-blob downloader records source reads using the writer's `IoMetrics` handle, so
+blob downloader records source reads using the writer's observers, so
 its traffic is included regardless of URL-selection layers. Shared source observers
-are deduplicated against the downloader handle, preserving independent observers. Nested observers receive
-backend measurements independently; reusing the same handle does not duplicate
+are deduplicated against the downloader observers, preserving independent ones.
+Nested observers receive backend measurements independently; reusing the same handle does not duplicate
 byte observations. Placing MetricsLayer inside or outside UnorderedWriteLayer
 still counts one successful session commit.
 

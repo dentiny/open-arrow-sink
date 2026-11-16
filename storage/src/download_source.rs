@@ -22,15 +22,15 @@ pub struct DownloadContext {
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,
-    pub(crate) io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+    pub(crate) io_metrics: Option<open_arrow_sink_core::IoObservers>,
 }
 impl DownloadContext {
     // The wrapper records consumed chunks; source operators retain only observers
     // not already present on that wrapper, including partially overlapping handles.
     pub(crate) fn unobserved_metrics(
         &self,
-        metrics: Option<open_arrow_sink_core::IoMetrics>,
-    ) -> Option<open_arrow_sink_core::IoMetrics> {
+        metrics: Option<open_arrow_sink_core::IoObservers>,
+    ) -> Option<open_arrow_sink_core::IoObservers> {
         metrics.and_then(|metrics| match &self.io_metrics {
             Some(observed) => metrics.excluding(observed),
             None => Some(metrics),

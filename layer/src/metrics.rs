@@ -60,8 +60,8 @@ impl WriteMetrics {
     }
     fn observe_io(&self, options: &mut WriteOptions) {
         options.io_metrics = Some(match options.io_metrics.take() {
-            Some(outer) => self.io.clone().combine(outer),
-            None => self.io.clone(),
+            Some(outer) => outer.combine(self.io.clone()),
+            None => self.io.clone().into(),
         });
     }
     fn accepted(&self, rows: u64) {

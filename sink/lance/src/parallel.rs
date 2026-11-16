@@ -15,7 +15,7 @@ pub(crate) struct FragmentWriter {
     downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
     blob_mode: open_arrow_sink_core::ExternalBlobMode,
     recovery: Option<open_arrow_sink_core::DownloadRecovery>,
-    io_metrics: Option<open_arrow_sink_core::IoMetrics>,
+    io_metrics: Option<open_arrow_sink_core::IoObservers>,
 }
 
 impl FragmentWriter {

@@ -112,7 +112,7 @@ struct TestWriter {
     schema: SchemaRef,
     gate: Option<oneshot::Receiver<()>>,
     rows: u64,
-    io: Option<open_arrow_sink_core::IoMetrics>,
+    io: Option<open_arrow_sink_core::IoObservers>,
 }
 fn failure() -> Error {
     Error::Unsupported("injected failure".into())
@@ -238,7 +238,7 @@ impl DataWriter for TestWriter {
         Ok(())
     }
 }
-struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoMetrics>);
+struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoObservers>);
 #[async_trait]
 impl SessionCommitter<u64> for TestCommitter {
     async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<WriteSummary> {

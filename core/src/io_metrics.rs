@@ -1,7 +1,10 @@
 //! Shared observation of measured payload I/O, independent of commit results.
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// Measured logical payload bytes, including I/O from unsuccessful sessions.
@@ -11,15 +14,9 @@ pub struct IoSnapshot {
     pub bytes_read: u64,
     pub bytes_written: u64,
 }
-/// Cloneable observation handle passed through `WriteOptions`.
-/// Equality compares handle identity, not mutable counter values.
-#[derive(Clone)]
-pub struct IoMetrics(Vec<Arc<Mutex<IoSnapshot>>>);
-impl Default for IoMetrics {
-    fn default() -> Self {
-        Self(vec![Arc::new(Mutex::new(IoSnapshot::default()))])
-    }
-}
+/// Cloneable observation handle. Equality compares counter identity.
+#[derive(Clone, Default)]
+pub struct IoMetrics(Arc<[AtomicU64; 2]>);
 impl fmt::Debug for IoMetrics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("IoMetrics").field(&self.snapshot()).finish()
@@ -27,48 +24,61 @@ impl fmt::Debug for IoMetrics {
 }
 impl PartialEq for IoMetrics {
     fn eq(&self, other: &Self) -> bool {
-        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| Arc::ptr_eq(a, b))
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 impl Eq for IoMetrics {}
 impl IoMetrics {
-    /// Forward observations to both handles, deduplicating shared counters.
-    /// Snapshot each original handle separately; a combined handle is for recording.
-    pub fn combine(mut self, other: Self) -> Self {
-        for state in other.0 {
-            if !self.0.iter().any(|existing| Arc::ptr_eq(existing, &state)) {
-                self.0.push(state);
+    /// Each counter is read independently; concurrent I/O can advance between loads.
+    pub fn snapshot(&self) -> IoSnapshot {
+        IoSnapshot {
+            bytes_read: self.0[0].load(Ordering::Relaxed),
+            bytes_written: self.0[1].load(Ordering::Relaxed),
+        }
+    }
+    pub fn record_read(&self, bytes: u64) {
+        self.0[0].fetch_add(bytes, Ordering::Relaxed);
+    }
+    pub fn record_write(&self, bytes: u64) {
+        self.0[1].fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+/// Distinct observers forwarded through nested layers and download boundaries.
+/// A collection has no snapshot: every handle owns exactly one pair of counters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IoObservers(Vec<IoMetrics>);
+impl From<IoMetrics> for IoObservers {
+    fn from(metrics: IoMetrics) -> Self {
+        Self(vec![metrics])
+    }
+}
+impl IoObservers {
+    /// Add distinct handles, preserving their identity and counters.
+    pub fn combine(mut self, other: impl Into<Self>) -> Self {
+        for metrics in other.into().0 {
+            if !self.0.contains(&metrics) {
+                self.0.push(metrics);
             }
         }
         self
     }
-    /// Remove observers already accounted for at another transfer boundary.
-    /// Returns None when every observer is excluded; retained observers still
-    /// share their original counters.
+    /// Remove handles already counted at another transfer boundary.
     pub fn excluding(mut self, other: &Self) -> Option<Self> {
-        self.0
-            .retain(|state| !other.0.iter().any(|existing| Arc::ptr_eq(existing, state)));
+        self.0.retain(|metrics| !other.0.contains(metrics));
         (!self.0.is_empty()).then_some(self)
     }
-    pub fn snapshot(&self) -> IoSnapshot {
-        // A combined handle records the same event to each destination.
-        *self.0[0]
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub fn iter(&self) -> impl Iterator<Item = &IoMetrics> {
+        self.0.iter()
     }
     pub fn record_read(&self, bytes: u64) {
-        self.record(bytes, 0);
+        for metrics in &self.0 {
+            metrics.record_read(bytes);
+        }
     }
     pub fn record_write(&self, bytes: u64) {
-        self.record(0, bytes);
-    }
-    fn record(&self, read: u64, written: u64) {
-        for state in &self.0 {
-            let mut total = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            total.bytes_read += read;
-            total.bytes_written += written;
+        for metrics in &self.0 {
+            metrics.record_write(bytes);
         }
     }
 }
