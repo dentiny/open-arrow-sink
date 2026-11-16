@@ -2,13 +2,18 @@ use std::num::NonZeroUsize;
 
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    DataWriter, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef, SessionCommitter,
-    Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
+    DataWriter, Layer, Ordering, ParallelSink, Poison, RecordBatch, Result, SchemaRef,
+    SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait,
+    validation,
 };
 
 /// Pre-open independent writers and dispatch batches to available writers.
 /// At most one batch per writer is in flight. Work progresses while write or
 /// commit is polled; this layer does not spawn background tasks.
+/// Parquet and Iceberg encoding/compression therefore runs in the caller's task:
+/// multiple writers overlap I/O, but do not provide CPU parallelism. Backends
+/// such as Lance may schedule their own workers. See the layer guide for
+/// application-managed task scheduling and its cleanup responsibilities.
 #[derive(Debug, Clone, Copy)]
 pub struct UnorderedWriteLayer {
     writers: NonZeroUsize,
@@ -41,12 +46,11 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     type Request = S::Request;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            ordering: Ordering::Unordered,
-            // DataWriter has no native-blob interface to forward.
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        // DataWriter has no native-blob interface to forward.
+        self.inner
+            .capability()
+            .with_ordering(Ordering::Unordered)
+            .with_supports_blob_streaming(false)
     }
 
     async fn open(
@@ -76,7 +80,7 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
             idle: session.writers,
             committer: Some(session.committer),
             pending: FuturesUnordered::new(),
-            failed: false,
+            state: Poison::default(),
         }))
     }
 }
@@ -88,7 +92,7 @@ struct UnorderedWriter<T: Send + 'static> {
     idle: Vec<Box<dyn DataWriter<Output = T>>>,
     committer: Option<Box<dyn SessionCommitter<T>>>,
     pending: FuturesUnordered<PendingWrite<T>>,
-    failed: bool,
+    state: Poison,
 }
 
 impl<T: Send + 'static> UnorderedWriter<T> {
@@ -136,9 +140,8 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        crate::validation::validate_writer_state(self.failed)?;
         // Cancellation and every error make the session terminal.
-        self.failed = true;
+        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         while let Some(Some(completed)) = self.pending.next().now_or_never() {
             self.complete(completed)?;
@@ -161,12 +164,12 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
                 self.complete(completed)?;
             }
         }
-        self.failed = false;
+        self.state.complete();
         Ok(())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = crate::validation::validate_writer_state(self.failed) {
+        if let Err(error) = self.state.check() {
             let _ = self.cleanup().await;
             return Err(error);
         }

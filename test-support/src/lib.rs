@@ -22,10 +22,7 @@ pub fn int64_batch(column: &str, values: Vec<Option<i64>>) -> RecordBatch {
 
 /// Explicitly request the guarantee all built-in backends currently provide.
 pub fn unordered_options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 
 /// Sort rows by the supplied key columns, retaining nulls, metadata and duplicates.

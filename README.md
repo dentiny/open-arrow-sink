@@ -30,22 +30,28 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ```rust,no_run
-use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use open_arrow_sink::{Ordering, Sink, WriteOptions, parquet::{ParquetDirectorySink, Url}};
+use open_arrow_sink::{
+    Ordering, Sink, WriteOptions,
+    parquet::{ParquetDirectorySink, Url},
+};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = Url::from_directory_path(std::path::absolute("new-output")?)
         .map_err(|_| "invalid destination path")?;
     let batch = RecordBatch::try_from_iter([(
-        "id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+        "id",
+        Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
     )])?;
-    let mut writer = ParquetDirectorySink::default().open(
-        destination,
-        batch.schema(),
-        WriteOptions { ordering: Ordering::Unordered, ..WriteOptions::default() },
-    ).await?;
+    let mut writer = ParquetDirectorySink::default()
+        .open(
+            destination,
+            batch.schema(),
+            WriteOptions::default().with_ordering(Ordering::Unordered),
+        )
+        .await?;
     if let Err(error) = writer.write(batch).await {
         let _ = writer.abort().await;
         return Err(error.into());

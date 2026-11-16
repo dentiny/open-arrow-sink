@@ -57,6 +57,23 @@ batch sizes and account for every backend's encoding buffers. Empty batches are
 validated and otherwise ignored. The layer spawns no tasks; pending futures are
 polled during write/commit/abort. Native backends may have workers of their own.
 
+For Parquet and Iceberg, row-group encoding and compression run while these
+futures are polled in the **same caller task**, even on a multithreaded Tokio
+runtime. Several writers can overlap uploads, but the layer does not spread
+encoding work across CPU cores. Increasing writer count can help an I/O-bound
+workload; for a CPU-bound workload it also multiplies encoding buffers without
+adding encoding threads. Lance schedules its native writes in separate tasks,
+so its scheduling behavior differs.
+
+Applications requiring CPU parallelism can use `ParallelSink::open_writers`
+directly and drive the returned data writers in separate tasks on a multithreaded
+executor. This also transfers orchestration responsibilities to the application:
+retain writer ownership through failures and cancellation, stop and join every
+worker before cleanup, and call the one session committer only after all writers
+finish successfully. Returning on the first task error or dropping a join handle
+must not leave detached writers running. `WriteSession` itself is an ownership
+interface; it does not implement this task scheduler.
+
 A write error or cancellation makes the session terminal. Commit drains accepted
 writes and finishes every data writer before passing all outputs to one committer.
 A finish failure aborts all writers, including finished ones, before aborting the
