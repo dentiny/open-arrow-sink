@@ -1,13 +1,20 @@
 use open_arrow_sink_core::{Error, Result};
 use opendal::ErrorKind;
 
-/// Preserve the operation, object location, and original OpenDAL error.
+/// Classify actionable errors; retain the native source for backend failures.
 pub(crate) fn map_error(operation: &'static str, path: &str, source: opendal::Error) -> Error {
-    Error::backend(BackendError {
+    let kind = source.kind();
+    let context = BackendError {
         operation,
         path: path.to_owned(),
         source,
-    })
+    };
+    match kind {
+        ErrorKind::AlreadyExists => Error::AlreadyExists(context.to_string()),
+        ErrorKind::NotFound => Error::NotFound(context.to_string()),
+        ErrorKind::Unsupported => Error::Unsupported(context.to_string()),
+        _ => Error::backend(context),
+    }
 }
 
 #[derive(Debug)]

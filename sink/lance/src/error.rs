@@ -97,14 +97,17 @@ pub(crate) fn invalid_destination_root() -> Error {
 pub(crate) fn blob_input(column: &str, row: usize, source: Error) -> Error {
     let context = |message: String| format!("blob column {column} row {row}: {message}");
     match source {
+        Error::AlreadyExists(message) => Error::AlreadyExists(context(message)),
+        Error::NotFound(message) => Error::NotFound(context(message)),
         Error::InvalidInput(message) => Error::InvalidInput(context(message)),
         Error::InvalidConfig(message) => Error::InvalidConfig(context(message)),
         Error::Unsupported(message) => Error::Unsupported(context(message)),
-        source => Error::backend(BlobInputError {
+        source @ Error::Backend(_) => Error::backend(BlobInputError {
             column: column.into(),
             row,
             source,
         }),
+        source => source,
     }
 }
 #[derive(Debug)]

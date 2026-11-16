@@ -22,7 +22,7 @@ impl OpenDalDownloader {
         opendal::install_default();
         let http = config.apply(
             Operator::new(Http::default().endpoint(HTTP_PLACEHOLDER.trim_end_matches('/')))
-                .map_err(Error::backend)?,
+                .map_err(|error| error::map_error("configure_download", HTTP_PLACEHOLDER, error))?,
         )?;
         let transport = http.base_context().http_transport().clone();
         Ok(Self {
@@ -107,12 +107,12 @@ impl Downloader for OpenDalDownloader {
         let mut reader = operator
             .reader(&path)
             .await
-            .map_err(Error::backend)?
+            .map_err(|error| error::map_error("read", &path, error))?
             .into_stream(..)
             .await
-            .map_err(Error::backend)?;
+            .map_err(|error| error::map_error("read", &path, error))?;
         Ok(Box::pin(async_stream::try_stream! {
-            while let Some(mut buffer) = reader.try_next().await.map_err(Error::backend)? {
+            while let Some(mut buffer) = reader.try_next().await.map_err(|error| error::map_error("read", &path, error))? {
                 while !buffer.is_empty() {
                     let size = context.chunk_bytes().min(buffer.len());
                     yield bytes::Bytes::from(buffer.split_to(size).to_vec());
