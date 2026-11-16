@@ -226,13 +226,13 @@ impl Storage {
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.
-    pub fn resolve(&self, url: &Url) -> Result<ObjectPath> {
+    pub fn path(&self, url: &Url) -> Result<ObjectPath> {
         validation::relative_path(&self.base_url, &self.base_path, url).map(ObjectPath::new)
     }
 
-    /// Encode a decoded relative path as a URL for an external API.
-    pub fn url(&self, path: &str) -> Result<Url> {
-        validation::validate_path(path)?;
+    /// Encode a validated relative path as a URL for an external API.
+    pub fn url(&self, path: &ObjectPath) -> Result<Url> {
+        let path = path.as_str();
         let mut url = self.base_url.clone();
         {
             let mut segments = url

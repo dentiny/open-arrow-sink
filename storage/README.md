@@ -9,21 +9,21 @@ root must match that URL. Clones share the operator, including caller-configured
 credentials, endpoints, retry, timeout, and other OpenDAL layers.
 
 ```rust
-use open_arrow_sink_storage::{Storage, opendal};
+use open_arrow_sink_storage::{ObjectPath, Storage, opendal};
 
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
-let destination = storage.url("new-output/part-00000.parquet")?;
-let path = storage.resolve(&destination)?;
+let path = ObjectPath::parse("new-output/part-00000.parquet")?;
+let destination = storage.url(&path)?;
 // Reuse `path` for storage.create/read/delete and other I/O calls.
 let directory = path.as_dir();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`Storage::stat(&url)` returns `Result<Option<Metadata>>`: `None` means only
+`Storage::stat(&path)` returns `Result<Option<Metadata>>`: `None` means only
 NotFound; permission, transport, and other failures remain errors. This replaces
 both `exists` and `stat_optional`. For a non-root destination,
-`inspect_directory(&url)` returns `DirectoryState::{Missing, File, Empty, NonEmpty}`
+`inspect_directory(&path)` returns `DirectoryState::{Missing, File, Empty, NonEmpty}`
 with or without a trailing slash. It handles virtual prefixes and explicit empty
 directory markers, and an exact file takes precedence over children. Inspection
 stops at the first child (including empty subdirectories); it is a preflight
@@ -44,14 +44,16 @@ add layers while preserving caller-supplied operator layers.
 
 URL resolution decodes spaces and Unicode, checks endpoint/root boundaries, and
 rejects query strings, fragments, embedded credentials, and path traversal.
-`Storage::resolve(&Url)` performs those checks once and returns an opaque,
+`Storage::path(&Url)` performs those checks once and returns an opaque,
 decoded `ObjectPath` relative to this storage namespace. All byte I/O and listing
 methods take `&ObjectPath`; listings return paths that can be reused directly.
+Use `ObjectPath::parse` to validate a decoded relative key without a URL.
 Keep a resolved path with the storage that resolved it. `is_root()` recognizes
 the operator root, `as_dir()` gives prefixes directory semantics, `as_object()`
 addresses the exact key, and `join()` appends validated decoded child paths.
-Use `Storage::url(path.as_str())` only when a native SDK or sink entry point
-requires a URL. This replaces the former `path()` and `directory_url()` APIs.
+Use `Storage::url(&ObjectPath)` when a native SDK or sink entry point requires
+a URL. `StorageResolver::storage_for(&Url)` selects a storage namespace;
+`Storage::path(&Url)` converts a URL within that namespace to a relative path.
 
 Root-destructive operations are rejected. `create` uses OpenDAL's atomic
 `if_not_exists` operation; unsupported backends fail instead of overwriting.

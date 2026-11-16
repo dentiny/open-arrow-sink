@@ -16,12 +16,12 @@ crate. Use `ParquetDirectorySink::default()` for URL-resolved storage, or
 ```rust,ignore
 use open_arrow_sink_core::Sink;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage, Url};
-use open_arrow_sink_storage::opendal;
+use open_arrow_sink_storage::{ObjectPath, opendal};
 
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?;
 let sink = ParquetDirectorySink::new(storage.clone());
-let destination = storage.url("new-output/")?;
+let destination = storage.url(&ObjectPath::parse("new-output/")?)?;
 let writer = sink.open(destination, schema, options).await?;
 ```
 

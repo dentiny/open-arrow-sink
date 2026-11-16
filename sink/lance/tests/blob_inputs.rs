@@ -1,3 +1,4 @@
+use open_arrow_sink_storage::ObjectPath;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, LargeBinaryArray, RecordBatch, cast::AsArray};
@@ -29,7 +30,9 @@ use open_arrow_sink_test_support::unordered_options as options;
 #[tokio::test]
 async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
     let storage = storage();
-    let url = storage.url("existing/").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("existing/").unwrap())
+        .unwrap();
     let downloader =
         open_arrow_sink_storage::BlobDownloader::new(1.try_into().unwrap(), 25.try_into().unwrap())
             .unwrap()
@@ -84,12 +87,12 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
         datatypes::BlobHandling,
     };
     let source = open_arrow_sink_test_support::memory_storage("memory://source/");
-    let visible = source.url("visible").unwrap();
+    let visible = source.url(&ObjectPath::parse("visible").unwrap()).unwrap();
     source
-        .write(&source.resolve(&visible).unwrap(), "ok".into())
+        .write(&source.path(&visible).unwrap(), "ok".into())
         .await
         .unwrap();
-    let missing = source.url("missing").unwrap();
+    let missing = source.url(&ObjectPath::parse("missing").unwrap()).unwrap();
     let mut blobs = BlobArrayBuilder::new(3);
     for uri in [&missing, &missing, &visible] {
         blobs.push_uri(uri.as_str()).unwrap();
@@ -114,7 +117,9 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
     )]));
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(parent)]).unwrap();
     let destination = storage();
-    let url = destination.url("nested/").unwrap();
+    let url = destination
+        .url(&ObjectPath::parse("nested/").unwrap())
+        .unwrap();
     let sink = LanceDatasetSink::new(destination).with_source_storage(source);
     let mut writer = sink.open(url.clone(), schema, options()).await.unwrap();
     writer.write(batch).await.unwrap();

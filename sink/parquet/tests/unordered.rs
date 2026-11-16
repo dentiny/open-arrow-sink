@@ -1,3 +1,4 @@
+use open_arrow_sink_storage::ObjectPath;
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -8,7 +9,9 @@ use open_arrow_sink_parquet::ParquetDirectorySink;
 #[tokio::test]
 async fn unordered_commit_preserves_all_rows() {
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-    let directory = storage.url("雪 output/").unwrap();
+    let directory = storage
+        .url(&ObjectPath::parse("雪 output/").unwrap())
+        .unwrap();
     let make_batch = |id: i64| {
         RecordBatch::try_from_iter([
             (

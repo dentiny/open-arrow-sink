@@ -10,6 +10,7 @@ use open_arrow_sink_core::{
 };
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_storage::ObjectPath;
 use std::{num::NonZeroUsize, sync::Arc};
 
 fn storage() -> Storage {
@@ -46,7 +47,7 @@ async fn write_dataset(
 async fn shared_operator_unordered_commit_preserves_rows() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("output/").unwrap();
+    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     write_dataset(
         sink.clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap())),
@@ -76,7 +77,7 @@ async fn shared_operator_records_read_and_write_metrics() {
     let io = open_arrow_sink_core::IoMetrics::default();
     write_dataset(
         sink,
-        storage.url("output/").unwrap(),
+        storage.url(&ObjectPath::parse("output/").unwrap()).unwrap(),
         // Building the index forces reads within the measured session.
         write_options()
             .with_io_metrics(io.clone())
@@ -92,7 +93,7 @@ async fn shared_operator_builds_requested_index() {
     use lance::index::DatasetIndexExt;
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("output/").unwrap();
+    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     write_dataset(
         sink.clone(),
         url.clone(),
@@ -107,11 +108,13 @@ async fn shared_operator_builds_requested_index() {
 async fn native_files_use_the_configured_storage_namespace() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("雪 output%20/").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("雪 output%20/").unwrap())
+        .unwrap();
     write_dataset(sink.clone(), url.clone(), write_options()).await;
     assert_gt!(
         storage
-            .list(&storage.resolve(&url).unwrap())
+            .list(&storage.path(&url).unwrap())
             .await
             .unwrap()
             .len(),
@@ -125,7 +128,7 @@ async fn native_files_use_the_configured_storage_namespace() {
 async fn duplicate_create_preserves_the_existing_dataset() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("output/").unwrap();
+    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     write_dataset(sink.clone(), url.clone(), write_options()).await;
     assert!(matches!(
         sink.open(url.clone(), batch().schema(), write_options()).await,
@@ -139,7 +142,7 @@ async fn duplicate_create_preserves_the_existing_dataset() {
 async fn duplicate_index_reports_already_exists() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("output/").unwrap();
+    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     let options = write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
     write_dataset(sink.clone(), url.clone(), options.clone()).await;
     assert!(matches!(
@@ -152,7 +155,9 @@ async fn duplicate_index_reports_already_exists() {
 async fn shared_operator_abort_preserves_output() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("aborted/").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("aborted/").unwrap())
+        .unwrap();
     let mut session = sink
         .open_writers(
             url.clone(),
@@ -164,13 +169,13 @@ async fn shared_operator_abort_preserves_output() {
         .unwrap();
     session.writers[0].write(batch()).await.unwrap();
     session.writers[0].finish().await.unwrap();
-    let directory = storage.resolve(&url).unwrap();
+    let directory = storage.path(&url).unwrap();
     let mut before = storage.list(&directory).await.unwrap();
     before.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     assert!(!before.is_empty());
-    let sibling = storage.url("keep").unwrap();
+    let sibling = storage.url(&ObjectPath::parse("keep").unwrap()).unwrap();
     storage
-        .write(&storage.resolve(&sibling).unwrap(), "keep".into())
+        .write(&storage.path(&sibling).unwrap(), "keep".into())
         .await
         .unwrap();
     for writer in session.writers {
@@ -182,7 +187,7 @@ async fn shared_operator_abort_preserves_output() {
     assert_eq!(retained, before);
     assert_eq!(
         storage
-            .read(&storage.resolve(&sibling).unwrap())
+            .read(&storage.path(&sibling).unwrap())
             .await
             .unwrap(),
         "keep"
@@ -195,7 +200,9 @@ async fn explicit_storage_version() {
     let sink = LanceDatasetSink::new(storage.clone());
     assert!(sink.capability().supports_storage_version);
     for version in ["2.2", "2.3"] {
-        let url = storage.url(&format!("version-{version}/")).unwrap();
+        let url = storage
+            .url(&ObjectPath::parse(&format!("version-{version}/")).unwrap())
+            .unwrap();
         let mut writer = sink
             .open(
                 url.clone(),
@@ -214,7 +221,9 @@ async fn explicit_storage_version() {
     }
     assert!(matches!(
         sink.open(
-            storage.url("unsupported/").unwrap(),
+            storage
+                .url(&ObjectPath::parse("unsupported/").unwrap())
+                .unwrap(),
             batch().schema(),
             write_options().with_storage_version("2.1".into())
         )
@@ -235,10 +244,12 @@ async fn ingests_blob_with_configured_layout(
     #[case] parallel: bool,
 ) {
     let storage = storage();
-    let source = storage.url("source.bin").unwrap();
+    let source = storage
+        .url(&ObjectPath::parse("source.bin").unwrap())
+        .unwrap();
     storage
         .write(
-            &storage.resolve(&source).unwrap(),
+            &storage.path(&source).unwrap(),
             payload.as_bytes().to_vec().into(),
         )
         .await
@@ -256,7 +267,9 @@ async fn ingests_blob_with_configured_layout(
         ..Default::default()
     });
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url("ingested/").unwrap();
+    let url = storage
+        .url(&ObjectPath::parse("ingested/").unwrap())
+        .unwrap();
     let mut writer = if parallel {
         sink.clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
@@ -269,7 +282,7 @@ async fn ingests_blob_with_configured_layout(
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     storage
-        .delete(&storage.resolve(&source).unwrap())
+        .delete(&storage.path(&source).unwrap())
         .await
         .unwrap();
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
@@ -291,25 +304,26 @@ async fn external_blobs_resolve_independent_buckets() {
     let shadow = make("s3://destination/local/");
     shadow
         .write(
-            &shadow.resolve(&shadow.url("blob").unwrap()).unwrap(),
+            &ObjectPath::parse("blob").unwrap(),
             b"wrong".to_vec().into(),
         )
         .await
         .unwrap();
-    let owned = destination.url("local/blob").unwrap();
+    let owned = destination
+        .url(&ObjectPath::parse("local/blob").unwrap())
+        .unwrap();
     destination
-        .write(
-            &destination.resolve(&owned).unwrap(),
-            b"owned".to_vec().into(),
-        )
+        .write(&destination.path(&owned).unwrap(), b"owned".to_vec().into())
         .await
         .unwrap();
     let mut values = BlobArrayBuilder::new(3);
     for (storage, bytes) in [(&first, "first"), (&second, "second")] {
-        let uri = storage.url("same-key").unwrap();
+        let uri = storage
+            .url(&ObjectPath::parse("same-key").unwrap())
+            .unwrap();
         storage
             .write(
-                &storage.resolve(&uri).unwrap(),
+                &storage.path(&uri).unwrap(),
                 bytes.as_bytes().to_vec().into(),
             )
             .await
@@ -329,7 +343,9 @@ async fn external_blobs_resolve_independent_buckets() {
         .with_source_storage(shadow);
     let sink =
         LanceDatasetSink::new(destination.clone()).with_blob_downloader(Arc::new(downloader));
-    let url = destination.url("dataset/").unwrap();
+    let url = destination
+        .url(&ObjectPath::parse("dataset/").unwrap())
+        .unwrap();
     let mut writer = sink
         .open(url.clone(), batch.schema(), write_options())
         .await
@@ -337,15 +353,15 @@ async fn external_blobs_resolve_independent_buckets() {
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     first
-        .delete(&first.resolve(&first.url("same-key").unwrap()).unwrap())
+        .delete(&ObjectPath::parse("same-key").unwrap())
         .await
         .unwrap();
     second
-        .delete(&second.resolve(&second.url("same-key").unwrap()).unwrap())
+        .delete(&ObjectPath::parse("same-key").unwrap())
         .await
         .unwrap();
     destination
-        .delete(&destination.resolve(&owned).unwrap())
+        .delete(&destination.path(&owned).unwrap())
         .await
         .unwrap();
     let dataset = Arc::new(sink.dataset_builder(url).unwrap().load().await.unwrap());
@@ -373,7 +389,7 @@ async fn io_metrics_are_isolated_per_session() {
         let io = open_arrow_sink_core::IoMetrics::default();
         let mut writer = sink
             .open(
-                store.url(name).unwrap(),
+                store.url(&ObjectPath::parse(name).unwrap()).unwrap(),
                 batch().schema(),
                 // Building the index forces reads within the measured session.
                 write_options()

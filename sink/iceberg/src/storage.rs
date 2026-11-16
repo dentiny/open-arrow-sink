@@ -40,17 +40,17 @@ impl OpenDalStorageFactory {
         iceberg::io::FileIOBuilder::new(Arc::new(self.clone())).build()
     }
 
-    fn resolve(&self, path: &str) -> Result<ObjectPath> {
+    fn path(&self, path: &str) -> Result<ObjectPath> {
         if let Some(resolved) = &self.resolved
             && resolved.location.as_ref() == path
         {
             return Ok(resolved.path.clone());
         }
-        self.storage.resolve(&location(path)?).map_err(backend)
+        self.storage.path(&location(path)?).map_err(backend)
     }
 
     fn for_location(&self, path: &str) -> Result<Self> {
-        let resolved = self.resolve(path)?;
+        let resolved = self.path(path)?;
         let mut storage = self.clone();
         storage.resolved = Some(ResolvedLocation {
             location: Arc::from(path),
@@ -88,7 +88,7 @@ impl StorageFactory for OpenDalStorageFactory {
 impl IcebergStorage for OpenDalStorageFactory {
     async fn exists(&self, path: &str) -> Result<bool> {
         self.storage
-            .stat(&self.resolve(path)?)
+            .stat(&self.path(path)?)
             .await
             .map(|metadata| metadata.is_some())
             .map_err(backend)
@@ -96,7 +96,7 @@ impl IcebergStorage for OpenDalStorageFactory {
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let metadata = self
             .storage
-            .stat(&self.resolve(path)?)
+            .stat(&self.path(path)?)
             .await
             .map_err(backend)?
             .ok_or_else(|| {
@@ -110,13 +110,10 @@ impl IcebergStorage for OpenDalStorageFactory {
         })
     }
     async fn read(&self, path: &str) -> Result<Bytes> {
-        self.storage
-            .read(&self.resolve(path)?)
-            .await
-            .map_err(backend)
+        self.storage.read(&self.path(path)?).await.map_err(backend)
     }
     async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
-        let path = self.resolve(path)?;
+        let path = self.path(path)?;
         Ok(Box::new(OpenDalReader {
             storage: self.storage.clone(),
             path,
@@ -124,25 +121,25 @@ impl IcebergStorage for OpenDalStorageFactory {
     }
     async fn write(&self, path: &str, bytes: Bytes) -> Result<()> {
         self.storage
-            .write(&self.resolve(path)?, bytes)
+            .write(&self.path(path)?, bytes)
             .await
             .map_err(backend)
     }
     async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
-        let path = self.resolve(path)?;
+        let path = self.path(path)?;
         Ok(Box::new(OpenDalWriter {
             writer: self.storage.writer(&path).await.map_err(backend)?,
         }))
     }
     async fn delete(&self, path: &str) -> Result<()> {
         self.storage
-            .delete(&self.resolve(path)?)
+            .delete(&self.path(path)?)
             .await
             .map_err(backend)
     }
     async fn delete_prefix(&self, path: &str) -> Result<()> {
         self.storage
-            .remove_all(&self.resolve(path)?)
+            .remove_all(&self.path(path)?)
             .await
             .map_err(backend)
     }

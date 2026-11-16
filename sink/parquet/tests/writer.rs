@@ -180,7 +180,7 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
     assert_eq!(
         storage
-            .list(&storage.resolve(&directory).unwrap())
+            .list(&storage.path(&directory).unwrap())
             .await
             .unwrap()
             .len(),

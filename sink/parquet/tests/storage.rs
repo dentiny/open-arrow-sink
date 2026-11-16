@@ -2,6 +2,7 @@ use arrow_array::RecordBatch;
 use open_arrow_sink_core::{Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
+use open_arrow_sink_storage::ObjectPath;
 use std::num::NonZeroUsize;
 
 fn storage() -> Storage {
@@ -23,7 +24,7 @@ fn options() -> WriteOptions {
 #[tokio::test]
 async fn shared_storage_abort_preserves_output() {
     let storage = storage();
-    let directory = storage.url("output/").unwrap();
+    let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     let mut writer = ParquetDirectorySink::new(storage.clone())
         .open(directory.clone(), batch().schema(), options())
         .await
@@ -33,7 +34,7 @@ async fn shared_storage_abort_preserves_output() {
     writer.abort().await.unwrap();
     assert!(
         !storage
-            .list(&storage.resolve(&directory).unwrap())
+            .list(&storage.path(&directory).unwrap())
             .await
             .unwrap()
             .is_empty()
@@ -44,7 +45,7 @@ async fn shared_storage_abort_preserves_output() {
 async fn rolling_collision_is_preserved() {
     let storage = storage();
     let sink = ParquetDirectorySink::new(storage.clone());
-    let directory = storage.url("output/").unwrap();
+    let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
     let mut writer = sink
         .open(directory.clone(), batch().schema(), options())
         .await
@@ -52,15 +53,15 @@ async fn rolling_collision_is_preserved() {
     writer.write(batch()).await.unwrap();
     let collision = directory.join("part-0-00001.parquet").unwrap();
     storage
-        .create(&storage.resolve(&collision).unwrap(), "keep".into())
+        .create(&storage.path(&collision).unwrap(), "keep".into())
         .await
         .unwrap();
     assert!(writer.write(batch()).await.is_err());
     let completed = storage
-        .resolve(&directory.join("part-0-00000.parquet").unwrap())
+        .path(&directory.join("part-0-00000.parquet").unwrap())
         .unwrap();
     let bytes = storage.read(&completed).await.unwrap();
-    let path = storage.resolve(&directory).unwrap();
+    let path = storage.path(&directory).unwrap();
     let mut paths = storage.list(&path).await.unwrap();
     paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     assert!(writer.commit().await.is_err());
@@ -70,7 +71,7 @@ async fn rolling_collision_is_preserved() {
     assert_eq!(storage.read(&completed).await.unwrap(), bytes);
     assert_eq!(
         storage
-            .read(&storage.resolve(&collision).unwrap())
+            .read(&storage.path(&collision).unwrap())
             .await
             .unwrap(),
         "keep"
@@ -98,7 +99,7 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
         (ParquetDirectorySink::default(), storage, directory)
     } else {
         let storage = storage();
-        let directory = storage.url("output/").unwrap();
+        let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
         (
             ParquetDirectorySink::new(storage.clone()),
             storage,
@@ -138,7 +139,9 @@ async fn session_observer_counts_parquet_output() {
     let metrics = open_arrow_sink_core::IoMetrics::default();
     let mut writer = ParquetDirectorySink::new(storage.clone())
         .open(
-            storage.url("measured/").unwrap(),
+            storage
+                .url(&ObjectPath::parse("measured/").unwrap())
+                .unwrap(),
             batch().schema(),
             options().with_io_metrics(metrics.clone()),
         )
@@ -163,11 +166,11 @@ async fn empty_parallel_create_writes_one_file_and_append_adds_none(#[case] file
         (Storage::from_url(&directory).unwrap(), directory)
     } else {
         let storage = storage();
-        let directory = storage.url("output/").unwrap();
+        let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
         (storage, directory)
     };
     let sink = ParquetDirectorySink::new(storage.clone());
-    let path = storage.resolve(&directory).unwrap();
+    let path = storage.path(&directory).unwrap();
     for mode in [WriteMode::Create, WriteMode::Append] {
         let before = storage.list(&path).await.unwrap();
         let mut session = sink
