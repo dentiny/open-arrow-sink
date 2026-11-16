@@ -17,14 +17,8 @@ pub(crate) struct FragmentWriter {
     worker: FragmentTask,
     /// Prevents reuse after an error, cancellation, or finish.
     state: Poison,
-    /// Shared downloader that bounds blob download concurrency and buffered bytes.
-    downloader: std::sync::Arc<open_arrow_sink_storage::BlobDownloader>,
-    /// Whether external blob URIs stay as references or their bytes are ingested.
-    blob_mode: open_arrow_sink_core::ExternalBlobMode,
-    /// Optional failure policy, selected columns, and metrics for blob downloads.
-    recovery: Option<open_arrow_sink_core::DownloadRecovery>,
-    /// Optional observers that record bytes read while materializing blob inputs.
-    io_metrics: Option<open_arrow_sink_core::IoObservers>,
+    /// Blob download policy and recursive input materialization.
+    blobs: crate::blob_input::BlobMaterializer,
 }
 
 impl FragmentWriter {
@@ -39,14 +33,10 @@ impl FragmentWriter {
             schemas,
             worker,
             state: Poison::default(),
-            downloader: destination.downloader.clone(),
-            blob_mode: options
-                .blob_handle
-                .as_ref()
-                .map(|config| config.external_blob_mode)
-                .unwrap_or_default(),
-            io_metrics: options.io_metrics.clone(),
-            recovery: options.download_recovery.clone(),
+            blobs: crate::blob_input::BlobMaterializer::new(
+                destination.downloader.clone(),
+                options,
+            ),
         }
     }
 }
@@ -61,16 +51,9 @@ impl DataWriter for FragmentWriter {
         self.state.begin()?;
         validation::validate_batch(&self.schemas.input, &batch)?;
         if crate::blob_input::has_blobs(&self.schemas.logical) {
-            crate::blob_input::send_rows(
-                &batch,
-                &self.schemas.logical,
-                &self.downloader,
-                self.blob_mode,
-                self.io_metrics.as_ref(),
-                self.recovery.as_ref(),
-                &mut self.worker,
-            )
-            .await?;
+            self.blobs
+                .send_rows(&batch, &self.schemas.logical, &mut self.worker)
+                .await?;
         } else {
             let batch = writer_batch(batch, &self.schemas.logical)?;
             self.worker.write(batch).await?;
