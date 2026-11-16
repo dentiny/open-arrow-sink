@@ -338,3 +338,17 @@ after publication; training or storage failures return `IndexCommitError` and
 leave committed data visible. Keep can leave appended fragments unindexed.
 
 `IndexSpec` gains an `existing` field; constructors preserve the default behavior.
+
+### Nested Lance compression overrides
+
+`CompressionOptions.nested_columns` uses literal path segments, for example
+`[(vec!["messages".into(), "text".into()], Compression::Zstd { level: Some(6) })].into()`.
+Struct children are named directly; list containers are transparent (omit `item`).
+Dots inside a segment are literal field names. Paths must uniquely identify a
+nested field and cannot enter native blob internals. Lance applies global policy,
+then top-level overrides, then nested overrides from ancestors to descendants.
+A nested codec override preserves independently selected structural encoding.
+Parquet and Iceberg reject this scope before opening the destination.
+
+`CompressionOptions` gains `nested_columns`; complete literals should use
+`..Default::default()`. `CompressionCapability.nested_columns` advertises support.

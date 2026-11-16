@@ -31,3 +31,53 @@ fn structural_encoding_checks_capabilities_and_unique_column_names() {
         assert!(validation::validate_compression_options(&schema, &options, supported).is_err());
     }
 }
+
+#[test]
+fn nested_paths_are_literal_and_cross_lists() {
+    use open_arrow_sink_core::{Compression, CompressionCodec};
+    let children = vec![Arc::new(Field::new("literal.dot", DataType::Utf8, false))].into();
+    let schema = Schema::new(vec![Field::new(
+        "items",
+        DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Struct(children),
+            false,
+        ))),
+        false,
+    )]);
+    let capability = CompressionCapability {
+        per_column: &[CompressionCodec::Zstd],
+        nested_columns: true,
+        ..Default::default()
+    };
+    for (path, valid) in [
+        (vec!["items", "literal.dot"], true),
+        (vec!["items", "literal", "dot"], false),
+        (vec!["items", "item", "literal.dot"], false),
+        (vec!["items"], false),
+    ] {
+        let options = CompressionOptions {
+            nested_columns: [(
+                path.into_iter().map(String::from).collect(),
+                Compression::Zstd { level: None },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            validation::validate_compression_options(&schema, &options, capability).is_ok(),
+            valid
+        );
+        assert!(
+            validation::validate_compression_options(
+                &schema,
+                &options,
+                CompressionCapability {
+                    nested_columns: false,
+                    ..capability
+                }
+            )
+            .is_err()
+        );
+    }
+}

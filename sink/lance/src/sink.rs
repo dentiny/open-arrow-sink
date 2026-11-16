@@ -49,6 +49,7 @@ impl Sink for LanceDatasetSink {
                     open_arrow_sink_core::StructuralEncoding::Miniblock,
                     open_arrow_sink_core::StructuralEncoding::Fullzip,
                 ],
+                nested_columns: true,
             },
             supported_partitions: vec![],
             supports_blob_handle: true,

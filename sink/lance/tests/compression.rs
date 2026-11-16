@@ -32,6 +32,7 @@ fn policy() -> CompressionOptions {
         columns: [("raw".into(), Compression::Uncompressed)].into(),
         structural_encoding: Some(StructuralEncoding::Fullzip),
         column_encodings: [("raw".into(), StructuralEncoding::Miniblock)].into(),
+        ..Default::default()
     }
 }
 
@@ -218,4 +219,64 @@ async fn append_compares_effective_structural_encoding_schema() {
     ));
     let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), 2048);
+}
+
+#[tokio::test]
+async fn nested_override_preserves_sibling_policy_and_rows() {
+    let input = batch(64);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    let options = WriteOptions {
+        ordering: Ordering::Unordered,
+        compression: CompressionOptions {
+            global: Some(Compression::Zstd { level: Some(3) }),
+            nested_columns: [(
+                vec!["nested".into(), "text".into()],
+                Compression::Uncompressed,
+            )]
+            .into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let sink = LanceDatasetSink::default();
+    let mut writer = sink
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input.schema(),
+            options,
+        )
+        .await
+        .unwrap();
+    assert_eq!(writer.schema(), &input.schema());
+    writer.write(input.clone()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let actual = dataset.scan().try_into_batch().await.unwrap();
+    let schema = actual.schema();
+    let arrow_schema::DataType::Struct(children) = schema.field(1).data_type() else {
+        panic!("struct")
+    };
+    assert_eq!(children[0].metadata()["lance-encoding:compression"], "none");
+    assert!(
+        !children[0]
+            .metadata()
+            .contains_key("lance-encoding:compression-level")
+    );
+    assert_eq!(
+        schema.field(2).metadata()["lance-encoding:compression"],
+        "zstd"
+    );
+    assert_eq!(actual.num_rows(), input.num_rows());
+    let nested = actual
+        .column(1)
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap();
+    let expected = input
+        .column(1)
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap();
+    assert_eq!(nested.column(0), expected.column(0));
 }

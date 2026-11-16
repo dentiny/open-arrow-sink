@@ -57,6 +57,7 @@ impl Sink for Capture {
                 global: &[],
                 per_column: &[],
                 structural_encodings: &[],
+                nested_columns: false,
             },
             ordering: Ordering::PreserveInput,
             supported_partitions: vec![],
