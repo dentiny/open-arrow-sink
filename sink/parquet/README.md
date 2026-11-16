@@ -1,6 +1,6 @@
 # Parquet directory sink
 
-`ParquetDirectorySink` accepts a destination `Url` for Create, Append, or filesystem staged Overwrite and, with default features, writes uncompressed
+`ParquetDirectorySink` accepts a destination `Url` for Create or Append and, with default features, writes uncompressed
 files named `part-00000.parquet`, `part-00001.parquet`, etc. By default it writes
 one file per session. Missing parents are created. The default Create mode
 rejects an existing target, including an empty local directory. Enable facade feature `sink-parquet`
@@ -30,7 +30,7 @@ Enable sink features `aws`, `gcp`, or `azure` (facade: `parquet-aws`, `parquet-g
 `parquet-azure`) for URL-resolved cloud storage. For credentials, endpoints, and
 layers, pass a configured `Storage`; see [shared storage](../../storage/README.md).
 
-Create and staged Overwrite reserve a new prefix with conditional creation of `.open-arrow-sink`.
+Create reserves a new prefix with conditional creation of `.open-arrow-sink`.
 It also claims each part name before opening a streaming writer. Backends without
 conditional-create support fail instead of overwriting. External writers must
 not modify a reserved prefix. The committer removes the marker after all writers finish; all
@@ -58,10 +58,9 @@ atomic directory transaction or durability/fsync guarantee.
 
 `WriteOptions.cleanup_on_error` defaults to `true`: abort attempts best-effort
 removal of this session's files and directory; failed open/commit also attempts
-cleanup according to the publication stage described below. Set it to `false`
-to retain session-created output on abort or failure. For Create/Append, cleanup
-does not recursively delete unrelated files; staged Overwrite owns its staging
-directory. Drop leaves incomplete output and never commits.
+cleanup. Set it to `false` to retain session-created output on abort or failure.
+Cleanup does not recursively delete unrelated files. Drop leaves incomplete output
+and never commits.
 
 No partitioning. Storage retries are configured on the OpenDAL operator.
 
@@ -122,23 +121,11 @@ Create rejects existing destinations. Append validates the schemas of existing
 root-level Parquet files and writes UUID-prefixed parts, preserving old files and
 unrelated objects on abort. Schema validation uses range reads of Parquet metadata,
 with at most 32 files checked concurrently, independently of the transport budget.
-These modes work through the shared filesystem or remote operator.
+Both modes behave identically on every storage backend, local or remote.
 
-Overwrite is staged on filesystem backends: old output stays visible until commit,
-then the entire directory (including unrelated files inside it) is replaced via
-backup/rename with best-effort restoration on failure.
-The implementation uses OpenDAL for directory renames and cleanup; a local-only
-`symlink_metadata` validation rejects symlink targets because
-OpenDAL stat follows links. Other backends reject Overwrite before creating output;
-object-store prefix swaps do not provide the directory-rename semantics used here.
+Overwrite is unsupported and rejected before creating output: a directory of
+Parquet files has no backend-independent way to replace its contents atomically.
 External writers must not modify a destination during a session.
-A failed restoration can leave the target missing and the old data in a sibling
-`.open-arrow-sink-old-<uuid>/` backup. Staging cleanup on publication failure
-honors `cleanup_on_error`; backup deletion after a successful swap is best effort
-regardless of that option and does not fail commit. A new Overwrite uses fresh
-staging and does not recover or collect older sibling staging/backup directories.
-See [failed-commit recovery and the next overwrite](../../docs/usage.md#recover-from-a-failed-commit)
-before retrying or manually deleting leftovers.
 
 ## Related documentation
 

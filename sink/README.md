@@ -6,7 +6,7 @@ and cleanup. Start with [usage](../docs/usage.md) and the
 
 | Sink | Destination | Supported modes | Guide |
 | --- | --- | --- | --- |
-| `ParquetDirectorySink` | Local/cloud URL directory | Create, Append, filesystem staged Overwrite | [Parquet](parquet/README.md) |
+| `ParquetDirectorySink` | Local/cloud URL directory | Create, Append | [Parquet](parquet/README.md) |
 | `IcebergTableSink` | Existing catalog table | Append; existing partition specs supported | [Iceberg](iceberg/README.md) |
 | `LanceDatasetSink` | Local/cloud dataset URL | Create, Append, versioned Overwrite | [Lance](lance/README.md) |
 

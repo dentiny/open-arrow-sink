@@ -9,7 +9,7 @@ use crate::file_writer::FileWriter;
 
 const RESERVATION: &str = ".open-arrow-sink";
 
-/// Session-owned parts and optional filesystem staging directory.
+/// Session-owned parts and destination reservation.
 pub(crate) struct Destination {
     storage: Storage,
     directory: Url,
@@ -20,7 +20,6 @@ pub(crate) struct Destination {
 enum Mode {
     Create,
     Append { prefix: String },
-    Overwrite { target: Url },
 }
 
 impl Mode {
@@ -31,7 +30,7 @@ impl Mode {
     fn prefix(&self) -> &str {
         match self {
             Self::Append { prefix } => prefix,
-            Self::Create | Self::Overwrite { .. } => "part-",
+            Self::Create => "part-",
         }
     }
 }
@@ -56,13 +55,7 @@ impl Destination {
                     },
                 )
             }
-            WriteMode::Overwrite => {
-                crate::validation::validate_overwrite_directory(&storage, &directory).await?;
-                let stage = directory
-                    .join(&format!("../.open-arrow-sink-{}/", uuid::Uuid::new_v4()))
-                    .unwrap();
-                (stage, Mode::Overwrite { target: directory })
-            }
+            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
         };
         let destination = Self {
             storage,
@@ -134,49 +127,8 @@ impl Destination {
         self.storage.delete(&marker).await?;
         self.storage.remove_empty_directory(&self.directory).await
     }
-    async fn rename_directory(&self, from: &Url, to: &Url) -> Result<()> {
-        // Fs supports directory rename at the backend; omit trailing slashes
-        // because OpenDAL's public rename path check requires file-shaped paths.
-        let from = self.storage.path(from)?;
-        let to = self.storage.path(to)?;
-        self.storage
-            .operator()
-            .rename(from.trim_end_matches('/'), to.trim_end_matches('/'))
-            .await
-            .map_err(Error::backend)
-    }
     pub(crate) async fn publish(&self) -> Result<()> {
         // Release the session claim once, after all data writers have finished.
-        self.complete_reservation().await?;
-        let result = self.publish_inner().await;
-        if result.is_err() && self.cleanup_on_error && matches!(self.mode, Mode::Overwrite { .. }) {
-            let _ = self.storage.remove_all(&self.directory).await;
-        }
-        result
-    }
-    async fn publish_inner(&self) -> Result<()> {
-        let Mode::Overwrite { target } = &self.mode else {
-            return Ok(());
-        };
-        let backup = target
-            .join(&format!(
-                "../.open-arrow-sink-old-{}/",
-                uuid::Uuid::new_v4()
-            ))
-            .unwrap();
-        let had_target = self.storage.exists(target).await?;
-        if had_target {
-            self.rename_directory(target, &backup).await?;
-        }
-        if let Err(error) = self.rename_directory(&self.directory, target).await {
-            if had_target {
-                let _ = self.rename_directory(&backup, target).await;
-            }
-            return Err(error);
-        }
-        if had_target {
-            let _ = self.storage.remove_all(&backup).await;
-        }
-        Ok(())
+        self.complete_reservation().await
     }
 }

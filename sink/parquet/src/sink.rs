@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Writes a URL destination containing `part-00000.parquet`, etc.
-/// Create, append, and filesystem staged overwrite are supported. Missing parents are created.
+/// Create and append are supported on every storage backend. Missing parents are created.
 /// Callers must exclude concurrent writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
@@ -35,24 +35,11 @@ impl Sink for ParquetDirectorySink {
     type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        let supported_modes: &'static [open_arrow_sink_core::WriteMode] = if self
-            .storage
-            .as_ref()
-            .is_some_and(|storage| storage.operator().info().scheme() != "fs")
-        {
-            &[
-                open_arrow_sink_core::WriteMode::Create,
-                open_arrow_sink_core::WriteMode::Append,
-            ]
-        } else {
-            &[
-                open_arrow_sink_core::WriteMode::Create,
-                open_arrow_sink_core::WriteMode::Append,
-                open_arrow_sink_core::WriteMode::Overwrite,
-            ]
-        };
         SinkCapability::default()
-            .with_supported_modes(supported_modes)
+            .with_supported_modes(&[
+                open_arrow_sink_core::WriteMode::Create,
+                open_arrow_sink_core::WriteMode::Append,
+            ])
             .with_ordering(Ordering::Unordered)
             .with_compression(
                 CompressionCapability::default()

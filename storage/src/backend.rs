@@ -253,7 +253,6 @@ impl Storage {
             inner: Some(writer),
             bytes_written: 0,
             state: Poison::default(),
-            filesystem: operator.info().scheme() == "fs",
             path,
         })
     }
@@ -332,7 +331,6 @@ pub struct StorageWriter {
     inner: Option<opendal::Writer>,
     bytes_written: u64,
     state: Poison,
-    filesystem: bool,
     path: String,
 }
 impl StorageWriter {
@@ -362,7 +360,7 @@ impl StorageWriter {
     pub async fn abort(&mut self) -> Result<()> {
         self.state.poison();
         if let Some(mut writer) = self.inner.take() {
-            error::abort_result(&self.path, writer.abort().await, self.filesystem)?;
+            error::abort_result(&self.path, writer.abort().await)?;
         }
         Ok(())
     }
