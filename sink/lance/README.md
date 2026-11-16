@@ -104,17 +104,17 @@ positive dimension. The default IVF partition count is
 training failures, including insufficient usable vectors, are returned explicitly.
 An empty index list preserves the underlying sink behavior.
 
-Index creation clones the dataset handle returned by the native data commit and
-builds requested indexes one at a time to bound peak native build memory. Each task builds and commits its index
-through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. All started tasks are awaited, including
-when one fails, and the original dataset handle is refreshed after they finish.
+Index creation reuses the mutable dataset handle returned by the native data commit and
+builds requested indexes one at a time to bound peak native build memory. Each request builds and commits its index
+through Lance, potentially publishing another dataset version. Names are deterministic. `IndexSpec::with_existing_policy` selects `ExistingIndexPolicy::Error` (the default), `Keep`, or `Rebuild`. Append checks default-policy name conflicts at open before accepting data. Keep retains the existing index; new fragments can remain unindexed and native scans search uncovered rows. Rebuild replaces the named index over the committed dataset. Each request sees preceding index commits, and later requests are still attempted
+when one returns an error.
 The first error in request order is returned after all requests have been attempted. Vector builds share one lazy row-count result for the committed data snapshot; Keep requests that retain an existing index do not count rows. Successfully built
 indexes and committed data remain visible after an error.
 `Error::IndexCommit` contains an `IndexCommitError` identifying the failed index type
-and column, or a task failure if a worker panics. Its `summary` retains the
+and column. Native panics propagate to the caller. Its `summary` retains the
 committed row count even when indexing fails; retry index construction rather
-than rewriting already committed rows. Dropping the commit future aborts
-the task set; native publication may still have an uncertain outcome.
+than rewriting already committed rows. Dropping the commit future cancels
+the active index build; native publication may still have an uncertain outcome.
 
 A runnable index construction example (destination must not exist):
 

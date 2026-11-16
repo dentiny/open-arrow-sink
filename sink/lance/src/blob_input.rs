@@ -112,7 +112,7 @@ pub(crate) async fn send_rows(
     mode: ExternalBlobMode,
     metrics: Option<&IoMetrics>,
     recovery: Option<&open_arrow_sink_core::DownloadRecovery>,
-    worker: &mut crate::worker::FragmentWorker,
+    worker: &mut crate::worker::FragmentTask,
 ) -> Result<()> {
     let mut next = 0;
     let mut skipped = 0;
