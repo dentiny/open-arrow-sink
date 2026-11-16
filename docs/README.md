@@ -7,6 +7,7 @@ backend READMEs define the behavior available in this release.
 | Goal | Read |
 | --- | --- |
 | Build an ingestion/export application | [Usage](usage.md), [support matrix](support.md) |
+| Clean up a failed commit or understand the next Overwrite | [Recovery](usage.md#recover-from-a-failed-commit) |
 | Configure ordering, modes, compression, file sizes, indexes, or blobs | [Options](options.md) |
 | Configure credentials, URL namespaces, retries, and uploads | [Shared storage](../storage/README.md) |
 | Use write decorators | [Layers](../layer/README.md) |
