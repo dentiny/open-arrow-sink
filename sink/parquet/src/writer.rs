@@ -89,7 +89,6 @@ impl DataWriter for ParquetDirectoryWriter {
             .await
             .map_err(Error::backend)?;
         self.writer = None;
-        self.destination.complete_reservation().await?;
         Ok(self.rows_written)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -153,7 +152,7 @@ impl ParquetDirectoryWriter {
                 result = Err(error);
             }
         }
-        if let Err(error) = self.destination.remove_reservation().await {
+        if let Err(error) = self.destination.remove_empty_directory().await {
             result = Err(error);
         }
         result

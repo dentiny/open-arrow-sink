@@ -32,8 +32,6 @@ pub enum DirectoryState {
 #[derive(Clone, Debug)]
 pub struct Storage {
     operator: Operator,
-    // Budget changes wrap this original transport, never an existing limiter.
-    base_http_transport: HttpTransporter,
     http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
@@ -52,15 +50,9 @@ impl Storage {
             base_url.set_path(&path);
         }
         let base_path = Arc::from(validation::decoded_path(&base_url)?.as_ref());
-        let base_http_transport = operator.base_context().http_transport().clone();
-        let http_limit = HttpConcurrencyLimitLayer::default();
-        let context = operator
-            .base_context()
-            .with_http_transport(http_limit.wrap(base_http_transport.clone()));
         Ok(Self {
-            operator: operator.with_context(context),
-            base_http_transport,
-            http_limit,
+            operator,
+            http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
             upload_part_size: None,
@@ -138,9 +130,13 @@ impl Storage {
         }
     }
 
-    /// Apply optional retry/timeout policies to the supplied OpenDAL operator.
-    pub fn try_new(operator: Operator, base_url: Url, config: StorageConfig) -> Result<Self> {
-        Self::new(config.apply(operator)?, base_url)
+    /// Validate and add retry/timeout policies after either constructor.
+    /// Timeout runs inside retry, giving each attempt its own deadline.
+    /// Existing caller-supplied layers, transport, and HTTP budget are preserved.
+    /// Repeated calls add layers; configure once before cloning into adapters.
+    pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
+        self.operator = config.apply(self.operator)?;
+        Ok(self)
     }
 
     /// Configure the request budget shared by subsequent clones and operators.
@@ -148,11 +144,6 @@ impl Storage {
     /// Upload parts, reads, and metadata requests share this aggregate cap;
     /// size it together with writer and multipart concurrency. The default is 64.
     pub fn with_http_concurrency_limit(mut self, limit: HttpConcurrencyLimitLayer) -> Self {
-        let context = self
-            .operator
-            .base_context()
-            .with_http_transport(limit.wrap(self.base_http_transport.clone()));
-        self.operator = self.operator.with_context(context);
         self.http_limit = limit;
         self
     }
@@ -160,9 +151,9 @@ impl Storage {
     /// Replace the provider transport for authentication, instrumentation, or
     /// deterministic tests. The current request budget and operator layers apply.
     pub fn with_http_transport(mut self, transport: HttpTransporter) -> Self {
-        self.base_http_transport = transport;
-        let limit = self.http_limit.clone();
-        self.with_http_concurrency_limit(limit)
+        let context = self.operator.base_context().with_http_transport(transport);
+        self.operator = self.operator.with_context(context);
+        self
     }
 
     /// Configure buffering for streaming uploads. OpenDAL applies the backend's
@@ -218,7 +209,12 @@ impl Storage {
 
     /// Return an operator sharing this storage's transport-level HTTP budget.
     pub fn operator(&self) -> Operator {
-        self.operator.clone()
+        // Keep the stored operator free of our limiter. Both HTTP setters update
+        // independent inputs; every exposed operator wraps the provider once.
+        let context = self.operator.base_context();
+        let transport = self.http_limit.wrap(context.http_transport().clone());
+        self.operator
+            .with_context(context.with_http_transport(transport))
     }
 
     /// Decode a URL to an operator-relative path, rejecting paths outside its root.

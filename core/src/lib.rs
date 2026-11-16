@@ -41,4 +41,13 @@ pub use blob::{
 /// Field metadata marking binary values that backends may map to native blobs.
 pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";
 
+/// Metadata value enabling native blob handling for a field.
+pub const BLOB_METADATA_VALUE: &str = "true";
+
+/// Whether a field explicitly opts into native blob handling.
+/// Missing metadata and values other than the exact string `"true"` are disabled.
+pub fn is_blob_field(field: &arrow_schema::Field) -> bool {
+    field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some(BLOB_METADATA_VALUE)
+}
+
 pub use session::{DataWriter, SessionCommitter, WriteSession};
