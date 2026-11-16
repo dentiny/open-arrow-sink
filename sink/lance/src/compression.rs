@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::validation::{self, CompressionContainer};
+use crate::error;
 
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -9,10 +9,70 @@ use lance_encoding::constants::{
     DICT_VALUES_COMPRESSION_META_KEY, STRUCTURAL_ENCODING_FULLZIP, STRUCTURAL_ENCODING_META_KEY,
     STRUCTURAL_ENCODING_MINIBLOCK,
 };
-use lance_encoding::encodings::physical::block::CompressionConfig;
+use lance_encoding::encodings::physical::block::{CompressionConfig, CompressionScheme};
 use open_arrow_sink_core::{
-    CompressionOptions, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
+    CompressionOptions, CompressionSpec, Error, RecordBatch, Result, SchemaRef, StructuralEncoding,
+    is_blob_field, validation,
 };
+
+pub(crate) fn validate_encoding(schema: &Schema, options: &CompressionOptions) -> Result<()> {
+    // Native blob descriptors are opaque to Lance users. Keep this backend rule
+    // here rather than teaching core's Arrow path resolver about Lance metadata.
+    for path in options.nested_columns.keys() {
+        if (1..path.len()).any(|end| {
+            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
+                field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2")
+            })
+        }) {
+            return Err(error::nested_blob_compression(path));
+        }
+    }
+    for field in schema.fields() {
+        let encoding = options
+            .column_encodings
+            .get(field.name())
+            .copied()
+            .or(options.structural_encoding);
+        if encoding.is_some()
+            && (is_blob_field(field)
+                || field
+                    .metadata()
+                    .get("ARROW:extension:name")
+                    .map(String::as_str)
+                    == Some("lance.blob.v2"))
+        {
+            return Err(error::blob_structural_encoding(field.name()));
+        }
+    }
+    Ok(())
+}
+
+/// Convert shared codec requests to native Lance parameters before schema conversion.
+fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
+    let (scheme, level) = match compression {
+        CompressionSpec::Uncompressed => (CompressionScheme::None, None),
+        // Preserve Lance's native codec policy, including Fullzip's native fallback.
+        CompressionSpec::Lz4Raw => (CompressionScheme::Lz4, None),
+        CompressionSpec::Zstd { level } => {
+            // Lance also accepts 0 as the native Zstd default.
+            if let Some(level) = level
+                && level != 0
+                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
+            {
+                return Err(error::invalid_compression_level(level));
+            }
+            (CompressionScheme::Zstd, level)
+        }
+        _ => {
+            return Err(error::unsupported_compression(compression));
+        }
+    };
+    Ok(CompressionConfig::new(scheme, level))
+}
 
 pub(crate) fn apply_compression(
     schema: &SchemaRef,
@@ -26,10 +86,7 @@ pub(crate) fn apply_compression(
     {
         return Ok(schema.clone());
     }
-    let global = options
-        .global
-        .map(validation::native_compression)
-        .transpose()?;
+    let global = options.global.map(native_compression).transpose()?;
     let mut fields = schema
         .fields()
         .iter()
@@ -38,7 +95,7 @@ pub(crate) fn apply_compression(
                 .columns
                 .get(field.name())
                 .copied()
-                .map(validation::native_compression)
+                .map(native_compression)
                 .transpose()?
                 .or(global);
             let encoding = options
@@ -54,8 +111,10 @@ pub(crate) fn apply_compression(
         })
         .collect::<Result<Fields>>()?;
     for (path, codec) in &options.nested_columns {
-        validation::validate_nested_compression_path(path)?;
-        fields = nested_fields(&fields, path, validation::native_compression(*codec)?)?;
+        if path.len() < 2 {
+            return Err(error::invalid_compression_path(path));
+        }
+        fields = nested_fields(&fields, path, native_compression(*codec)?)?;
     }
     Ok(Arc::new(Schema::new_with_metadata(
         fields,
@@ -64,7 +123,12 @@ pub(crate) fn apply_compression(
 }
 
 fn nested_fields(fields: &Fields, path: &[String], codec: CompressionConfig) -> Result<Fields> {
-    let (index, field, rest) = validation::nested_compression_field(fields, path)?;
+    let (name, rest) = path
+        .split_first()
+        .ok_or_else(|| error::invalid_compression_path(path))?;
+    let index = validation::unique_field_index(fields, name)
+        .ok_or_else(|| error::invalid_compression_path(path))?;
+    let field = &fields[index];
     let replacement = nested_override(field, rest, codec)?;
     let mut fields = fields.to_vec();
     fields[index] = replacement;
@@ -79,17 +143,14 @@ fn nested_override(
     if path.is_empty() {
         return Ok(Arc::new(compression_field(field, Some(codec), None)));
     }
-    let ty = match validation::compression_container(field, path)? {
-        CompressionContainer::Struct(children) => {
-            DataType::Struct(nested_fields(children, path, codec)?)
+    let ty = match field.data_type() {
+        DataType::Struct(children) => DataType::Struct(nested_fields(children, path, codec)?),
+        DataType::List(item) => DataType::List(nested_override(item, path, codec)?),
+        DataType::LargeList(item) => DataType::LargeList(nested_override(item, path, codec)?),
+        DataType::FixedSizeList(item, size) => {
+            DataType::FixedSizeList(nested_override(item, path, codec)?, *size)
         }
-        CompressionContainer::List(item) => DataType::List(nested_override(item, path, codec)?),
-        CompressionContainer::LargeList(item) => {
-            DataType::LargeList(nested_override(item, path, codec)?)
-        }
-        CompressionContainer::FixedSizeList(item, size) => {
-            DataType::FixedSizeList(nested_override(item, path, codec)?, size)
-        }
+        _ => return Err(error::invalid_compression_path(path)),
     };
     Ok(Arc::new(field.as_ref().clone().with_data_type(ty)))
 }
