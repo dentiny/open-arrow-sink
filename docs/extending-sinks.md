@@ -80,7 +80,7 @@ Use `StorageWriter` or your native SDK for streaming. Honor `target_file_size` a
 a positive soft target and retain session compression policy across rolling.
 Keep row buffering bounded and document non-row growth such as file metadata,
 index training, or one writer per partition. Wrap native errors in
-`Error::Backend(Box::new(error))` to retain the source.
+`Error::backend(error)` to retain the source.
 
 ## 4. Implement publication separately
 

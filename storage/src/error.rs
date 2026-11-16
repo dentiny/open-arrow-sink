@@ -84,7 +84,7 @@ pub(crate) fn invalid_http_concurrency() -> Error {
 }
 
 fn invalid_config(message: &'static str) -> Error {
-    invalid(message)
+    Error::InvalidConfig(message.into())
 }
 
 pub(crate) fn writer_closed() -> Error {
@@ -113,10 +113,6 @@ pub(crate) fn abort_result(
     }
 }
 
-#[cfg(feature = "http")]
-pub(crate) fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Error {
-    Error::Backend(Box::new(error))
-}
 #[cfg(feature = "http")]
 pub(crate) fn download_limit() -> Error {
     invalid("download pool limits exceed semaphore capacity")

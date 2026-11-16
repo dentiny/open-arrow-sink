@@ -1,4 +1,5 @@
 use futures::{TryStreamExt, stream};
+use open_arrow_sink_core::Error;
 use open_arrow_sink_core::Result;
 use open_arrow_sink_storage::{Storage, Url};
 
@@ -51,6 +52,6 @@ pub(crate) async fn validate_overwrite_directory(storage: &Storage, directory: &
         Ok(metadata) if !metadata.is_dir() => Err(error::not_directory()),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(crate::error::backend(error)),
+        Err(error) => Err(Error::backend(error)),
     }
 }

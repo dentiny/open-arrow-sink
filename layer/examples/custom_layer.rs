@@ -115,7 +115,7 @@ impl Writer for LimitedWriter {
 async fn main() -> Result<()> {
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
-            .map_err(|error| Error::Backend(Box::new(error)))?;
+            .map_err(Error::backend)?;
     let sink = CountingSink.layer(MaxBatchRows(3));
     let options = WriteOptions {
         ordering: Ordering::Unordered,

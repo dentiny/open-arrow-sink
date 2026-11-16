@@ -9,11 +9,7 @@ use opendal::{
 };
 use tokio::sync::Semaphore;
 
-use crate::{
-    HttpConcurrencyLimitLayer,
-    error::{self, backend},
-    validation,
-};
+use crate::{HttpConcurrencyLimitLayer, error, validation};
 
 // Default maximum number of active download streams across the process.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
@@ -57,7 +53,7 @@ impl DownloadPool {
         })?;
         opendal::install_default();
         let operator = Operator::new(Http::default().endpoint("https://download.invalid"))
-            .map_err(backend)?
+            .map_err(Error::backend)?
             .layer(http_limit.clone());
         Ok(Self {
             operator,
@@ -115,7 +111,7 @@ impl DownloadPool {
     /// Open a pull-based download. Dropping the stream cancels pending I/O and
     /// releases its request slot; already yielded chunks retain their reservations.
     pub async fn stream(&self, source: &str) -> Result<BoxStream<'static, Result<BlobChunk>>> {
-        let url = crate::Url::parse(source).map_err(backend)?;
+        let url = crate::Url::parse(source).map_err(Error::backend)?;
         let request = self
             .requests
             .clone()
@@ -142,10 +138,10 @@ impl DownloadPool {
         let reader = operator
             .reader(&path)
             .await
-            .map_err(backend)?
+            .map_err(Error::backend)?
             .into_stream(..)
             .await
-            .map_err(backend)?;
+            .map_err(Error::backend)?;
         let buffers = self.buffers.clone();
         let capacity = CHUNK_BYTES.min(self.max_buffered_bytes.get());
         Ok(Box::pin(async_stream::try_stream! {
@@ -156,7 +152,7 @@ impl DownloadPool {
                 let reservation = buffers.clone().acquire_many_owned(capacity as u32)
                     .await.expect("pool is never closed");
                 if pending.is_empty() {
-                    let Some(buffer) = reader.try_next().await.map_err(backend)? else { break };
+                    let Some(buffer) = reader.try_next().await.map_err(Error::backend)? else { break };
                     pending = buffer;
                 }
                 // A bounded copy avoids retaining a larger OpenDAL backing allocation.

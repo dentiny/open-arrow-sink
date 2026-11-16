@@ -2,13 +2,14 @@ use arrow_array::RecordBatchReader;
 use arrow_schema::ArrowError;
 use lance::dataset::{InsertBuilder, transaction::Transaction};
 use open_arrow_sink_core::{
-    DataWriter, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait, validation,
+    DataWriter, Error, Poison, RecordBatch, Result, SchemaRef, WriteOptions, async_trait,
+    validation,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
-    error::{aborted, backend, worker_stopped},
+    error::{aborted, worker_stopped},
     storage::NativeStorage,
 };
 
@@ -134,8 +135,8 @@ impl DataWriter for FragmentWriter {
             .take()
             .ok_or(open_arrow_sink_core::Error::Poisoned)?
             .await
-            .map_err(backend)?
-            .map_err(backend)?;
+            .map_err(Error::backend)?
+            .map_err(Error::backend)?;
         Ok((self.rows, transaction))
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {

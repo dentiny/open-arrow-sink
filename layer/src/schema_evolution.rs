@@ -1,5 +1,4 @@
 //! One-to-one top-level field remapping with a fixed schema per session.
-use crate::error::backend;
 use arrow_array::{ArrayRef, RecordBatchOptions};
 use arrow_schema::{FieldRef, Schema};
 use open_arrow_sink_core::{
@@ -119,7 +118,7 @@ impl Plan {
             columns,
             &RecordBatchOptions::new().with_row_count(Some(input.num_rows())),
         )
-        .map_err(backend)
+        .map_err(Error::backend)
     }
 }
 #[async_trait]
