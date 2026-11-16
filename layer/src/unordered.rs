@@ -41,12 +41,11 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
     type Request = S::Request;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            ordering: Ordering::Unordered,
-            // DataWriter has no native-blob interface to forward.
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        // DataWriter has no native-blob interface to forward.
+        self.inner
+            .capability()
+            .with_ordering(Ordering::Unordered)
+            .with_supports_blob_streaming(false)
     }
 
     async fn open(

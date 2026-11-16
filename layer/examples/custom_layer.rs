@@ -124,10 +124,7 @@ async fn main() -> Result<()> {
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef)])
             .map_err(|error| Error::Backend(Box::new(error)))?;
     let sink = CountingSink.layer(MaxBatchRows(3));
-    let options = WriteOptions {
-        ordering: Ordering::Unordered,
-        ..WriteOptions::default()
-    };
+    let options = WriteOptions::default().with_ordering(Ordering::Unordered);
     let published = Arc::new(AtomicU64::new(0));
     let mut writer = sink
         .open(published.clone(), batch.schema(), options.clone())

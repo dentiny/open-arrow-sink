@@ -32,14 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(
             destination.clone(),
             batch.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                indexes: vec![
+            WriteOptions::default()
+                .with_ordering(Ordering::Unordered)
+                .with_indexes(vec![
                     IndexSpec::new("id", IndexType::Scalar),
                     IndexSpec::new("text", IndexType::Text),
-                ],
-                ..Default::default()
-            },
+                ]),
         )
         .await?;
     writer.write(batch).await?;

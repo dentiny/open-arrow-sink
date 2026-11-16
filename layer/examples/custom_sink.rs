@@ -25,10 +25,7 @@ async fn main() -> open_arrow_sink_core::Result<()> {
         .open(
             published.clone(),
             batch.schema(),
-            WriteOptions {
-                ordering: Ordering::Unordered,
-                ..WriteOptions::default()
-            },
+            WriteOptions::default().with_ordering(Ordering::Unordered),
         )
         .await?;
     writer.write(batch.clone()).await?;

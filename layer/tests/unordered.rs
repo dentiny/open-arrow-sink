@@ -50,20 +50,19 @@ impl Sink for TestSink {
     type Request = ();
     fn capability(&self) -> SinkCapability {
         let state = self.0.lock().unwrap();
-        SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            ordering: if state.unordered {
+        SinkCapability::default()
+            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
+            .with_ordering(if state.unordered {
                 Ordering::Unordered
             } else {
                 Ordering::PreserveInput
-            },
-            compression: Default::default(),
-            supported_partitions: vec![],
-            supports_blob_handle: state.supports_blobs,
-            supports_blob_streaming: state.supports_blobs,
-            supports_storage_version: false,
-            supported_indexes: &[],
-        }
+            })
+            .with_compression(Default::default())
+            .with_supported_partitions(vec![])
+            .with_supports_blob_handle(state.supports_blobs)
+            .with_supports_blob_streaming(state.supports_blobs)
+            .with_supports_storage_version(false)
+            .with_supported_indexes(&[])
     }
     async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
         unreachable!()
@@ -174,10 +173,7 @@ fn batch() -> RecordBatch {
     RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2, 3])) as _)]).unwrap()
 }
 fn options() -> WriteOptions {
-    WriteOptions {
-        ordering: Ordering::Unordered,
-        ..Default::default()
-    }
+    WriteOptions::default().with_ordering(Ordering::Unordered)
 }
 fn sink(state: &Arc<Mutex<State>>) -> impl Sink<Request = ()> {
     TestSink(state.clone()).layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
@@ -216,7 +212,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
 
 #[rstest::rstest]
 #[case::preserve_input(WriteOptions::default())]
-#[case::zero_target(WriteOptions { target_file_size: Some(0), ..options() })]
+#[case::zero_target(options().with_target_file_size(Some(0)))]
 #[tokio::test]
 async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: WriteOptions) {
     let state = Arc::new(Mutex::new(State::default()));
@@ -464,10 +460,7 @@ async fn unordered_layer_preserves_blob_configuration_but_rejects_streaming() {
     sink.open(
         (),
         input.schema(),
-        WriteOptions {
-            blob_handle: Some(Default::default()),
-            ..options()
-        },
+        options().with_blob_handle(Some(Default::default())),
     )
     .await
     .unwrap()
@@ -504,14 +497,11 @@ async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
         .open_writers(
             (),
             Arc::new(arrow_schema::Schema::empty()),
-            WriteOptions {
-                ordering: if requested == Ordering::PreserveInput {
-                    Ordering::Unordered
-                } else {
-                    Ordering::PreserveInput
-                },
-                ..WriteOptions::default()
-            },
+            WriteOptions::default().with_ordering(if requested == Ordering::PreserveInput {
+                Ordering::Unordered
+            } else {
+                Ordering::PreserveInput
+            }),
             NonZeroUsize::MIN,
         )
         .await;

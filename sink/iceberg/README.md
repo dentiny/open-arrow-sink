@@ -23,16 +23,16 @@ An empty session leaves the table unchanged.
 Enable identity partition routing with the shared write option:
 
 ```rust
-use open_arrow_sink_core::{Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions};
-
-let options = WriteOptions {
-    mode: WriteMode::Append,
-    ordering: Ordering::Unordered,
-    partition: Some(PartitionOptions {
-        partition_type: PartitionType::Identity,
-    }),
-    ..WriteOptions::default()
+use open_arrow_sink_core::{
+    Ordering, PartitionOptions, PartitionType, WriteMode, WriteOptions,
 };
+
+let options = WriteOptions::default()
+    .with_mode(WriteMode::Append)
+    .with_ordering(Ordering::Unordered)
+    .with_partition(Some(PartitionOptions {
+        partition_type: PartitionType::Identity,
+    }));
 ```
 
 The table's default partition spec and current schema are fixed when the session
@@ -141,17 +141,18 @@ cleanup all use the same shared operator. The sink request remains `TableIdent`;
 the table metadata determines data locations.
 
 ```rust,ignore
-use std::sync::Arc;
+use iceberg::{CatalogBuilder, memory::MemoryCatalogBuilder};
 use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, Storage, iceberg};
 use open_arrow_sink_storage::opendal;
-use iceberg::{CatalogBuilder, memory::MemoryCatalogBuilder};
+use std::sync::Arc;
 
 let operator = opendal::Operator::new(opendal::services::Memory::default())?;
 let storage = Storage::new(operator, "memory:///".parse()?)?;
 let factory = Arc::new(OpenDalStorageFactory::new(storage));
 let catalog = MemoryCatalogBuilder::default()
     .with_storage_factory(factory)
-    .load("example", catalog_properties).await?;
+    .load("example", catalog_properties)
+    .await?;
 let sink = IcebergTableSink::new(Arc::new(catalog));
 ```
 
@@ -171,7 +172,7 @@ backend lifecycle cleanup even when session-owned published files are removed.
 ### Supported write modes
 
 `IcebergTableSink.capability().supported_modes` is `[WriteMode::Append]`.
-`WriteOptions { mode: WriteMode::Append, ..options }` appends to an existing
+`options.with_mode(WriteMode::Append)` appends to an existing
 table. A missing table is an error. The shared default is `WriteMode::Create`,
 which this sink rejects; callers must explicitly select Append.
 
