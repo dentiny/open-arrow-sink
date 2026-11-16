@@ -5,12 +5,12 @@ use iceberg::writer::partitioning::{PartitioningWriter, fanout_writer::FanoutWri
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use open_arrow_sink_core::{RecordBatch, async_trait};
 
-use crate::error::partition_writer_closed;
-
 /// Adapt the SDK's keyed partition writer to its RecordBatch writer interface.
 /// The schema/spec are pinned at open; the SDK computes keys and file metadata.
 pub(crate) struct PartitionWriterAdapter<B: IcebergWriterBuilder> {
     splitter: RecordBatchPartitionSplitter,
+    // The enclosing IcebergTableWriter gates write/finish with Poison. This
+    // Option only moves the SDK writer into its consuming close operation.
     inner: Option<FanoutWriter<B>>,
 }
 
@@ -31,7 +31,10 @@ impl<B: IcebergWriterBuilder> IcebergWriter for PartitionWriterAdapter<B> {
             return Ok(());
         }
         let batches = self.splitter.split(&batch)?;
-        let inner = self.inner.as_mut().ok_or_else(partition_writer_closed)?;
+        let inner = self
+            .inner
+            .as_mut()
+            .expect("active table writer owns its partition writer");
         for (key, batch) in batches {
             inner.write(key, batch).await?;
         }
@@ -39,7 +42,10 @@ impl<B: IcebergWriterBuilder> IcebergWriter for PartitionWriterAdapter<B> {
     }
 
     async fn close(&mut self) -> Result<Vec<DataFile>> {
-        let inner = self.inner.take().ok_or_else(partition_writer_closed)?;
+        let inner = self
+            .inner
+            .take()
+            .expect("active table writer owns its partition writer");
         inner.close().await
     }
 }

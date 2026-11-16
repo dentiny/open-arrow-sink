@@ -1,6 +1,8 @@
 use crate::{Error, Result};
 
-/// Terminal state shared by writer implementations.
+/// Terminal-state primitive for backend implementations.
+/// Decorators should use `GuardedWriter` or `GuardedDataWriter` to share the
+/// complete lifecycle implementation rather than managing this flag themselves.
 ///
 /// Call `begin` before validation or I/O and `complete` only after a successful
 /// write. Errors and cancellation then leave the writer poisoned automatically.

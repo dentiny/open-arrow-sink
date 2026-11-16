@@ -1,8 +1,8 @@
 //! Backend-independent write observation. Payload bytes come from shared I/O observers.
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, DataWriter, Layer, ParallelSink, Poison, RecordBatch, Result,
-    SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, WriteSummary,
-    Writer, async_trait,
+    BlobPlacement, BlobWriter, DataWriter, GuardedDataWriter, GuardedWriter, Layer, ParallelSink,
+    RecordBatch, Result, SchemaRef, SessionCommitter, Sink, SinkCapability, WriteOptions,
+    WriteSession, WriteSummary, Writer, async_trait,
 };
 use std::{
     num::NonZeroUsize,
@@ -161,16 +161,14 @@ impl<S: Sink> Sink for MetricsSink<S> {
         self.metrics.update(|s| s.sessions_opened += 1);
         observation.success();
         Ok(Box::new(MetricsWriter {
-            inner,
+            inner: GuardedWriter::new(inner),
             metrics: self.metrics.clone(),
-            state: Poison::default(),
         }))
     }
 }
 struct MetricsWriter {
-    inner: Box<dyn Writer>,
+    inner: GuardedWriter,
     metrics: WriteMetrics,
-    state: Poison,
 }
 impl MetricsWriter {
     async fn accept(
@@ -178,7 +176,7 @@ impl MetricsWriter {
         batch: RecordBatch,
         blobs: Option<Vec<BlobPlacement>>,
     ) -> Result<()> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         match blobs {
@@ -186,7 +184,6 @@ impl MetricsWriter {
             None => self.inner.write(batch).await?,
         }
         self.metrics.accepted(rows);
-        self.state.complete();
         observation.success();
         Ok(())
     }
@@ -207,29 +204,28 @@ impl Writer for MetricsWriter {
         self.accept(batch, Some(blobs)).await
     }
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let blob = self.inner.create_blob().await?;
-        self.state.complete();
         observation.success();
         Ok(blob)
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        if let Err(error) = self.state.check() {
-            if self.inner.abort().await.is_ok() {
+        if let Err(error) = self.inner.check() {
+            if Box::new(self.inner).abort().await.is_ok() {
                 self.metrics.update(|s| s.sessions_aborted += 1);
             }
             return Err(error);
         }
-        let summary = self.inner.commit().await?;
+        let summary = Box::new(self.inner).commit().await?;
         self.metrics.committed(&summary);
         observation.success();
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        self.inner.abort().await?;
+        Box::new(self.inner).abort().await?;
         self.metrics.update(|s| s.sessions_aborted += 1);
         observation.success();
         Ok(())
@@ -237,9 +233,8 @@ impl Writer for MetricsWriter {
 }
 
 struct MetricsDataWriter<T: Send + 'static> {
-    inner: Box<dyn DataWriter<Output = T>>,
+    inner: GuardedDataWriter<T>,
     metrics: WriteMetrics,
-    state: Poison,
 }
 #[async_trait]
 impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
@@ -248,17 +243,16 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
         self.inner.write(batch).await?;
         self.metrics.accepted(rows);
-        self.state.complete();
         observation.success();
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        self.state.begin()?;
+        self.inner.check()?;
         let observation = Observation::new(&self.metrics, Operation::Other);
         let output = self.inner.finish().await?;
         observation.success();
@@ -266,7 +260,7 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
-        self.inner.abort().await?;
+        Box::new(self.inner).abort().await?;
         observation.success();
         Ok(())
     }
@@ -316,9 +310,8 @@ impl<S: ParallelSink> ParallelSink for MetricsSink<S> {
                 .into_iter()
                 .map(|inner| {
                     Box::new(MetricsDataWriter {
-                        inner,
+                        inner: GuardedDataWriter::new(inner),
                         metrics: self.metrics.clone(),
-                        state: Poison::default(),
                     }) as Box<dyn DataWriter<Output = Self::Output>>
                 })
                 .collect(),

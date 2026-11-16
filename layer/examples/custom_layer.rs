@@ -5,8 +5,8 @@ mod counting_sink;
 use arrow_array::{ArrayRef, Int64Array};
 use counting_sink::CountingSink;
 use open_arrow_sink_core::{
-    BlobPlacement, BlobWriter, Error, Layer, Ordering, RecordBatch, Result, SchemaRef, Sink,
-    SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
+    BlobPlacement, BlobWriter, Error, GuardedWriter, Layer, Ordering, RecordBatch, Result,
+    SchemaRef, Sink, SinkCapability, SinkExt, WriteOptions, WriteSummary, Writer, async_trait,
 };
 use std::sync::{
     Arc,
@@ -46,18 +46,16 @@ impl<S: Sink> Sink for LimitedSink<S> {
         if self.max_rows == 0 {
             return Err(Error::Unsupported("max batch rows must be positive".into()));
         }
-        Ok(Box::new(LimitedWriter {
+        Ok(Box::new(GuardedWriter::new(Box::new(LimitedWriter {
             inner: self.inner.open(request, schema, options).await?,
             max_rows: self.max_rows,
-            state: open_arrow_sink_core::Poison::default(),
-        }))
+        }))))
     }
 }
 
 struct LimitedWriter {
     inner: Box<dyn Writer>,
     max_rows: usize,
-    state: open_arrow_sink_core::Poison,
 }
 impl LimitedWriter {
     fn check_batch(&self, batch: &RecordBatch) -> Result<()> {
@@ -75,17 +73,13 @@ impl Writer for LimitedWriter {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.begin()?;
         self.check_batch(&batch)?;
         self.inner.write(batch).await?;
-        self.state.complete();
         Ok(())
     }
     // Forward blob methods too, since capabilities were forwarded unchanged.
     async fn create_blob(&mut self) -> Result<Box<dyn BlobWriter>> {
-        self.state.begin()?;
         let blob = self.inner.create_blob().await?;
-        self.state.complete();
         Ok(blob)
     }
     async fn write_with_blobs(
@@ -93,17 +87,11 @@ impl Writer for LimitedWriter {
         batch: RecordBatch,
         blobs: Vec<BlobPlacement>,
     ) -> Result<()> {
-        self.state.begin()?;
         self.check_batch(&batch)?;
         self.inner.write_with_blobs(batch, blobs).await?;
-        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.state.check() {
-            let _ = self.inner.abort().await;
-            return Err(error);
-        }
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {

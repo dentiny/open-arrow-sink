@@ -2,6 +2,8 @@
 mod capability;
 mod compression;
 mod error;
+mod guard;
+pub use guard::{GuardedDataWriter, GuardedWriter};
 mod index;
 mod io_metrics;
 pub use io_metrics::{IoMetrics, IoMetricsRegistration, IoMetricsSource, IoSnapshot};

@@ -6,7 +6,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Schema};
 use futures::{StreamExt, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, Layer, Poison, RecordBatch, Result,
+    BLOB_METADATA_KEY, BlobPlacement, BlobWriter, Error, GuardedWriter, Layer, RecordBatch, Result,
     SchemaRef, Sink, SinkCapability, WriteOptions, WriteSummary, Writer, async_trait, validation,
 };
 
@@ -89,15 +89,14 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
             .inner
             .open(request, output_schema.clone(), options)
             .await?;
-        Ok(Box::new(DownloadBlobWriter {
+        Ok(Box::new(GuardedWriter::new(Box::new(DownloadBlobWriter {
             inner,
             schema,
             output_schema,
             indices,
             pool,
-            state: Poison::default(),
             io_metrics,
-        }))
+        }))))
     }
 }
 
@@ -107,7 +106,6 @@ struct DownloadBlobWriter {
     output_schema: SchemaRef,
     indices: Vec<usize>,
     pool: Arc<DownloadPool>,
-    state: Poison,
     io_metrics: Option<open_arrow_sink_core::IoMetrics>,
 }
 fn url_value(array: &dyn Array, row: usize) -> &str {
@@ -164,7 +162,6 @@ impl Writer for DownloadBlobWriter {
         &self.schema
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.state.begin()?;
         validation::validate_batch(&self.schema, &batch)?;
         if self.indices.is_empty() {
             self.inner.write(batch).await?;
@@ -213,14 +210,9 @@ impl Writer for DownloadBlobWriter {
                 .map_err(Error::backend)?;
             self.inner.write_with_blobs(output, blobs).await?;
         }
-        self.state.complete();
         Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<WriteSummary> {
-        if let Err(error) = self.state.check() {
-            let _ = self.inner.abort().await;
-            return Err(error);
-        }
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {

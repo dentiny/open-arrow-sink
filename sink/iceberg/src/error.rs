@@ -33,10 +33,6 @@ pub(crate) fn partition_mismatch(
     ))
 }
 
-pub(crate) fn partition_writer_closed() -> iceberg::Error {
-    iceberg::Error::new(iceberg::ErrorKind::Unexpected, "partition writer is closed")
-}
-
 pub(crate) fn storage_backend(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> iceberg::Error {
