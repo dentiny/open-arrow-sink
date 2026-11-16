@@ -127,13 +127,25 @@ async fn duplicate_create_preserves_the_existing_dataset() {
     let sink = LanceDatasetSink::new(storage.clone());
     let url = storage.url("output/").unwrap();
     write_dataset(sink.clone(), url.clone(), write_options()).await;
-    assert!(
-        sink.open(url.clone(), batch().schema(), write_options())
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        sink.open(url.clone(), batch().schema(), write_options()).await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(location)) if location == url.as_str()
+    ));
     let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), 12);
+}
+
+#[tokio::test]
+async fn duplicate_index_reports_already_exists() {
+    let storage = storage();
+    let sink = LanceDatasetSink::new(storage.clone());
+    let url = storage.url("output/").unwrap();
+    let options = write_options().with_indexes(vec![IndexSpec::new("value", IndexType::Scalar)]);
+    write_dataset(sink.clone(), url.clone(), options.clone()).await;
+    assert!(matches!(
+        sink.open(url, batch().schema(), options.with_mode(open_arrow_sink_core::WriteMode::Append)).await,
+        Err(open_arrow_sink_core::Error::AlreadyExists(message)) if message.contains("index oas_btree_")
+    ));
 }
 
 #[rstest::rstest]

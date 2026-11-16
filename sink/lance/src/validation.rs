@@ -150,7 +150,7 @@ pub(crate) async fn validate_existing_dataset(
     if let Some(schema) = schema
         && &Schema::from(dataset.schema()) != schema
     {
-        return Err(error::schema_mismatch());
+        return Err(Error::SchemaMismatch);
     }
     Ok(dataset)
 }
@@ -220,7 +220,9 @@ pub(crate) fn validate_blob_commit(
 ) -> Result<()> {
     validate_blob_state(state, session)?;
     if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
-        return Err(error::unfinished_blobs());
+        return Err(Error::backend(std::io::Error::other(
+            "writer failed or has unfinished blobs; session aborted",
+        )));
     }
     Ok(())
 }
@@ -359,7 +361,10 @@ pub(crate) async fn validate_existing_indexes(
                 .iter()
                 .any(|i| i.name == crate::index::index_name(spec))
         {
-            return Err(error::index_exists(&crate::index::index_name(spec)));
+            return Err(Error::AlreadyExists(format!(
+                "index {} already exists; select Keep or Rebuild",
+                crate::index::index_name(spec),
+            )));
         }
     }
     Ok(())
@@ -400,7 +405,7 @@ pub(crate) async fn validate_destination(
         return Ok(None);
     }
     if mode == WriteMode::Create {
-        return Err(error::destination_exists());
+        return Err(Error::AlreadyExists(destination.url.to_string()));
     }
     validate_existing_dataset(destination.dataset_builder(), None, None)
         .await
