@@ -55,7 +55,7 @@ impl LanceDestination {
         }
         if self.storage.inspect_directory(&self.url).await? != DirectoryState::Missing {
             return match mode {
-                WriteMode::Create => Err(Error::DestinationExists),
+                WriteMode::Create => Err(Error::AlreadyExists(self.url.to_string())),
                 _ => {
                     crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
                         .await

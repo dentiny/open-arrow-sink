@@ -27,7 +27,7 @@ impl Destination {
         if mode == WriteMode::Create
             && storage.inspect_directory(&directory).await? != DirectoryState::Missing
         {
-            return Err(Error::DestinationExists);
+            return Err(Error::AlreadyExists(directory.to_string()));
         }
         let (prefix, owns_directory) = match mode {
             WriteMode::Create => ("part-".into(), true),

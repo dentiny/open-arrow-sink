@@ -255,7 +255,9 @@ pub(crate) fn validate_blob_commit(
 ) -> Result<()> {
     validate_blob_state(state, session)?;
     if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
-        return Err(error::unfinished_blobs());
+        return Err(Error::backend(std::io::Error::other(
+            "writer failed or has unfinished blobs; session aborted",
+        )));
     }
     Ok(())
 }

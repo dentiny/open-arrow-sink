@@ -69,12 +69,16 @@ impl OpenDalStorageFactory {
 // Reconstructing a fresh operator on deserialize would silently change storage.
 impl serde::Serialize for OpenDalStorageFactory {
     fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
-        Err(crate::error::operator_serialization())
+        Err(<S::Error as serde::ser::Error>::custom(
+            "live OpenDAL operators cannot be serialized",
+        ))
     }
 }
 impl<'de> serde::Deserialize<'de> for OpenDalStorageFactory {
     fn deserialize<D: serde::Deserializer<'de>>(_: D) -> std::result::Result<Self, D::Error> {
-        Err(crate::error::operator_deserialization())
+        Err(<D::Error as serde::de::Error>::custom(
+            "construct OpenDAL storage with a configured operator",
+        ))
     }
 }
 

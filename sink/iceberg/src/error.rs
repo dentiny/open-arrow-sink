@@ -7,18 +7,3 @@ pub(crate) fn storage_backend(
     )
     .with_source(error)
 }
-
-pub(crate) fn invalid_storage_location() -> iceberg::Error {
-    iceberg::Error::new(
-        iceberg::ErrorKind::DataInvalid,
-        "invalid filesystem location",
-    )
-}
-
-pub(crate) fn operator_serialization<E: serde::ser::Error>() -> E {
-    E::custom("live OpenDAL operators cannot be serialized")
-}
-
-pub(crate) fn operator_deserialization<E: serde::de::Error>() -> E {
-    E::custom("construct OpenDAL storage with a configured operator")
-}
