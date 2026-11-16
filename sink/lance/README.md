@@ -297,7 +297,8 @@ default version. This selects the file format, independently of the dataset's co
 
 The Lance `write_options` adapter translates shared configuration into native
 `WriteParams` and encoding metadata. Both writer paths use one schema pipeline:
-compression, prepared blob fields, then explicit layout overrides. Storage binds
+compression (`compression::apply_compression`), prepared blob fields, then explicit
+layout overrides (`write_options::writer_schema`). `LanceDestination` binds
 the resulting parameters to its session and commit handler; blob runtime code
 owns handles, placements, and cleanup.
 
@@ -330,8 +331,8 @@ requiring custom credentials, endpoints, or operators. The destination store
 always takes precedence inside its own namespace; sources use the most specific
 configured root. Destination credentials are never reused for unrelated sources.
 Unregistered sources use URL-configured storage cached by `StorageResolver`.
-The independent `StorageRouter` applies destination precedence; Lance’s `Provider`
-adapts the selected storage to Lance.
+Lance’s `Provider` applies destination precedence and adapts the selected storage
+to Lance.
 
 URL-based resolution supports enabled OpenDAL services. Enable the corresponding
 service or register a builder with `opendal::OperatorRegistry` before opening the

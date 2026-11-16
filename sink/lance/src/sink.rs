@@ -6,7 +6,7 @@ use open_arrow_sink_core::{
     SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{storage::NativeStorage, validation::validate_options, write_options};
+use crate::{destination::LanceDestination, validation::validate_options, write_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -28,13 +28,13 @@ impl LanceDatasetSink {
         self.sources = self.sources.with_storage(storage);
         self
     }
-    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<NativeStorage> {
+    fn resolve(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
         let storage = match &self.storage {
             Some(storage) => storage.clone(),
             None => Storage::from_url(&url)?,
         }
         .with_write_options(options);
-        NativeStorage::new(
+        LanceDestination::new(
             storage,
             url,
             self.sources.clone(),
@@ -86,8 +86,7 @@ impl Sink for LanceDatasetSink {
         schema: SchemaRef,
         options: WriteOptions,
     ) -> Result<Box<dyn Writer>> {
-        let storage_schema = crate::blob::storage_schema(&schema)?;
-        if storage_schema != schema {
+        if crate::blob::requires_streaming_writer(&schema) {
             validate_options(&schema, &options, self.capability())?;
             let encoding_schema = write_options::writer_schema(&schema, &options)?;
             let mut destination = self.resolve(url, &options)?;
@@ -101,7 +100,6 @@ impl Sink for LanceDatasetSink {
             destination.validate_index_requests(&options).await?;
             return Ok(Box::new(crate::blob_writer::BlobDatasetWriter::new(
                 schema,
-                storage_schema,
                 encoding_schema,
                 destination,
                 options,

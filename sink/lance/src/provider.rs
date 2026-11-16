@@ -1,17 +1,47 @@
 use crate::error::native_storage as native;
-use crate::storage_router::StorageRouter;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, providers::ObjectStoreProvider};
 use object_store::path::Path;
-use open_arrow_sink_core::async_trait;
-use open_arrow_sink_storage::Url;
+use open_arrow_sink_core::{Result, async_trait};
+use open_arrow_sink_storage::{Storage, StorageResolver, Url};
 use std::sync::Arc;
 
-/// Adapt routed storage to Lance; namespace selection belongs to StorageRouter.
+/// Adapt the destination and independently resolved sources to Lance.
 #[derive(Debug)]
 pub(crate) struct Provider {
-    pub storage: StorageRouter,
-    pub io_tracker: Arc<crate::io_metrics::TrackedIo>,
+    destination: Storage,
+    sources: StorageResolver,
+    io_tracker: Arc<crate::io_metrics::TrackedIo>,
 }
+impl Provider {
+    pub fn new(
+        destination: Storage,
+        sources: StorageResolver,
+        io_tracker: Arc<crate::io_metrics::TrackedIo>,
+    ) -> Self {
+        Self {
+            destination,
+            sources,
+            io_tracker,
+        }
+    }
+
+    /// Adapt storage capabilities to Lance's per-scheme provider registry.
+    pub fn schemes(&self) -> impl Iterator<Item = String> {
+        self.sources.schemes().chain(std::iter::once(
+            self.destination.base_url().scheme().to_owned(),
+        ))
+    }
+
+    /// The destination owns its namespace, even with a more specific source.
+    pub fn resolve(&self, url: &Url) -> Result<Storage> {
+        if self.destination.path(url).is_ok() {
+            Ok(self.destination.clone())
+        } else {
+            self.sources.resolve(url)
+        }
+    }
+}
+
 #[async_trait]
 impl ObjectStoreProvider for Provider {
     async fn new_store(
@@ -19,7 +49,7 @@ impl ObjectStoreProvider for Provider {
         base_path: Url,
         params: &ObjectStoreParams,
     ) -> lance::Result<ObjectStore> {
-        let storage = self.storage.resolve(&base_path).map_err(native)?;
+        let storage = self.resolve(&base_path).map_err(native)?;
         let object_store = storage.object_store();
         use lance_io::object_store::WrappingObjectStore;
         let object_store = self
@@ -44,8 +74,7 @@ impl ObjectStoreProvider for Provider {
         // OpendalStore decodes object-store keys. Encode literal percent signs
         // as PathParts so a URL containing %2520 stays a literal "%20" key.
         Ok(Path::from(
-            self.storage
-                .resolve(url)
+            self.resolve(url)
                 .map_err(native)?
                 .path(url)
                 .map_err(native)?,
@@ -56,11 +85,64 @@ impl ObjectStoreProvider for Provider {
         url: &Url,
         _: Option<&std::collections::HashMap<String, String>>,
     ) -> lance::Result<String> {
-        Ok(self
-            .storage
-            .resolve(url)
-            .map_err(native)?
-            .base_url()
-            .to_string())
+        Ok(self.resolve(url).map_err(native)?.base_url().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use open_arrow_sink_storage::opendal;
+
+    fn memory(base: &str) -> Storage {
+        Storage::new(
+            opendal::Operator::new(opendal::services::Memory::default()).unwrap(),
+            base.parse().unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn destination_owns_its_namespace_even_with_a_more_specific_source() {
+        let destination = memory("s3://destination/");
+        let overlap = memory("s3://destination/nested/");
+        let external = memory("s3://source/");
+        let local_url = destination.url("nested/key").unwrap();
+        let external_url = external.url("key").unwrap();
+        destination
+            .write(&local_url, "destination".into())
+            .await
+            .unwrap();
+        overlap.write(&local_url, "overlap".into()).await.unwrap();
+        external
+            .write(&external_url, "source".into())
+            .await
+            .unwrap();
+
+        let provider = Provider::new(
+            destination,
+            StorageResolver::default()
+                .with_storage(overlap)
+                .with_storage(external),
+            crate::io_metrics::TrackedIo::new(None),
+        );
+        assert_eq!(
+            provider
+                .resolve(&local_url)
+                .unwrap()
+                .read(&local_url)
+                .await
+                .unwrap(),
+            "destination"
+        );
+        assert_eq!(
+            provider
+                .resolve(&external_url)
+                .unwrap()
+                .read(&external_url)
+                .await
+                .unwrap(),
+            "source"
+        );
     }
 }

@@ -15,8 +15,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     compression::writer_batch,
+    destination::LanceDestination,
     error::{aborted, worker_stopped},
-    storage::NativeStorage,
 };
 
 type Output = (u64, Transaction);
@@ -76,7 +76,7 @@ impl FragmentWriter {
     pub(crate) fn new(
         schema: SchemaRef,
         encoding_schema: SchemaRef,
-        destination: NativeStorage,
+        destination: LanceDestination,
         options: &WriteOptions,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(1);

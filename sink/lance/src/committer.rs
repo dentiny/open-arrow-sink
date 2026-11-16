@@ -3,12 +3,12 @@ use open_arrow_sink_core::{
     Error, Result, SessionCommitter, WriteOptions, WriteSummary, async_trait,
 };
 
-use crate::{index::build_indexes, storage::NativeStorage};
+use crate::{destination::LanceDestination, index::build_indexes};
 
 type Output = (u64, Transaction);
 
 pub(crate) struct LanceCommitter {
-    pub destination: NativeStorage,
+    pub destination: LanceDestination,
     pub options: WriteOptions,
 }
 
