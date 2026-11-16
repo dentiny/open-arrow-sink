@@ -172,13 +172,6 @@ pub(crate) fn validate_transaction_compatibility(
     Ok(())
 }
 
-pub(crate) fn validate_write_state(failed: bool) -> Result<()> {
-    if failed {
-        return Err(error::failed());
-    }
-    Ok(())
-}
-
 pub(crate) fn write_fragments(
     operation: &mut lance::dataset::transaction::Operation,
 ) -> Result<&mut Vec<lance_table::format::Fragment>> {
@@ -222,16 +215,22 @@ pub(crate) fn validate_parallel_blob_schema(schema: &Schema) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_blob_state(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if failed || session.failed.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(error::blob_failed());
+pub(crate) fn validate_blob_state(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    state.check()?;
+    if session.failed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(open_arrow_sink_core::Error::Poisoned);
     }
     Ok(())
 }
-pub(crate) fn validate_blob_commit(failed: bool, session: &crate::blob::BlobSession) -> Result<()> {
-    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0
-        || validate_blob_state(failed, session).is_err()
-    {
+pub(crate) fn validate_blob_commit(
+    state: &open_arrow_sink_core::Poison,
+    session: &crate::blob::BlobSession,
+) -> Result<()> {
+    validate_blob_state(state, session)?;
+    if session.active.load(std::sync::atomic::Ordering::Acquire) != 0 {
         return Err(error::unfinished_blobs());
     }
     Ok(())

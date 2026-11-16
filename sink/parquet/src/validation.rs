@@ -4,13 +4,6 @@ use open_arrow_sink_storage::{Storage, Url};
 
 use crate::error;
 
-pub(crate) fn validate_writer_active(active: bool) -> Result<()> {
-    if !active {
-        return Err(error::closed());
-    }
-    Ok(())
-}
-
 pub(crate) async fn validate_append_directory(
     storage: &Storage,
     directory: &Url,

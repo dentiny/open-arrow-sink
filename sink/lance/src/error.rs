@@ -22,10 +22,6 @@ pub(crate) fn aborted() -> ArrowError {
     )))
 }
 
-pub(crate) fn failed() -> Error {
-    backend(io::Error::other("writer failed; abort or drop it"))
-}
-
 pub(crate) fn worker_stopped() -> Error {
     backend(io::Error::other("Lance write worker stopped"))
 }
@@ -98,9 +94,6 @@ pub(crate) fn invalid_blob(message: &'static str) -> Error {
 }
 pub(crate) fn invalid_blob_column(column: &str) -> Error {
     Error::Unsupported(format!("blob column must be LargeBinary: {column}"))
-}
-pub(crate) fn blob_failed() -> Error {
-    invalid_blob("blob session failed; abort or drop it")
 }
 pub(crate) fn unfinished_blobs() -> Error {
     backend(io::Error::other(

@@ -1,3 +1,4 @@
+use open_arrow_sink_core::Poison;
 use std::{num::NonZeroUsize, ops::Range, sync::Arc};
 
 use bytes::Bytes;
@@ -229,7 +230,7 @@ impl Storage {
         Ok(StorageWriter {
             inner: Some(writer),
             bytes_written: 0,
-            active: true,
+            state: Poison::default(),
             filesystem: operator.info().scheme() == "fs",
             path,
         })
@@ -308,14 +309,13 @@ fn directory_path(path: &str) -> String {
 pub struct StorageWriter {
     inner: Option<opendal::Writer>,
     bytes_written: u64,
-    active: bool,
+    state: Poison,
     filesystem: bool,
     path: String,
 }
 impl StorageWriter {
     pub async fn write(&mut self, bytes: Bytes) -> Result<()> {
-        validation::validate_writer_active(self.active)?;
-        self.active = false;
+        self.state.begin()?;
         self.inner
             .as_mut()
             .ok_or_else(error::writer_closed)?
@@ -323,12 +323,11 @@ impl StorageWriter {
             .await
             .map_err(|error| map_error("write", &self.path, error))?;
         self.bytes_written += bytes.len() as u64;
-        self.active = true;
+        self.state.complete();
         Ok(())
     }
     pub async fn close(&mut self) -> Result<u64> {
-        validation::validate_writer_active(self.active)?;
-        self.active = false;
+        self.state.begin()?;
         self.inner
             .as_mut()
             .ok_or_else(error::writer_closed)?
@@ -339,7 +338,7 @@ impl StorageWriter {
         Ok(self.bytes_written)
     }
     pub async fn abort(&mut self) -> Result<()> {
-        self.active = false;
+        self.state.poison();
         if let Some(mut writer) = self.inner.take() {
             error::abort_result(&self.path, writer.abort().await, self.filesystem)?;
         }
