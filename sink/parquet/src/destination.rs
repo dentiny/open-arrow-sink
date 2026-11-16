@@ -7,16 +7,15 @@ use crate::file_writer::FileWriter;
 
 const RESERVATION: &str = ".open-arrow-sink";
 
-/// Session-owned parts and optional filesystem staging directory.
+/// Session-owned parts in a destination directory.
 pub(crate) struct Destination {
     storage: Storage,
     directory: Url,
     prefix: String,
-    // Create owns the destination; overwrite owns its staging directory.
-    // Append shares an existing directory and must preserve its reservation.
-    // Only owners create/remove the reservation and clean up the empty directory.
+    // Create owns the destination. Append shares an existing directory and must
+    // preserve its reservation. Only owners create/remove the reservation and
+    // clean up the empty directory.
     owns_directory: bool,
-    target: Option<Url>,
     cleanup_on_error: bool,
 }
 impl Destination {
@@ -28,30 +27,18 @@ impl Destination {
         cleanup_on_error: bool,
     ) -> Result<Self> {
         let directory = storage.directory_url(&directory)?;
-        let (directory, prefix, target, owns_directory) = match mode {
-            WriteMode::Create => (directory, "part-".into(), None, true),
+        let (prefix, owns_directory) = match mode {
+            WriteMode::Create => ("part-".into(), true),
             WriteMode::Append => {
                 crate::validation::validate_append_directory(&storage, &directory, schema).await?;
-                (
-                    directory,
-                    format!("part-{}-", uuid::Uuid::new_v4()),
-                    None,
-                    false,
-                )
+                (format!("part-{}-", uuid::Uuid::new_v4()), false)
             }
-            WriteMode::Overwrite => {
-                crate::validation::validate_overwrite_directory(&storage, &directory).await?;
-                let stage = directory
-                    .join(&format!("../.open-arrow-sink-{}/", uuid::Uuid::new_v4()))
-                    .unwrap();
-                (stage, "part-".into(), Some(directory), true)
-            }
+            WriteMode::Overwrite => return Err(crate::error::overwrite_unsupported()),
         };
         let destination = Self {
             storage,
             directory,
             prefix,
-            target,
             owns_directory,
             cleanup_on_error,
         };
@@ -117,48 +104,5 @@ impl Destination {
         }
         self.storage.delete(&marker).await?;
         self.storage.remove_empty_directory(&self.directory).await
-    }
-    async fn rename_directory(&self, from: &Url, to: &Url) -> Result<()> {
-        // Fs supports directory rename at the backend; omit trailing slashes
-        // because OpenDAL's public rename path check requires file-shaped paths.
-        let from = self.storage.path(from)?;
-        let to = self.storage.path(to)?;
-        self.storage
-            .operator()
-            .rename(from.trim_end_matches('/'), to.trim_end_matches('/'))
-            .await
-            .map_err(crate::error::backend)
-    }
-    pub(crate) async fn publish(&self) -> Result<()> {
-        let result = self.publish_inner().await;
-        if result.is_err() && self.cleanup_on_error && self.target.is_some() {
-            let _ = self.storage.remove_all(&self.directory).await;
-        }
-        result
-    }
-    async fn publish_inner(&self) -> Result<()> {
-        let Some(target) = &self.target else {
-            return Ok(());
-        };
-        let backup = target
-            .join(&format!(
-                "../.open-arrow-sink-old-{}/",
-                uuid::Uuid::new_v4()
-            ))
-            .unwrap();
-        let had_target = self.storage.exists(target).await?;
-        if had_target {
-            self.rename_directory(target, &backup).await?;
-        }
-        if let Err(error) = self.rename_directory(&self.directory, target).await {
-            if had_target {
-                let _ = self.rename_directory(&backup, target).await;
-            }
-            return Err(error);
-        }
-        if had_target {
-            let _ = self.storage.remove_all(&backup).await;
-        }
-        Ok(())
     }
 }

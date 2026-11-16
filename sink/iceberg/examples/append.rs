@@ -54,11 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(
             identifier.clone(),
             schema,
-            WriteOptions {
-                mode: WriteMode::Append,
-                ordering: Ordering::Unordered,
-                ..WriteOptions::default()
-            },
+            WriteOptions::default()
+                .with_mode(WriteMode::Append)
+                .with_ordering(Ordering::Unordered),
         )
         .await?;
     writer.write(batch).await?;

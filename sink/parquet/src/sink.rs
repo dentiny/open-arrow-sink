@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Writes a URL destination containing `part-00000.parquet`, etc.
-/// Create, append, and filesystem staged overwrite are supported. Missing parents are created.
+/// Create and append are supported on every storage backend. Missing parents are created.
 /// Callers must exclude concurrent writes or directory replacement during a session.
 /// Directory scans have no promised row order, so use `Ordering::Unordered`.
 /// Files become visible before commit; commit completes the footer, not an atomic
@@ -35,37 +35,24 @@ impl Sink for ParquetDirectorySink {
     type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        let supported_modes: &'static [open_arrow_sink_core::WriteMode] = if self
-            .storage
-            .as_ref()
-            .is_some_and(|storage| storage.operator().info().scheme() != "fs")
-        {
-            &[
+        SinkCapability::default()
+            .with_supported_modes(&[
                 open_arrow_sink_core::WriteMode::Create,
                 open_arrow_sink_core::WriteMode::Append,
-            ]
-        } else {
-            &[
-                open_arrow_sink_core::WriteMode::Create,
-                open_arrow_sink_core::WriteMode::Append,
-                open_arrow_sink_core::WriteMode::Overwrite,
-            ]
-        };
-        SinkCapability {
-            supported_modes,
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability {
-                global: crate::compression::SUPPORTED_CODECS,
-                per_column: crate::compression::SUPPORTED_CODECS,
-                structural_encodings: &[],
-                nested_columns: false,
-            },
-            supported_partitions: vec![],
-            supports_blob_handle: false,
-            supports_blob_streaming: false,
-            supports_storage_version: false,
-            supported_indexes: &[],
-        }
+            ])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(
+                CompressionCapability::default()
+                    .with_global(crate::compression::SUPPORTED_CODECS)
+                    .with_per_column(crate::compression::SUPPORTED_CODECS)
+                    .with_structural_encodings(&[])
+                    .with_nested_columns(false),
+            )
+            .with_supported_partitions(vec![])
+            .with_supports_blob_handle(false)
+            .with_supports_blob_streaming(false)
+            .with_supports_storage_version(false)
+            .with_supported_indexes(&[])
     }
 
     async fn open(
@@ -95,13 +82,12 @@ impl ParallelSink for ParquetDirectorySink {
         let writers = self
             .create_writers(directory, schema, options, count)
             .await?;
-        let destination = writers[0].destination.clone();
         Ok(WriteSession {
             writers: writers
                 .into_iter()
                 .map(|w| Box::new(w) as Box<dyn DataWriter<Output = u64>>)
                 .collect(),
-            committer: Box::new(ParquetCommitter(destination)),
+            committer: Box::new(ParquetCommitter),
         })
     }
 }

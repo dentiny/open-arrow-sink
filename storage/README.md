@@ -63,6 +63,45 @@ namespace, streaming close/abort, conditional creation, and owned-output cleanup
 The access repository's read-only `ByteReader` and `NamedFileAccessor` contracts
 are not exposed as write APIs here. No dependency on open-arrow-access is added.
 
+## Size the shared HTTP budget
+
+The default 64 is a total request budget for each `Storage` and its clones,
+including operators passed to native SDKs. Upload parts, reads, listings, and
+manifest requests compete for it. A permit remains occupied until the response
+body finishes or is dropped; the limit counts HTTP requests, not writers or
+logical storage operations.
+
+Size the budget together with writer and multipart concurrency. For example,
+eight writers with eight upload parts in flight each can occupy all 64 slots.
+Additional metadata or read requests then wait for capacity. Increasing only
+the number of writers or upload tasks cannot exceed this aggregate limit.
+One starting calculation is `writers × in-flight parts per writer`, plus
+headroom for the workload's other requests. Measure throughput, memory, and
+service throttling before increasing it; the limiter does not reserve separate
+capacity for reads or metadata.
+
+Configure the budget before cloning storage into sinks or native adapters:
+
+```rust
+use open_arrow_sink_storage::{HttpConcurrencyLimitLayer, Storage, opendal};
+
+// An example workload budget, rather than a universal recommended default.
+let budget = HttpConcurrencyLimitLayer::new(128)?;
+let operator = opendal::Operator::new(opendal::services::Memory::default())?;
+let storage = Storage::new(operator, "memory:///warehouse/".parse()?)?
+    .with_http_concurrency_limit(budget.clone());
+// Reuse budget.clone() when separately constructed stores should share this cap.
+let sink_storage = storage.clone();
+# let _ = sink_storage;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Separately constructed stores have independent budgets unless given clones of
+the same limiter. Reconfiguring one `Storage` does not change previously created
+clones, operators, or sinks. This transport budget also does not set a
+`DownloadPool`'s stream concurrency or buffered-byte quota; those are separate
+admission limits.
+
 ## Upload part size
 
 `Storage::with_upload_part_size(NonZeroUsize)` sets the streaming upload buffer

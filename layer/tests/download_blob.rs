@@ -15,15 +15,14 @@ use open_arrow_sink_core::{
 };
 use open_arrow_sink_layer::DownloadBlobLayer;
 use open_arrow_sink_storage::opendal;
+use open_arrow_sink_test_support::http::{HttpStatus, Reply, Server, serve};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     task::JoinHandle,
 };
 
-// Every test shares the common process-wide request budget.
 // A 4 MiB buffer budget admits two of the common downloader's 2 MiB chunks.
-static REQUEST_BUDGET: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn download_layer(columns: std::collections::HashSet<String>) -> DownloadBlobLayer {
     DownloadBlobLayer::new(columns).with_download_pool(Arc::new(
         // Failure/cancellation fixtures exercise one download attempt. Default
@@ -54,21 +53,21 @@ struct CaptureWriter {
 impl Sink for Capture {
     type Request = ();
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[open_arrow_sink_core::WriteMode::Create],
-            compression: open_arrow_sink_core::CompressionCapability {
-                global: &[],
-                per_column: &[],
-                structural_encodings: &[],
-                nested_columns: false,
-            },
-            ordering: Ordering::PreserveInput,
-            supported_partitions: vec![],
-            supports_blob_handle: true,
-            supports_blob_streaming: true,
-            supports_storage_version: false,
-            supported_indexes: &[],
-        }
+        SinkCapability::default()
+            .with_supported_modes(&[open_arrow_sink_core::WriteMode::Create])
+            .with_compression(
+                open_arrow_sink_core::CompressionCapability::default()
+                    .with_global(&[])
+                    .with_per_column(&[])
+                    .with_structural_encodings(&[])
+                    .with_nested_columns(false),
+            )
+            .with_ordering(Ordering::PreserveInput)
+            .with_supported_partitions(vec![])
+            .with_supports_blob_handle(true)
+            .with_supports_blob_streaming(true)
+            .with_supports_storage_version(false)
+            .with_supported_indexes(&[])
     }
     async fn open(
         &self,
@@ -154,16 +153,17 @@ impl BlobWriter for CaptureBlob {
     }
 }
 
-struct Server {
+// Deliberately malformed HTTP cannot be represented by an axum response.
+struct RawServer {
     url: String,
     task: JoinHandle<()>,
 }
-impl Drop for Server {
+impl Drop for RawServer {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
-async fn server(response: &[u8], delay: Duration) -> Server {
+async fn fault_server(response: &[u8], delay: Duration) -> RawServer {
     let response = response.to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -176,7 +176,7 @@ async fn server(response: &[u8], delay: Duration) -> Server {
             let _ = socket.write_all(&response).await;
         }
     });
-    Server { url, task }
+    RawServer { url, task }
 }
 fn batch(urls: Vec<Option<&str>>) -> RecordBatch {
     RecordBatch::try_from_iter([("url", Arc::new(StringArray::from(urls)) as ArrayRef)]).unwrap()
@@ -184,12 +184,7 @@ fn batch(urls: Vec<Option<&str>>) -> RecordBatch {
 
 #[tokio::test]
 async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    let server = server(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n\x00\xffx",
-        Duration::ZERO,
-    )
-    .await;
+    let server = serve(|_, _| Reply::bytes(b"\x00\xffx".as_slice())).await;
     let urls = vec![Some(server.url.as_str()), None, Some(server.url.as_str())];
     let batch = RecordBatch::try_from_iter([
         (
@@ -280,12 +275,7 @@ async fn downloads_all_string_types_preserving_nulls_metadata_and_row_order() {
 
 #[tokio::test]
 async fn empty_payload_is_distinct_from_null() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    let server = server(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        Duration::ZERO,
-    )
-    .await;
+    let server = serve(|_, _| Reply::bytes(b"".as_slice())).await;
     let batch = batch(vec![Some(&server.url), None]);
     let capture = Capture::default();
     let mut writer = capture
@@ -319,8 +309,7 @@ async fn empty_payload_is_distinct_from_null() {
 async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
     #[case] response: &[u8],
 ) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    let server = server(response, Duration::ZERO).await;
+    let server = fault_server(response, Duration::ZERO).await;
     let batch = batch(vec![None, Some(&server.url)]);
     let capture = Capture::default();
     let mut writer = capture
@@ -343,7 +332,6 @@ async fn failures_poison_session_and_commit_aborts_even_after_forwarded_rows(
 
 #[tokio::test]
 async fn rejects_bad_configuration_before_open_and_invalid_urls_before_write() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let schema = Arc::new(Schema::new(vec![
         Field::new("url", DataType::Utf8, true),
         Field::new("id", DataType::Int32, false),
@@ -399,39 +387,14 @@ async fn gated_server() -> (
     Server,
     tokio::sync::mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
     let (events, received) = tokio::sync::mpsc::unbounded_channel();
-    let task = tokio::spawn(async move {
-        let mut handlers = tokio::task::JoinSet::new();
-        loop {
-            tokio::select! {
-                accepted = listener.accept() => {
-                    let (mut socket, _) = accepted.unwrap();
-                    let events = events.clone();
-                    handlers.spawn(async move {
-                        let mut request = Vec::new();
-                        let mut buffer = [0; 1024];
-                        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                            let n = socket.read(&mut buffer).await.unwrap();
-                            if n == 0 { return; }
-                            request.extend_from_slice(&buffer[..n]);
-                        }
-                        let request = String::from_utf8(request).unwrap();
-                        let path = request.split_whitespace().nth(1).unwrap();
-                        let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", path.len());
-                        if socket.write_all(headers.as_bytes()).await.is_err() { return; }
-                        let (release, ready) = tokio::sync::oneshot::channel();
-                        if events.send(release).is_err() { return; }
-                        let _ = ready.await;
-                        let _ = socket.write_all(path.as_bytes()).await;
-                    });
-                }
-                _ = handlers.join_next(), if !handlers.is_empty() => {}
-            }
-        }
-    });
-    (Server { url, task }, received)
+    let server = serve(move |uri, _| {
+        let (release, ready) = tokio::sync::oneshot::channel();
+        let _ = events.send(release);
+        Reply::bytes(uri.path_and_query().unwrap().as_str().as_bytes().to_vec()).gated(ready)
+    })
+    .await;
+    (server, received)
 }
 
 async fn next_request(
@@ -445,7 +408,6 @@ async fn next_request(
 
 #[tokio::test]
 async fn shared_pool_bounds_active_bodies_and_preserves_order() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -509,7 +471,6 @@ async fn shared_pool_bounds_active_bodies_and_preserves_order() {
 
 #[tokio::test]
 async fn cancelling_download_releases_shared_pool_capacity() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -559,7 +520,6 @@ async fn cancelling_download_releases_shared_pool_capacity() {
 
 #[tokio::test]
 async fn downloads_columns_concurrently_with_single_row_batches() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
 
     let (server, mut events) = gated_server().await;
@@ -619,7 +579,6 @@ async fn downloads_columns_concurrently_with_single_row_batches() {
 
 #[tokio::test]
 async fn opendal_preserves_signed_queries_and_escaped_paths() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let (server, mut events) = gated_server().await;
     let paths = [
         "/images//a%2Fb%20c?X-Amz-Signature=a%2Fb%2B&x=1+2&x=3",
@@ -659,7 +618,6 @@ async fn opendal_preserves_signed_queries_and_escaped_paths() {
 
 #[tokio::test]
 async fn opendal_timeout_on_body_releases_pool_capacity() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
     use opendal::layers::TimeoutLayer;
 
@@ -719,37 +677,21 @@ async fn opendal_timeout_on_body_releases_pool_capacity() {
 #[case::enabled(true)]
 #[tokio::test]
 async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bool) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     use open_arrow_sink_layer::DownloadPool;
     use opendal::layers::{RetryLayer, TimeoutLayer};
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/blob?token=a%2Fb", listener.local_addr().unwrap());
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = attempts.clone();
-    let task = tokio::spawn(async move {
-        loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0; 1024];
-            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                let count = socket.read(&mut buffer).await.unwrap();
-                assert_ne!(count, 0);
-                request.extend_from_slice(&buffer[..count]);
-            }
-            assert!(request.starts_with(b"GET /blob?token=a%2Fb HTTP/1.1\r\n"));
-            let attempt = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let response = if attempt == 0 {
-                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
-            } else {
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
-            };
-            socket.write_all(response).await.unwrap();
+    let server = serve(move |uri, _| {
+        assert_eq!(uri.path_and_query().unwrap().as_str(), "/blob?token=a%2Fb");
+        if requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Reply::bytes(b"".as_slice()).status(HttpStatus::SERVICE_UNAVAILABLE)
+        } else {
+            Reply::bytes(b"ok".as_slice())
         }
-    });
-    let server = Server { url, task };
-    // Begin without the default policy so the two cases isolate whether the
-    // explicitly installed RetryLayer changes the result.
+    })
+    .await;
+    let url = format!("{}/blob?token=a%2Fb", server.url);
     let mut pool = DownloadPool::new_with_config(
         NonZeroUsize::new(2).unwrap(),
         NonZeroUsize::new(4 * 1024 * 1024).unwrap(),
@@ -767,7 +709,7 @@ async fn opendal_retries_transient_errors_only_when_configured(#[case] retry: bo
             );
     }
     let capture = Capture::default();
-    let input = batch(vec![Some(&server.url)]);
+    let input = batch(vec![Some(&url)]);
     let mut writer = capture
         .clone()
         .layer(
@@ -807,10 +749,9 @@ async fn rejects_missing_streaming_capability_before_open() {
     impl Sink for UnsupportedSink {
         type Request = ();
         fn capability(&self) -> SinkCapability {
-            SinkCapability {
-                supports_blob_streaming: false,
-                ..Capture::default().capability()
-            }
+            Capture::default()
+                .capability()
+                .with_supports_blob_streaming(false)
         }
         async fn open(&self, _: (), _: SchemaRef, _: WriteOptions) -> Result<Box<dyn Writer>> {
             panic!("unsupported sink must not be opened");
@@ -849,12 +790,7 @@ async fn download_layer_consumes_streaming_capability_instead_of_forwarding_it()
 
 #[tokio::test]
 async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
-    let _request_budget = REQUEST_BUDGET.lock().await;
-    let server = server(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
-        Duration::ZERO,
-    )
-    .await;
+    let server = serve(|_, _| Reply::bytes(b"abc".as_slice())).await;
     let input = batch(vec![Some(&server.url)]);
     let layer = open_arrow_sink_layer::MetricsLayer::default();
     let metrics = layer.metrics();
@@ -877,7 +813,6 @@ async fn downloaded_bytes_are_visible_before_commit_and_survive_abort() {
 #[case::cancelled_download(true)]
 #[tokio::test]
 async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: bool) {
-    let _request_budget = REQUEST_BUDGET.lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (release, released) = tokio::sync::oneshot::channel();
@@ -892,7 +827,7 @@ async fn partial_download_bytes_survive_failure_or_cancellation(#[case] cancel: 
         // Leave the body incomplete until the first chunk has been consumed.
         let _ = released.await;
     });
-    let server = Server { url, task };
+    let server = RawServer { url, task };
     let input = batch(vec![Some(&server.url)]);
     let layer = open_arrow_sink_layer::MetricsLayer::default();
     let metrics = layer.metrics();
