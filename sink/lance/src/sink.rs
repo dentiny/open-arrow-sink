@@ -50,29 +50,29 @@ impl Sink for LanceDatasetSink {
     type Request = Url;
 
     fn capability(&self) -> SinkCapability {
-        SinkCapability {
-            supported_modes: &[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite],
-            ordering: Ordering::Unordered,
-            compression: CompressionCapability {
-                global: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
-                per_column: &[CompressionCodec::Uncompressed, CompressionCodec::Zstd],
-                structural_encodings: &[
-                    open_arrow_sink_core::StructuralEncoding::Miniblock,
-                    open_arrow_sink_core::StructuralEncoding::Fullzip,
-                ],
-                nested_columns: true,
-            },
-            supported_partitions: vec![],
-            supports_blob_handle: true,
-            supports_blob_streaming: true,
-            supports_storage_version: true,
-            supported_indexes: &[
+        SinkCapability::default()
+            .with_supported_modes(&[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite])
+            .with_ordering(Ordering::Unordered)
+            .with_compression(
+                CompressionCapability::default()
+                    .with_global(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_per_column(&[CompressionCodec::Uncompressed, CompressionCodec::Zstd])
+                    .with_structural_encodings(&[
+                        open_arrow_sink_core::StructuralEncoding::Miniblock,
+                        open_arrow_sink_core::StructuralEncoding::Fullzip,
+                    ])
+                    .with_nested_columns(true),
+            )
+            .with_supported_partitions(vec![])
+            .with_supports_blob_handle(true)
+            .with_supports_blob_streaming(true)
+            .with_supports_storage_version(true)
+            .with_supported_indexes(&[
                 IndexType::Scalar,
                 IndexType::Vector,
                 IndexType::Text,
                 IndexType::BloomFilter,
-            ],
-        }
+            ])
     }
 
     async fn open(

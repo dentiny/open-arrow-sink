@@ -110,18 +110,20 @@ metadata is required when appending to an existing dataset.
 this layer pre-opens a fixed number of writers and drives their I/O concurrently:
 
 ```rust,ignore
-use std::num::NonZeroUsize;
 use open_arrow_sink::{Ordering, Sink, SinkExt, WriteOptions, layer::UnorderedWriteLayer};
+use std::num::NonZeroUsize;
 
 // `backend` implements ParallelSink.
-let sink = backend.layer(
-    UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()),
-);
-let mut writer = sink.open(directory, schema, WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-}).await?;
+let sink = backend.layer(UnorderedWriteLayer::new(NonZeroUsize::new(4).unwrap()));
+let mut writer = sink
+    .open(
+        directory,
+        schema,
+        WriteOptions::default()
+            .with_ordering(Ordering::Unordered)
+            .with_target_file_size(Some(256 * 1024 * 1024)),
+    )
+    .await?;
 writer.write(batch).await?;
 let summary = writer.commit().await?;
 ```
@@ -201,11 +203,9 @@ The shared `WriteOptions.target_file_size` option specifies a positive byte coun
 ```rust
 use open_arrow_sink::{Ordering, WriteOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-};
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_target_file_size(Some(256 * 1024 * 1024));
 ```
 
 This is a soft data-file target, not a strict maximum or a total-output limit.
@@ -226,16 +226,14 @@ before opening a writer or accessing the destination.
 General layers forward this capability and the options to their inner sink.
 
 ```rust
-use open_arrow_sink::{IndexType, IndexSpec, Ordering, WriteOptions};
+use open_arrow_sink::{IndexSpec, IndexType, Ordering, WriteOptions};
 
-let options = WriteOptions {
-    ordering: Ordering::Unordered,
-    indexes: vec![
+let options = WriteOptions::default()
+    .with_ordering(Ordering::Unordered)
+    .with_indexes(vec![
         IndexSpec::new("id", IndexType::Scalar),
         IndexSpec::new("embedding", IndexType::Vector),
-    ],
-    ..WriteOptions::default()
-};
+    ]);
 ```
 
 Backends choose the concrete implementation of each logical index type and validate

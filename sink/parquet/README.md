@@ -39,7 +39,7 @@ Abort removes owned parts and the marker when no other objects remain, preservin
 unrelated files. Drop performs no async cleanup. These rules apply to local and
 remote destinations alike.
 
-Use `WriteOptions { ordering: Ordering::Unordered, ..Default::default() }`: this
+Use `WriteOptions::default().with_ordering(Ordering::Unordered)`: this
 sink does not promise directory scan order. Each write validates its schema. Small
 batches share Parquet row groups instead of forcing one row group per write.
 Parquet buffers the current row group up to its default row limit (1,048,576 rows)

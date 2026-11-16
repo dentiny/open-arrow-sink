@@ -104,16 +104,14 @@ or bytes.
 ```rust
 use open_arrow_sink::{Compression, CompressionOptions, Ordering, WriteMode, WriteOptions};
 
-let options = WriteOptions {
-    mode: WriteMode::Create,
-    ordering: Ordering::Unordered,
-    compression: CompressionOptions {
+let options = WriteOptions::default()
+    .with_mode(WriteMode::Create)
+    .with_ordering(Ordering::Unordered)
+    .with_compression(CompressionOptions {
         global: Some(Compression::Zstd { level: Some(9) }),
         ..Default::default()
-    },
-    target_file_size: Some(256 * 1024 * 1024),
-    ..WriteOptions::default()
-};
+    })
+    .with_target_file_size(Some(256 * 1024 * 1024));
 ```
 
 With Parquet this needs `parquet-zstd`. Empty compression options preserve backend
@@ -132,9 +130,11 @@ Configure a catalog and create a table outside the sink. Derive the input schema
 from table metadata so it contains the required Iceberg field IDs:
 
 ```rust,ignore
+use open_arrow_sink::{
+    Ordering, Sink, WriteMode, WriteOptions,
+    iceberg::{IcebergTableSink, iceberg},
+};
 use std::sync::Arc;
-use open_arrow_sink::{Ordering, Sink, WriteMode, WriteOptions,
-    iceberg::{IcebergTableSink, iceberg}};
 
 // catalog: Arc<dyn iceberg::Catalog>; identifier: iceberg::TableIdent
 let table = catalog.load_table(&identifier).await?;
@@ -142,11 +142,15 @@ let schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(
     table.metadata().current_schema(),
 )?);
 let sink = IcebergTableSink::new(catalog);
-let mut writer = sink.open(identifier, schema, WriteOptions {
-    mode: WriteMode::Append,
-    ordering: Ordering::Unordered,
-    ..WriteOptions::default()
-}).await?;
+let mut writer = sink
+    .open(
+        identifier,
+        schema,
+        WriteOptions::default()
+            .with_mode(WriteMode::Append)
+            .with_ordering(Ordering::Unordered),
+    )
+    .await?;
 // Build batches with this exact schema, write, then commit.
 ```
 

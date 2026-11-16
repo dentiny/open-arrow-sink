@@ -56,10 +56,7 @@ impl<S: Sink> Sink for DownloadBlobSink<S> {
     fn capability(&self) -> SinkCapability {
         // This writer consumes native streams internally but does not expose
         // create_blob/write_with_blobs to its caller.
-        SinkCapability {
-            supports_blob_streaming: false,
-            ..self.inner.capability()
-        }
+        self.inner.capability().with_supports_blob_streaming(false)
     }
     async fn open(
         &self,
