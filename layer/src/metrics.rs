@@ -5,6 +5,7 @@ use open_arrow_sink_core::{
     Sink, WriteOptions, WriteSession, Writer, async_trait,
 };
 use std::{
+    future::Future,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -56,6 +57,14 @@ impl WriteMetrics {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+    }
+    async fn observe<T>(
+        &self,
+        operation: Operation,
+        future: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let observation = Observation::new(self, operation);
+        observation.complete(future.await)
     }
     fn observe_io(&self, options: &mut WriteOptions) {
         options.io_metrics = Some(match options.io_metrics.take() {
@@ -207,33 +216,31 @@ struct MetricsWriter {
     inner: Box<dyn Writer>,
     metrics: WriteMetrics,
 }
-impl MetricsWriter {
-    async fn accept(&mut self, batch: RecordBatch) -> Result<()> {
-        let observation = Observation::new(&self.metrics, Operation::Write);
-        let rows = batch.num_rows() as u64;
-        let result = self.inner.write(batch).await;
-        observation.complete(result)?;
-        self.metrics.accepted(rows);
-        Ok(())
-    }
-}
 #[async_trait]
 impl Writer for MetricsWriter {
     fn schema(&self) -> &SchemaRef {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.accept(batch).await
+        let rows = batch.num_rows() as u64;
+        self.metrics
+            .observe(Operation::Write, self.inner.write(batch))
+            .await?;
+        self.metrics.accepted(rows);
+        Ok(())
     }
     async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
-        let observation = Observation::new(&self.metrics, Operation::Commit);
-        let summary = observation.complete(self.inner.commit().await)?;
+        let summary = self
+            .metrics
+            .observe(Operation::Commit, self.inner.commit())
+            .await?;
         self.metrics.committed(summary.rows_committed);
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        observation.complete(self.inner.abort().await)?;
+        self.metrics
+            .observe(Operation::Other, self.inner.abort())
+            .await?;
         self.metrics.update(|s| s.sessions_aborted += 1);
         Ok(())
     }
@@ -250,19 +257,22 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         self.inner.schema()
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        let observation = Observation::new(&self.metrics, Operation::Write);
         let rows = batch.num_rows() as u64;
-        observation.complete(self.inner.write(batch).await)?;
+        self.metrics
+            .observe(Operation::Write, self.inner.write(batch))
+            .await?;
         self.metrics.accepted(rows);
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        observation.complete(self.inner.finish().await)
+        self.metrics
+            .observe(Operation::Other, self.inner.finish())
+            .await
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        observation.complete(Box::new(self.inner).abort().await)
+        self.metrics
+            .observe(Operation::Other, Box::new(self.inner).abort())
+            .await
     }
 }
 struct MetricsCommitter<T: Send + 'static> {
@@ -275,14 +285,17 @@ impl<T: Send + 'static> SessionCommitter<T> for MetricsCommitter<T> {
         self: Box<Self>,
         outputs: Vec<T>,
     ) -> Result<open_arrow_sink_core::CommitSummary> {
-        let observation = Observation::new(&self.metrics, Operation::Commit);
-        let summary = observation.complete(self.inner.commit(outputs).await)?;
+        let summary = self
+            .metrics
+            .observe(Operation::Commit, self.inner.commit(outputs))
+            .await?;
         self.metrics.committed(summary.rows_committed);
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
-        let observation = Observation::new(&self.metrics, Operation::Other);
-        observation.complete(self.inner.abort().await)?;
+        self.metrics
+            .observe(Operation::Other, self.inner.abort())
+            .await?;
         self.metrics.update(|s| s.sessions_aborted += 1);
         Ok(())
     }
