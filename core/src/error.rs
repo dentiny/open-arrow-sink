@@ -40,6 +40,28 @@ pub enum Error {
 }
 
 impl Error {
+    /// Add context while preserving the error category and backend source chain.
+    ///
+    /// String-bearing categories receive a message prefix. `Backend` wraps the
+    /// original error, retaining native errors for source-chain inspection.
+    /// `Poisoned`, `SchemaMismatch`, and `IndexCommit` keep their original values
+    /// without adding context, so lifecycle and publication signals stay intact.
+    pub fn context(self, context: impl std::fmt::Display) -> Self {
+        let prefix = |message| format!("{context}: {message}");
+        match self {
+            Self::Unsupported(message) => Self::Unsupported(prefix(message)),
+            Self::AlreadyExists(message) => Self::AlreadyExists(prefix(message)),
+            Self::InvalidConfig(message) => Self::InvalidConfig(prefix(message)),
+            Self::InvalidInput(message) => Self::InvalidInput(prefix(message)),
+            Self::NotFound(message) => Self::NotFound(prefix(message)),
+            source @ Self::Backend(_) => Self::backend(ContextError {
+                context: context.to_string(),
+                source,
+            }),
+            error => error,
+        }
+    }
+
     /// Preserve a native error and its source chain at a backend boundary.
     pub fn backend(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Backend(Box::new(error))
@@ -62,4 +84,12 @@ impl IndexCommitError {
             message: message.into(),
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{context}: {source}")]
+struct ContextError {
+    context: String,
+    #[source]
+    source: Error,
 }
