@@ -18,10 +18,7 @@ impl SessionCommitter<Vec<iceberg::spec::DataFile>> for IcebergCommitter {
         self: Box<Self>,
         outputs: Vec<Vec<iceberg::spec::DataFile>>,
     ) -> Result<open_arrow_sink_core::CommitSummary> {
-        let mut files = Vec::new();
-        for output in outputs {
-            files.extend(output);
-        }
+        let files: Vec<_> = outputs.into_iter().flatten().collect();
         let rows_committed = files.iter().map(|file| file.record_count()).sum();
         if !files.is_empty() {
             let tx = Transaction::new(&self.table);
