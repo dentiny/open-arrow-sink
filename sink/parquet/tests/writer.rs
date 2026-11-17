@@ -328,11 +328,7 @@ async fn idle_writers_do_not_create_parquet_files() {
     assert!(!directory.exists());
     session.writers[0].write(input.slice(0, 0)).await.unwrap();
     session.writers[1].write(input.clone()).await.unwrap();
-    let mut outputs = Vec::new();
-    for writer in &mut session.writers {
-        outputs.push(writer.finish().await.unwrap());
-    }
-    session.committer.commit(outputs).await.unwrap();
+    session.commit().await.unwrap();
     let files = std::fs::read_dir(&directory)
         .unwrap()
         .collect::<Result<Vec<_>, _>>()

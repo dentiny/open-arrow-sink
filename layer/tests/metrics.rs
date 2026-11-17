@@ -236,8 +236,7 @@ async fn poisoned_data_writer_operations_do_not_change_metrics(
     assert!(matches!(writer.write(input()).await, Err(Error::Poisoned)));
     assert!(matches!(writer.finish().await, Err(Error::Poisoned)));
     assert_eq!(metrics.snapshot(), before);
-    session.writers.pop().unwrap().abort().await.unwrap();
-    session.committer.abort().await.unwrap();
+    session.abort().await.unwrap();
     assert_eq!(metrics.snapshot().sessions_aborted, 1);
     assert_eq!(
         metrics.snapshot().failed_operations,

@@ -44,6 +44,43 @@ pub struct WriteSession<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> WriteSession<T> {
+    /// Wrap every data writer while retaining the shared committer.
+    /// The wrapper must preserve each writer's backend output type and lifecycle.
+    pub fn map_writers(
+        self,
+        f: impl FnMut(Box<dyn DataWriter<Output = T>>) -> Box<dyn DataWriter<Output = T>>,
+    ) -> Self {
+        Self {
+            writers: self.writers.into_iter().map(f).collect(),
+            committer: self.committer,
+        }
+    }
+
+    /// Finish all writers concurrently, then publish their outputs exactly once.
+    /// A finish or publication failure returns directly without invoking abort.
+    /// Cancellation drops unfinished work without asynchronous cleanup.
+    pub async fn commit(mut self) -> Result<crate::CommitSummary> {
+        let outputs =
+            futures::future::try_join_all(self.writers.iter_mut().map(|writer| writer.finish()))
+                .await?;
+        self.committer.commit(outputs).await
+    }
+
+    /// Abort every writer, then the committer, retaining persisted output.
+    /// All aborts are attempted even after an error; return the first error.
+    pub async fn abort(self) -> Result<()> {
+        let mut first_error = None;
+        for writer in self.writers {
+            if let Err(error) = writer.abort().await {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Err(error) = self.committer.abort().await {
+            first_error.get_or_insert(error);
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// Require exactly `count` writers, each with the requested schema.
     /// Invalid sessions are dropped without invoking abort or deleting output.
     pub fn expect(self, count: usize, schema: &SchemaRef) -> Result<Self> {
@@ -86,14 +123,21 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<crate::CommitSummary> {
-        let output = self.writer.finish().await?;
-        self.committer.commit(vec![output]).await
+    async fn commit(self: Box<Self>) -> Result<crate::CommitSummary> {
+        WriteSession {
+            writers: vec![self.writer],
+            committer: self.committer,
+        }
+        .commit()
+        .await
     }
 
     async fn abort(self: Box<Self>) -> Result<()> {
-        let writer = self.writer.abort().await;
-        let session = self.committer.abort().await;
-        writer.and(session)
+        WriteSession {
+            writers: vec![self.writer],
+            committer: self.committer,
+        }
+        .abort()
+        .await
     }
 }

@@ -178,10 +178,7 @@ async fn shared_operator_abort_preserves_output() {
         .write(&storage.path(&sibling).unwrap(), "keep".into())
         .await
         .unwrap();
-    for writer in session.writers {
-        writer.abort().await.unwrap();
-    }
-    session.committer.abort().await.unwrap();
+    session.abort().await.unwrap();
     let retained = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
     assert_eq!(retained, before);
     assert_eq!(

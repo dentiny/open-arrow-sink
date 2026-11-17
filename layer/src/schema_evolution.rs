@@ -163,20 +163,13 @@ impl Plan {
         self,
         session: WriteSession<T>,
     ) -> WriteSession<T> {
-        WriteSession {
-            writers: session
-                .writers
-                .into_iter()
-                .map(|inner| {
-                    Box::new(GuardedDataWriter::new(Box::new(EvolutionDataWriter {
-                        inner,
-                        schema: self.source.clone(),
-                        output: self.clone(),
-                    }))) as Box<dyn DataWriter<Output = T>>
-                })
-                .collect(),
-            committer: session.committer,
-        }
+        session.map_writers(|inner| {
+            Box::new(GuardedDataWriter::new(Box::new(EvolutionDataWriter {
+                inner,
+                schema: self.source.clone(),
+                output: self.clone(),
+            })))
+        })
     }
 }
 struct EvolutionWriter {
