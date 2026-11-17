@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 - 2026-11-17
+
+- Add `SinkExt::write_all` to consume complete batch streams, commit at EOF, and abort on input or write errors.
+- Return `CommitSummary` from writers, session committers, and `write_all`, including actual committed rows and failed blob row counts. Custom implementations must return or forward the summary.
+- Support nested URL fields in `DownloadBlobLayer`.
+- Add `Storage::for_url` to bind an existing OpenDAL operator to a target URL.
+- Preserve missing-object error classification and classify invalid Lance compression paths as configuration errors.
+- Simplify destination resolution, operation observation, blob materialization, and backend writer internals; expand shared conformance and round-trip test coverage.
+- Release all seven public workspace crates at 0.3.0 with matching internal dependency requirements.
+
 ## 0.2.0 - 2026-11-16
 
 - Download S3 blobs whose URLs include MD5 metadata query parameters.
