@@ -3,6 +3,7 @@
 //! Formats and dataset publication belong to sink crates.
 mod backend;
 mod config;
+mod destination;
 mod error;
 mod http_limit;
 mod io_metrics;
@@ -15,6 +16,7 @@ pub use resolver::StorageResolver;
 pub use ::url::Url;
 pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
+pub use destination::DestinationStorage;
 pub use http_limit::{HttpConcurrencyLimitLayer, HttpRequestPermit};
 pub use io_metrics::IoMetricsLayer;
 pub use object_path::ObjectPath;
