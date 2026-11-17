@@ -16,7 +16,6 @@ mod sink;
 pub mod validation;
 mod write_all;
 mod writer;
-pub use write_all::WriteSummary;
 
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;

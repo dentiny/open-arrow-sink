@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "value",
         Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
     )])?;
-    let summary = ParquetDirectorySink::default()
+    ParquetDirectorySink::default()
         .write_all(
             directory,
             batch.schema(),
@@ -26,9 +26,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             futures::stream::iter([Ok::<_, std::io::Error>(batch)]),
         )
         .await?;
-    println!(
-        "Committed {} rows in {} batches",
-        summary.rows, summary.batches
-    );
+    println!("Write committed");
     Ok(())
 }

@@ -49,7 +49,7 @@ For a complete input stream, import `SinkExt` and let the sink own the loop:
 ```rust,ignore
 use open_arrow_sink::{SinkExt, WriteOptions};
 
-let summary = sink
+sink
     .write_all(destination, schema, WriteOptions::default(), stream)
     .await?;
 ```
@@ -63,8 +63,6 @@ Open errors return before reading input. Commit errors return directly because
 commit consumes the writer and may have already published data. Cancelling the
 future or panicking drops the writer without async cleanup.
 
-`summary.rows` and `summary.batches` count accepted input, before backend
-filtering or transformation.
 See the [Parquet example](sink/parquet/examples/write_directory.rs) for a runnable
 use of `write_all`.
 

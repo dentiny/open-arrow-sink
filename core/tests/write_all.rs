@@ -118,16 +118,14 @@ async fn streams_sequentially_and_commits_once() {
         event(events, format!("read:{rows}"));
         Ok::<_, std::io::Error>(batch(rows))
     });
-    let summary = sink
-        .write_all(
-            "destination",
-            batch(0).schema(),
-            WriteOptions::default(),
-            batches,
-        )
-        .await
-        .unwrap();
-    assert_eq!((summary.batches, summary.rows), (3, 5));
+    sink.write_all(
+        "destination",
+        batch(0).schema(),
+        WriteOptions::default(),
+        batches,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         *events.lock().unwrap(),
         [
@@ -139,16 +137,14 @@ async fn streams_sequentially_and_commits_once() {
 #[tokio::test]
 async fn empty_stream_still_opens_and_commits() {
     let sink = sink(Faults::default());
-    let summary = sink
-        .write_all(
-            "destination",
-            batch(0).schema(),
-            WriteOptions::default(),
-            stream::empty::<Result<RecordBatch>>(),
-        )
-        .await
-        .unwrap();
-    assert_eq!((summary.batches, summary.rows), (0, 0));
+    sink.write_all(
+        "destination",
+        batch(0).schema(),
+        WriteOptions::default(),
+        stream::empty::<Result<RecordBatch>>(),
+    )
+    .await
+    .unwrap();
     assert_eq!(*sink.events.lock().unwrap(), ["open", "commit"]);
 }
 

@@ -64,7 +64,7 @@ async fn write_all_round_trips_the_input_stream() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
-    let summary = ParquetDirectorySink::default()
+    ParquetDirectorySink::default()
         .write_all(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
@@ -76,7 +76,6 @@ async fn write_all_round_trips_the_input_stream() {
         )
         .await
         .unwrap();
-    assert_eq!((summary.batches, summary.rows), (2, 3));
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
         .unwrap();

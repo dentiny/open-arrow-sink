@@ -2,7 +2,7 @@ use std::future::Future;
 
 use futures::Stream;
 
-use crate::{RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions, WriteSummary};
+use crate::{RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions};
 
 /// Wrap a sink without I/O, preserving its backend-specific request type.
 /// Option decorators should leave unrelated option validation to the backend,
@@ -35,7 +35,7 @@ pub trait SinkExt: Sink + Sized {
         schema: SchemaRef,
         options: WriteOptions,
         stream: S,
-    ) -> impl Future<Output = Result<WriteSummary, WriteAllError<E>>> + Send
+    ) -> impl Future<Output = Result<(), WriteAllError<E>>> + Send
     where
         S: Stream<Item = Result<RecordBatch, E>> + Send,
         E: Send,
