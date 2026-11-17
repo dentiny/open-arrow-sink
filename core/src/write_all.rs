@@ -1,4 +1,4 @@
-use futures::{Stream, StreamExt, pin_mut};
+use futures::{Stream, TryStreamExt, pin_mut};
 
 use crate::{CommitSummary, RecordBatch, Result, SchemaRef, Sink, WriteOptions};
 
@@ -15,18 +15,16 @@ where
 {
     let mut writer = sink.open(request, schema, options).await?;
     pin_mut!(stream);
-    while let Some(batch) = stream.next().await {
-        let batch = match batch {
-            Ok(batch) => batch,
-            Err(error) => {
-                let _ = writer.abort().await;
-                return Err(error);
-            }
-        };
-        if let Err(error) = writer.write(batch).await {
-            let _ = writer.abort().await;
-            return Err(error);
+    let result = async {
+        while let Some(batch) = stream.try_next().await? {
+            writer.write(batch).await?;
         }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        let _ = writer.abort().await;
+        return Err(error);
     }
     writer.commit().await
 }
