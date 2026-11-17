@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Honor HTTP 429/503 `Retry-After` in storage retries without including backoff in per-attempt timeouts.
-
 ## 0.3.0 - 2026-11-17
 
 - Add `SinkExt::write_all` to consume complete batch streams, commit at EOF, and abort on input or write errors.
