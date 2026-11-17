@@ -1,15 +1,13 @@
 use open_arrow_sink_iceberg::OpenDalStorageFactory;
-use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::url as fixture_url;
 
 #[tokio::test]
+
 async fn file_io_uses_shared_operator_for_reads_and_ranges() {
     let metrics = open_arrow_sink_core::IoMetrics::default();
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
-        .with_io_metrics(metrics.clone());
+    let storage = open_arrow_sink_test_support::memory_warehouse().with_io_metrics(metrics.clone());
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
-    let url = storage
-        .url(&ObjectPath::parse("data/part").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "data/part");
     let mut writer = file_io
         .new_output(url.as_str())
         .unwrap()
@@ -35,11 +33,9 @@ async fn file_io_uses_shared_operator_for_reads_and_ranges() {
 
 #[tokio::test]
 async fn deleting_prefix_preserves_siblings() {
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let storage = open_arrow_sink_test_support::memory_warehouse();
     let file_io = OpenDalStorageFactory::new(storage.clone()).file_io();
-    let url = storage
-        .url(&ObjectPath::parse("data/part").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "data/part");
     storage
         .write(
             &open_arrow_sink_test_support::path(&storage, "data/part"),
@@ -47,18 +43,13 @@ async fn deleting_prefix_preserves_siblings() {
         )
         .await
         .unwrap();
-    let keep = storage.url(&ObjectPath::parse("keep").unwrap()).unwrap();
+    let keep = fixture_url(&storage, "keep");
     storage
         .write(&storage.path(&keep).unwrap(), "keep".into())
         .await
         .unwrap();
     file_io
-        .delete_prefix(
-            storage
-                .url(&ObjectPath::parse("data/").unwrap())
-                .unwrap()
-                .as_str(),
-        )
+        .delete_prefix(fixture_url(&storage, "data/").as_str())
         .await
         .unwrap();
     assert!(
@@ -76,14 +67,14 @@ async fn deleting_prefix_preserves_siblings() {
 
 #[test]
 fn file_io_rejects_foreign_outputs() {
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let storage = open_arrow_sink_test_support::memory_warehouse();
     let file_io = OpenDalStorageFactory::new(storage).file_io();
     assert!(file_io.new_output("memory:///outside/file").is_err());
 }
 
 #[test]
 fn file_io_does_not_serialize_live_operators() {
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+    let storage = open_arrow_sink_test_support::memory_warehouse();
     let file_io = OpenDalStorageFactory::new(storage).file_io();
     assert!(file_io.serialize_all().is_err());
 }

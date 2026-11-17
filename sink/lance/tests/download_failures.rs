@@ -1,3 +1,4 @@
+use open_arrow_sink_test_support::url as fixture_url;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray, cast::AsArray};
@@ -7,10 +8,8 @@ use open_arrow_sink_lance::LanceDatasetSink;
 use open_arrow_sink_layer::{
     DownloadBlobLayer, DownloadFailurePolicy, MetricsLayer, UnorderedWriteLayer,
 };
-use open_arrow_sink_storage::{
-    BlobDownloader, DownloadContext, DownloadStream, Downloader, ObjectPath,
-};
-use open_arrow_sink_test_support::{memory_storage, unordered_options};
+use open_arrow_sink_storage::{BlobDownloader, DownloadContext, DownloadStream, Downloader};
+use open_arrow_sink_test_support::{memory_warehouse, unordered_options};
 
 struct Source;
 #[async_trait]
@@ -63,10 +62,8 @@ async fn source_failures_recover_with_bounded_backend_downloads(
         ),
     ])
     .unwrap();
-    let storage = memory_storage("memory:///warehouse/");
-    let url = storage
-        .url(&ObjectPath::parse("recovered/").unwrap())
-        .unwrap();
+    let storage = memory_warehouse();
+    let url = fixture_url(&storage, "recovered/");
     let downloader = downloader(4);
     let backend = LanceDatasetSink::new(storage).with_blob_downloader(downloader.clone());
     let layer =
@@ -186,10 +183,8 @@ async fn write_all_returns_actual_blob_recovery_counts() {
         Arc::new(StringArray::from(vec!["good", "bad", "partial"])) as ArrayRef,
     )])
     .unwrap();
-    let storage = memory_storage("memory:///warehouse/");
-    let url = storage
-        .url(&ObjectPath::parse("write-all/").unwrap())
-        .unwrap();
+    let storage = memory_warehouse();
+    let url = fixture_url(&storage, "write-all/");
     let sink = LanceDatasetSink::new(storage)
         .with_blob_downloader(downloader(4))
         .layer(
@@ -225,8 +220,8 @@ async fn terminal_errors_remain_terminal(
         Arc::new(StringArray::from(vec![source])) as ArrayRef,
     )])
     .unwrap();
-    let storage = memory_storage("memory:///warehouse/");
-    let url = storage.url(&ObjectPath::parse("failed/").unwrap()).unwrap();
+    let storage = memory_warehouse();
+    let url = fixture_url(&storage, "failed/");
     let layer = DownloadBlobLayer::new(["url".into()].into()).with_failure_policy(policy);
     let metrics = layer.metrics();
     let downloader = downloader(limit);
