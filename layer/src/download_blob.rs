@@ -108,7 +108,8 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
             policy: self.failure_policy,
             metrics: self.metrics.clone(),
         });
-        let remaps = fields
+        // Align nested array field metadata with the marked schema, sharing data buffers.
+        let metadata_adapters = fields
             .into_iter()
             .filter(|field| roots.contains(field.name()))
             .map(|field| {
@@ -118,7 +119,7 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
                 })
             })
             .collect::<Vec<_>>();
-        let plan = Plan::new(schema, &remaps)?;
+        let plan = Plan::new(schema, &metadata_adapters)?;
         // Keep the caller's input schema on the outer writer. The metadata-only
         // transform shares arrays, so it cannot reserve a payload twice.
         *schema = plan.target.clone();
