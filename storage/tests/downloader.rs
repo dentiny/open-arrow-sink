@@ -303,6 +303,7 @@ async fn data_uris_decode_and_release_budgets_on_errors() {
     let downloads = pool(1, 1, CHUNK);
     for uri in [
         "data:application/octet-stream;base64,AP8%3D",
+        "DaTa:application/octet-stream;base64,AP8%3D",
         "data:,%00%ff",
     ] {
         assert_eq!(downloads.download(uri).await.unwrap().as_ref(), &[0, 255]);

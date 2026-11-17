@@ -67,7 +67,8 @@ impl OpenDalDownloader {
 #[async_trait]
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
-        if source.starts_with("data:") {
+        let mut url = crate::Url::parse(source).map_err(Error::backend)?;
+        if url.scheme() == "data" {
             let bytes = decode_data_uri(source)?;
             let chunk_bytes = context.chunk_bytes();
             return Ok(Box::pin(futures::stream::unfold(
@@ -82,7 +83,6 @@ impl Downloader for OpenDalDownloader {
                 },
             )));
         }
-        let mut url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
             // Resolve credentials from explicit source namespaces. Keep query strings
