@@ -1,7 +1,7 @@
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use lance::Dataset;
 use more_asserts::assert_gt;
-use open_arrow_sink_core::{Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Ordering, Sink, WriteMode, WriteOptions};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
 use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use open_arrow_sink_test_support::{seeded_bytes, unordered_options as options};
@@ -127,4 +127,53 @@ async fn write_mode(#[case] mode: WriteMode, #[case] expected_rows: usize) {
     writer.commit().await.unwrap();
     let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
     assert_eq!(dataset.count_rows(None).await.unwrap(), expected_rows);
+}
+
+#[tokio::test]
+async fn preserve_input_keeps_batch_and_append_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ordered");
+    let url = Url::from_directory_path(&path).unwrap();
+    let sink = LanceDatasetSink::default();
+    let input = batch();
+    for mode in [WriteMode::Create, WriteMode::Append] {
+        let mut writer = sink
+            .open(
+                url.clone(),
+                input.schema(),
+                options()
+                    .with_mode(mode)
+                    .with_ordering(Ordering::PreserveInput),
+            )
+            .await
+            .unwrap();
+        writer.write(input.slice(0, 2)).await.unwrap();
+        writer.write(input.slice(2, 2)).await.unwrap();
+        writer.commit().await.unwrap();
+    }
+    let actual = Dataset::open(path.to_str().unwrap())
+        .await
+        .unwrap()
+        .scan()
+        .try_into_batch()
+        .await
+        .unwrap();
+    let values = actual
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(
+        values.iter().collect::<Vec<_>>(),
+        vec![
+            Some(3),
+            None,
+            Some(1),
+            Some(3),
+            Some(3),
+            None,
+            Some(1),
+            Some(3)
+        ]
+    );
 }

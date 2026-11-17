@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
-/// Only unordered writes are supported; dataset scan order is not guaranteed.
+/// PreserveInput uses one writer and retains input order in an ordered dataset scan.
 #[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
     storage: Option<Storage>,
@@ -124,7 +124,7 @@ impl Sink for LanceDatasetSink {
     fn capability(&self) -> SinkCapability {
         SinkCapability::default()
             .with_supported_modes(&[WriteMode::Create, WriteMode::Append, WriteMode::Overwrite])
-            .with_ordering(Ordering::Unordered)
+            .with_ordering(Ordering::PreserveInput)
             .with_compression(
                 CompressionCapability::default()
                     .with_global(&[
@@ -176,6 +176,7 @@ impl ParallelSink for LanceDatasetSink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
+        crate::validation::validate_writer_count(options.ordering, count)?;
         let storage_version = validate_options(&schema, &options, self.capability())?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);

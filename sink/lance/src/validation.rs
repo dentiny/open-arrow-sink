@@ -1,13 +1,26 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, is_blob_field, validation,
+    Error, IndexSpec, IndexType, Ordering, Result, SinkCapability, WriteOptions, is_blob_field,
+    validation,
 };
 
 use lance::index::DatasetIndexExt;
 use lance_file::version::LanceFileVersion;
 
 use crate::error;
+
+pub(crate) fn validate_writer_count(
+    ordering: Ordering,
+    count: std::num::NonZeroUsize,
+) -> Result<()> {
+    if ordering == Ordering::PreserveInput && count.get() != 1 {
+        return Err(Error::Unsupported(
+            "Lance input order requires one writer".into(),
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) fn validate_options(
     schema: &Schema,

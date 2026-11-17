@@ -59,9 +59,11 @@ committer. Arrow layers control writes; OpenDAL layers control byte I/O.
 
 Facade features default to empty. Enable the backend you need; see
 [Cargo.toml](Cargo.toml) for cloud and codec features. Options default to Create
-and Unordered; Iceberg requires explicit Append. Bundled sinks reject
-PreserveInput. Check `Sink::capability()` and backend validation for supported
-options.
+and Unordered; Iceberg requires explicit Append. Lance supports PreserveInput
+with one writer: batches and rolled fragments retain their input sequence in an
+ordered dataset scan, and APPEND adds rows after existing fragments. Parallel
+writer sessions require Unordered. Parquet directory and Iceberg sinks reject
+PreserveInput. Check `Sink::capability()` and backend validation for supported options.
 
 Run the Parquet example with a new destination directory:
 
