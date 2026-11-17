@@ -286,7 +286,8 @@ impl Storage {
         validation::relative_path(&self.base_url, &self.base_path, url).map(ObjectPath::new)
     }
 
-    /// Encode a validated relative path as a URL for an external API.
+    /// Encode an object key as a URL for an external API.
+    /// URL normalization can change dot segments and leading or repeated slashes.
     pub fn url(&self, path: &ObjectPath) -> Result<Url> {
         let path = path.as_str();
         let mut url = self.base_url.clone();
@@ -386,7 +387,6 @@ impl Storage {
             .map_err(|error| map_error("list", path, error))?
         {
             if entry.metadata().is_file() {
-                validation::validate_path(entry.path())?;
                 paths.push(ObjectPath::new(entry.path().to_owned()));
             }
         }
