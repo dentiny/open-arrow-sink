@@ -5,12 +5,14 @@ use arrow_schema::{DataType, Field, Fields};
 use open_arrow_sink_core::{Error, Result};
 use std::sync::Arc;
 
+const NATIVE_BLOB_EXTENSION: &str = "lance.blob.v2";
+
 pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
     field
         .metadata()
         .get("ARROW:extension:name")
         .map(String::as_str)
-        == Some("lance.blob.v2")
+        == Some(NATIVE_BLOB_EXTENSION)
 }
 
 /// Wrap selected bytes/URLs in Lance's logical `{data, uri}` representation.

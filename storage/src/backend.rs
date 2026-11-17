@@ -286,7 +286,8 @@ impl Storage {
         validation::relative_path(&self.base_url, &self.base_path, url).map(ObjectPath::new)
     }
 
-    /// Encode a validated relative path as a URL for an external API.
+    /// Encode an object key as a URL for an external API.
+    /// URL normalization can change dot segments and leading or repeated slashes.
     pub fn url(&self, path: &ObjectPath) -> Result<Url> {
         let path = path.as_str();
         let mut url = self.base_url.clone();
@@ -318,6 +319,16 @@ impl Storage {
             Err(error) if error.kind() == opendal::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(map_error("stat", path, error)),
         }
+    }
+    /// Read exact-object metadata, returning [`Error::NotFound`] if it is absent.
+    /// Use [`Self::stat`] when absence is an expected result, or
+    /// [`Self::inspect_directory`] to discover virtual directory prefixes.
+    pub async fn metadata(&self, path: &ObjectPath) -> Result<opendal::Metadata> {
+        let path = path.as_str();
+        self.operator()
+            .stat(path)
+            .await
+            .map_err(|error| map_error("stat", path, error))
     }
     pub async fn read(&self, path: &ObjectPath) -> Result<Bytes> {
         let path = path.as_str();
@@ -386,7 +397,6 @@ impl Storage {
             .map_err(|error| map_error("list", path, error))?
         {
             if entry.metadata().is_file() {
-                validation::validate_path(entry.path())?;
                 paths.push(ObjectPath::new(entry.path().to_owned()));
             }
         }

@@ -4327,6 +4327,7 @@ dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-storage",
  "parquet",
+ "tempfile",
  "tokio",
 ]
 

@@ -8,18 +8,27 @@ pub fn memory_storage(base: &str) -> open_arrow_sink_storage::Storage {
     .unwrap()
 }
 
+/// An isolated in-memory operator using the common warehouse namespace.
+pub fn memory_warehouse() -> open_arrow_sink_storage::Storage {
+    memory_storage("memory:///warehouse/")
+}
+
+/// Resolve a fixture-relative URL, failing at the setup site on invalid input.
+pub fn url(
+    storage: &open_arrow_sink_storage::Storage,
+    relative: &str,
+) -> open_arrow_sink_storage::Url {
+    storage
+        .url(&open_arrow_sink_storage::ObjectPath::parse(relative).unwrap())
+        .unwrap()
+}
+
 /// Resolve a fixture-relative path, failing at the setup site on invalid input.
 pub fn path(
     storage: &open_arrow_sink_storage::Storage,
     relative: &str,
 ) -> open_arrow_sink_storage::ObjectPath {
-    storage
-        .path(
-            &storage
-                .url(&open_arrow_sink_storage::ObjectPath::parse(relative).unwrap())
-                .unwrap(),
-        )
-        .unwrap()
+    storage.path(&url(storage, relative)).unwrap()
 }
 
 /// List a fixture directory in deterministic path order.

@@ -40,16 +40,7 @@ impl AsyncFileReader for Reader {
     }
 }
 pub(crate) async fn schema(storage: Storage, path: ObjectPath) -> Result<SchemaRef> {
-    let size = storage
-        .stat(&path)
-        .await?
-        .ok_or_else(|| {
-            Error::backend(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Parquet file does not exist: {}", path.as_str()),
-            ))
-        })?
-        .content_length();
+    let size = storage.metadata(&path).await?.content_length();
     let reader = Reader {
         storage,
         path,

@@ -17,13 +17,13 @@ zstd = ["parquet/zstd"]
 lz4 = ["parquet/lz4"]
 
 [dependencies]
-bytes = "1"
+bytes.workspace = true
 futures.workspace = true
 open-arrow-sink-storage.workspace = true
 open-arrow-sink-core.workspace = true
 parquet = { workspace = true, features = ["arrow", "async"] }
 
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 open-arrow-sink-test-support.workspace = true

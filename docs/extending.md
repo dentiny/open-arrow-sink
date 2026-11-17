@@ -10,7 +10,11 @@ Start with the runnable [counting sink](../layer/examples/support/counting_sink.
 and its [driver](../layer/examples/custom_sink.rs). It demonstrates the contracts
 without storage or service credentials; replace its row counter with your encoder
 or SDK. For a persistent backend, see [Parquet](../sink/parquet/src/sink.rs) and
-its [committer](../sink/parquet/src/committer.rs).
+its [committer](../sink/parquet/src/committer.rs). Reuse
+[`DestinationResolver`](../storage/src/destination.rs) for explicit or URL-derived
+OpenDAL destinations: it validates retry/timeout configuration and shares cached
+backends and HTTP budgets across clones. Apply session options with
+`destination_resolver.resolve(&url)?.with_write_options(&options)`.
 
 1. Implement [`Sink`](../core/src/sink.rs). Choose a typed `Request` and advertise
    only capabilities you support. Validate shared options with
@@ -21,9 +25,10 @@ its [committer](../sink/parquet/src/committer.rs).
    physical output and returns backend-owned metadata without publishing table
    or dataset state. The writer remains abortable after finish.
 3. Implement [`SessionCommitter<Output>`](../core/src/session.rs). Publish all
-   finished outputs once and return `Result<()>`. Publication and
-   visibility follow your backend's semantics; document them.
-4. Assemble a `WriteSession` with one writer and use `into_writer().await` for
+   finished outputs once and return `Result<CommitSummary>` with actual published
+   row counts aggregated across all outputs. Publication and visibility follow
+   your backend's semantics; document them.
+4. Assemble a `WriteSession` with one writer and use synchronous `into_writer()` for
    ordinary `Sink::open`. For concurrent writes, implement `ParallelSink`:
    reserve the destination once, return exactly the requested number of writers
    with disjoint output ownership, and share one committer.

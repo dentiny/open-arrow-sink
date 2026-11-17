@@ -2,29 +2,30 @@ use futures::FutureExt;
 use open_arrow_sink_core::{Error, Ordering, RecordBatch, Sink, SinkExt, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_test_support::parallel_sink::{
-    Config, Event, Failure, SessionDefect, State, TestSink, release,
+    Config, Event, Failure, SessionDefect, SharedState, State, TestSink, release,
 };
 use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
-use std::{
-    num::NonZeroUsize,
-    sync::{Arc, Mutex},
-};
+use std::{num::NonZeroUsize, sync::Arc};
 
 fn batch() -> RecordBatch {
     int64_batch("id", vec![Some(1), Some(2), Some(3)])
 }
-fn sink(state: &Arc<Mutex<State>>) -> impl Sink<Request = ()> {
+fn sink(state: &SharedState) -> impl Sink<Request = ()> {
     TestSink(state.clone()).layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+}
+
+async fn open(state: &SharedState) -> Box<dyn open_arrow_sink_core::Writer> {
+    sink(state)
+        .open((), batch().schema(), options())
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
 async fn preopens_writers_and_bounds_concurrent_batches() {
     let state = State::shared(Config::default());
     let batch = batch();
-    let mut writer = sink(&state)
-        .open((), batch.schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     assert_eq!(state.lock().unwrap().count(Event::Open), 2);
     writer.write(batch.clone()).await.unwrap();
     writer.write(batch.clone()).await.unwrap();
@@ -40,7 +41,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
     }
     assert_eq!(writer.commit().await.unwrap().rows_committed, 9);
     let state = state.lock().unwrap();
-    assert_eq!(state.committed_rows().is_some() as usize, 1);
+    assert!(state.committed_rows().is_some());
     assert_eq!(state.committed_rows(), Some(9));
     assert_eq!(state.count(Event::WriteCompleted), 3);
     let publication = state
@@ -80,10 +81,7 @@ async fn rejects_preserve_order_and_invalid_size_before_open(#[case] options: Wr
 async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
     let state = State::shared(Config::default());
     let batch = batch();
-    let mut writer = sink(&state)
-        .open((), batch.schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch).await.unwrap();
     release(&state);
     if abort {
@@ -93,36 +91,27 @@ async fn commit_drains_writes_and_abort_discards_them(#[case] abort: bool) {
     }
     let state = state.lock().unwrap();
     assert_eq!(state.count(Event::WriteCompleted), 1);
-    assert_eq!(
-        state.committed_rows().is_some() as usize,
-        usize::from(!abort)
-    );
+    assert_eq!(state.committed_rows().is_some(), !abort);
     assert_eq!(state.count(Event::Abort), if abort { 2 } else { 0 });
 }
 
 #[tokio::test]
 async fn async_failure_returns_without_abort_or_publication() {
     let state = State::failing([Failure::Write]);
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     release(&state);
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(state.committed_rows().is_some() as usize, 0);
+    assert!(state.committed_rows().is_none());
     assert_eq!(state.count(Event::Abort), 0);
 }
 
 #[tokio::test]
 async fn cancelled_write_makes_commit_terminal_without_aborting() {
     let state = State::shared(Config::default());
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     assert!(writer.write(batch()).now_or_never().is_none());
@@ -130,17 +119,14 @@ async fn cancelled_write_makes_commit_terminal_without_aborting() {
     assert!(writer.write(batch()).await.is_err());
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(state.committed_rows().is_some() as usize, 0);
+    assert!(state.committed_rows().is_none());
     assert_eq!(state.count(Event::Abort), 0);
 }
 
 #[tokio::test]
 async fn schema_error_is_terminal_even_for_empty_batches() {
     let state = State::shared(Config::default());
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     let bad = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty()));
     assert!(matches!(
         writer.write(bad).await,
@@ -154,13 +140,10 @@ async fn schema_error_is_terminal_even_for_empty_batches() {
 #[tokio::test]
 async fn publication_failure_does_not_delete_possibly_published_data() {
     let state = State::failing([Failure::Commit]);
-    let writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let writer = open(&state).await;
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
-    assert_eq!(state.committed_rows().is_some() as usize, 0);
+    assert!(state.committed_rows().is_none());
     assert_eq!(state.count(Event::Abort), 0);
     assert_eq!(state.count(Event::CommitAttempt), 1);
     assert_eq!(state.count(Event::SessionAbort), 0);
@@ -169,25 +152,19 @@ async fn publication_failure_does_not_delete_possibly_published_data() {
 #[tokio::test]
 async fn drop_never_commits() {
     let state = State::shared(Config::default());
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     drop(writer);
     release(&state);
     let state = state.lock().unwrap();
     assert_eq!(state.count(Event::WriteCompleted), 0);
-    assert_eq!(state.committed_rows().is_some() as usize, 0);
+    assert!(state.committed_rows().is_none());
 }
 
 #[tokio::test]
 async fn available_writer_progresses_without_waiting_for_slow_writer() {
     let state = State::shared(Config::default());
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     // Free the writer that actually received the first batch.
@@ -205,10 +182,7 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
 #[tokio::test]
 async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     let state = State::failing([Failure::Write]);
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     release(&state);
     assert!(writer.write(batch()).await.is_err());
@@ -227,10 +201,7 @@ async fn finish_failure_returns_without_abort_or_publication(#[case] fail_abort:
         failures.push(Failure::Abort);
     }
     let state = State::failing(failures);
-    let writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let writer = open(&state).await;
     assert!(writer.commit().await.is_err());
     let state = state.lock().unwrap();
     assert!(state.count(Event::Finish) > 0);
@@ -269,10 +240,7 @@ async fn backend_session_contract_is_checked_and_invalid_sessions_are_rejected(
 #[tokio::test]
 async fn abort_attempts_all_writers_and_session_even_when_cleanup_fails() {
     let state = State::failing([Failure::Abort]);
-    let writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let writer = open(&state).await;
     assert!(writer.abort().await.is_err());
     let state = state.lock().unwrap();
     assert_eq!(state.count(Event::Abort), 2);
@@ -293,10 +261,7 @@ async fn finalization_drains_all_writes_and_preserves_first_error(
         failures.push(Failure::Abort);
     }
     let state = State::failing(failures);
-    let mut writer = sink(&state)
-        .open((), batch().schema(), options())
-        .await
-        .unwrap();
+    let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
 

@@ -8,7 +8,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, LargeBinaryArray, LargeListArray, ListArray, MapArray,
-    RecordBatchOptions, StringArray, StructArray,
+    OffsetSizeTrait, RecordBatchOptions, StringArray, StructArray,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_cast::cast;
@@ -140,6 +140,22 @@ fn next_range(
         end += 1;
     }
     start..end.max(start + 1)
+}
+
+/// Restrict nested materialization to the visible child span and rebase its offsets.
+fn rebase_offsets<O: OffsetSizeTrait>(
+    offsets: &OffsetBuffer<O>,
+) -> (std::ops::Range<usize>, OffsetBuffer<O>) {
+    let start = offsets[0];
+    let end = *offsets.last().unwrap();
+    let range = start.as_usize()..end.as_usize();
+    let offsets = OffsetBuffer::new(ScalarBuffer::from(
+        offsets
+            .iter()
+            .map(|offset| *offset - start)
+            .collect::<Vec<O>>(),
+    ));
+    (range, offsets)
 }
 
 fn child_nulls(
@@ -331,14 +347,10 @@ impl BlobMaterializer {
             // child range before materializing so a sliced batch cannot retain/read
             // unrelated list elements outside this row's reservation.
             macro_rules! list {
-                ($ty:ty, $offset:ty, $child:expr) => {{
+                ($ty:ty, $child:expr) => {{
                     let values = array.as_any().downcast_ref::<$ty>().unwrap();
-                    let offsets = values.value_offsets();
-                    let start = offsets[0];
-                    let end = *offsets.last().unwrap();
-                    let child = values
-                        .values()
-                        .slice(start as usize, (end - start) as usize);
+                    let (range, offsets) = rebase_offsets(values.offsets());
+                    let child = values.values().slice(range.start, range.len());
                     let visibility = child_nulls(
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
@@ -346,12 +358,6 @@ impl BlobMaterializer {
                     let child = self
                         .materialize(&child, &plan.children[0].1, group, visibility)
                         .await?;
-                    let offsets = OffsetBuffer::new(ScalarBuffer::from(
-                        offsets
-                            .iter()
-                            .map(|offset| offset - start)
-                            .collect::<Vec<$offset>>(),
-                    ));
                     return Ok(Arc::new(
                         <$ty>::try_new($child.clone(), offsets, child, values.nulls().cloned())
                             .map_err(Error::backend)?,
@@ -359,8 +365,8 @@ impl BlobMaterializer {
                 }};
             }
             match field.data_type() {
-                DataType::List(child) => list!(ListArray, i32, child),
-                DataType::LargeList(child) => list!(LargeListArray, i64, child),
+                DataType::List(child) => list!(ListArray, child),
+                DataType::LargeList(child) => list!(LargeListArray, child),
                 DataType::FixedSizeList(child, size) => {
                     let values = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
                     let child_values = values.values().clone();
@@ -383,14 +389,9 @@ impl BlobMaterializer {
                 }
                 DataType::Map(child, ordered) => {
                     let values = array.as_any().downcast_ref::<MapArray>().unwrap();
-                    let offsets = values.value_offsets();
-                    let start = offsets[0];
-                    let end = *offsets.last().unwrap();
-                    let entries: ArrayRef = Arc::new(
-                        values
-                            .entries()
-                            .slice(start as usize, (end - start) as usize),
-                    );
+                    let (range, offsets) = rebase_offsets(values.offsets());
+                    let entries: ArrayRef =
+                        Arc::new(values.entries().slice(range.start, range.len()));
                     let visibility = child_nulls(
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
@@ -398,12 +399,6 @@ impl BlobMaterializer {
                     let entries = self
                         .materialize(&entries, &plan.children[0].1, group, visibility)
                         .await?;
-                    let offsets = OffsetBuffer::new(ScalarBuffer::from(
-                        offsets
-                            .iter()
-                            .map(|offset| offset - start)
-                            .collect::<Vec<_>>(),
-                    ));
                     return Ok(Arc::new(
                         MapArray::try_new(
                             child.clone(),
