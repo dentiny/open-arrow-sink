@@ -39,10 +39,7 @@ async fn ordering_layer_parallel_open_respects_inner_ordering_capability(
     );
     if let Ok(session) = result {
         assert_eq!(state.lock().unwrap().requested_ordering(), Some(requested));
-        for writer in session.writers {
-            writer.abort().await.unwrap();
-        }
-        session.committer.abort().await.unwrap();
+        session.abort().await.unwrap();
     }
 }
 
@@ -70,8 +67,5 @@ async fn ordering_override_replaces_the_callers_preserve_input_requirement() {
         state.lock().unwrap().requested_ordering(),
         Some(Ordering::Unordered)
     );
-    for writer in session.writers {
-        writer.abort().await.unwrap();
-    }
-    session.committer.abort().await.unwrap();
+    session.abort().await.unwrap();
 }

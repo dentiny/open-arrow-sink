@@ -3,7 +3,8 @@ use std::num::NonZeroUsize;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
     DataWriter, GuardedWriter, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef,
-    SessionCommitter, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
+    SessionCommitter, Sink, SinkCapability, WriteOptions, WriteSession, Writer, async_trait,
+    validation,
 };
 
 /// Pre-open independent writers and dispatch batches to available writers.
@@ -103,20 +104,18 @@ impl<T: Send + 'static> UnorderedWriter<T> {
         first_error.map_or(Ok(()), Err)
     }
 
+    fn take_session(&mut self) -> WriteSession<T> {
+        WriteSession {
+            writers: std::mem::take(&mut self.idle),
+            committer: self.committer.take().expect("session has a committer"),
+        }
+    }
+
     async fn stop(&mut self) -> Result<()> {
         // Finish in-flight I/O before explicitly stopping writers; never detach workers.
-        let mut first_error = self.drain_all().await.err();
-        for writer in self.idle.drain(..) {
-            if let Err(error) = writer.abort().await {
-                first_error.get_or_insert(error);
-            }
-        }
-        if let Some(committer) = self.committer.take()
-            && let Err(error) = committer.abort().await
-        {
-            first_error.get_or_insert(error);
-        }
-        first_error.map_or(Ok(()), Err)
+        let writes = self.drain_all().await;
+        let abort = self.take_session().abort().await;
+        writes.and(abort)
     }
 }
 
@@ -155,15 +154,8 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
 
     async fn commit(mut self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         self.drain_all().await?;
-        let outputs =
-            futures::future::try_join_all(self.idle.iter_mut().map(|writer| writer.finish()))
-                .await?;
-        // From here publication and any ambiguous failure belong to the backend.
-        self.committer
-            .take()
-            .expect("session has a committer")
-            .commit(outputs)
-            .await
+        // Publication and any ambiguous failure belong to the backend.
+        self.take_session().commit().await
     }
 
     async fn abort(mut self: Box<Self>) -> Result<()> {

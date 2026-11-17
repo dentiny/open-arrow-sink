@@ -17,6 +17,8 @@ struct Faults {
     write: bool,
     pending: bool,
     finish: bool,
+    finish_pending: bool,
+    session_abort: bool,
     publish: bool,
     abort: bool,
 }
@@ -28,6 +30,7 @@ struct Physical {
 }
 struct Committer {
     events: Events,
+    outputs: usize,
     faults: Faults,
 }
 
@@ -50,6 +53,9 @@ impl DataWriter for Physical {
     }
     async fn finish(&mut self) -> Result<u64> {
         self.events.lock().unwrap().push(Event::Finish);
+        if self.faults.finish_pending {
+            std::future::pending::<()>().await;
+        }
         if self.faults.finish {
             Err(Error::SchemaMismatch)
         } else {
@@ -72,7 +78,7 @@ impl SessionCommitter<u64> for Committer {
         outputs: Vec<u64>,
     ) -> Result<open_arrow_sink_core::CommitSummary> {
         self.events.lock().unwrap().push(Event::Publish);
-        assert_eq!(outputs, vec![7]);
+        assert_eq!(outputs, vec![7; self.outputs]);
         if self.faults.publish {
             Err(Error::SchemaMismatch)
         } else {
@@ -85,7 +91,11 @@ impl SessionCommitter<u64> for Committer {
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.events.lock().unwrap().push(Event::AbortSession);
-        Ok(())
+        if self.faults.session_abort {
+            Err(Error::InvalidConfig("committer abort".into()))
+        } else {
+            Ok(())
+        }
     }
 }
 fn session(faults: Faults, count: usize) -> (WriteSession<u64>, Events) {
@@ -105,6 +115,7 @@ fn session(faults: Faults, count: usize) -> (WriteSession<u64>, Events) {
             writers,
             committer: Box::new(Committer {
                 events: events.clone(),
+                outputs: count,
                 faults,
             }),
         },
@@ -224,4 +235,103 @@ async fn dropping_a_writer_never_publishes_or_runs_async_cleanup() {
     writer.write(empty_batch()).await.unwrap();
     drop(writer);
     assert_eq!(*events.lock().unwrap(), [Event::Write]);
+}
+
+#[tokio::test]
+async fn parallel_session_finishes_every_writer_before_one_commit() {
+    let (session, events) = session(Faults::default(), 3);
+    let summary = session.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 7);
+    assert_eq!(
+        *events.lock().unwrap(),
+        [Event::Finish, Event::Finish, Event::Finish, Event::Publish]
+    );
+}
+
+#[test]
+fn parallel_finish_polls_all_writers_and_cancellation_never_aborts() {
+    let (session, events) = session(
+        Faults {
+            finish_pending: true,
+            ..Default::default()
+        },
+        3,
+    );
+    {
+        let mut commit = std::pin::pin!(session.commit());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(commit.as_mut(), &mut context).is_pending());
+        assert_eq!(*events.lock().unwrap(), [Event::Finish; 3]);
+    }
+    assert_eq!(*events.lock().unwrap(), [Event::Finish; 3]);
+}
+
+#[tokio::test]
+async fn parallel_finish_failure_does_not_publish_or_abort() {
+    let (session, events) = session(
+        Faults {
+            finish: true,
+            ..Default::default()
+        },
+        3,
+    );
+    assert!(matches!(session.commit().await, Err(Error::SchemaMismatch)));
+    assert_eq!(*events.lock().unwrap(), [Event::Finish]);
+}
+
+#[tokio::test]
+async fn parallel_abort_attempts_every_writer_then_committer_and_returns_first_error() {
+    let (session, events) = session(
+        Faults {
+            abort: true,
+            session_abort: true,
+            ..Default::default()
+        },
+        3,
+    );
+    assert!(matches!(session.abort().await, Err(Error::SchemaMismatch)));
+    assert_eq!(
+        *events.lock().unwrap(),
+        [
+            Event::AbortWriter,
+            Event::AbortWriter,
+            Event::AbortWriter,
+            Event::AbortSession
+        ]
+    );
+}
+
+#[tokio::test]
+async fn session_abort_returns_committer_error_when_writers_stop_successfully() {
+    let (session, events) = session(
+        Faults {
+            session_abort: true,
+            ..Default::default()
+        },
+        2,
+    );
+    assert!(matches!(
+        session.abort().await,
+        Err(Error::InvalidConfig(_))
+    ));
+    assert_eq!(
+        *events.lock().unwrap(),
+        [Event::AbortWriter, Event::AbortWriter, Event::AbortSession]
+    );
+}
+
+#[tokio::test]
+async fn mapping_visits_every_writer_and_retains_publication_authority() {
+    let (session, events) = session(Faults::default(), 3);
+    let mut mapped = 0;
+    let session = session.map_writers(|writer| {
+        mapped += 1;
+        Box::new(open_arrow_sink_core::GuardedDataWriter::new(writer))
+    });
+    assert_eq!(mapped, 3);
+    session.commit().await.unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        [Event::Finish, Event::Finish, Event::Finish, Event::Publish]
+    );
 }
