@@ -1,7 +1,7 @@
 //! Logical blob input conversion. Layout and object ownership belong to Lance.
-use arrow_array::{ArrayRef, StructArray, new_null_array};
+use arrow_array::{Array, ArrayRef, StructArray, new_null_array};
 use arrow_cast::cast;
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, Fields};
 use open_arrow_sink_core::{Error, Result};
 use std::sync::Arc;
 
@@ -13,7 +13,10 @@ pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
         == Some("lance.blob.v2")
 }
 
-/// Convert a selected binary or URL leaf; the materializer owns container traversal.
+/// Wrap selected bytes/URLs in Lance's logical `{data, uri}` representation.
+/// This performs no I/O. The materializer calls it after slicing list children,
+/// then uses ancestor visibility to decide which values to download or buffer.
+/// Native logical Blob inputs already have the struct shape; only metadata may differ.
 pub(crate) fn convert_blob_leaf(array: &ArrayRef, field: &Field) -> Result<ArrayRef> {
     if matches!(array.data_type(), DataType::Struct(_)) {
         return cast(array, field.data_type()).map_err(Error::backend);
@@ -35,6 +38,49 @@ pub(crate) fn convert_blob_leaf(array: &ArrayRef, field: &Field) -> Result<Array
         vec![data, uris],
         array.nulls().cloned(),
     )))
+}
+
+/// Replace the payload columns while preserving nulls and optional reference fields.
+/// Once bytes have been materialized, position/size no longer describe a URI
+/// reference and must be cleared for those values.
+pub(crate) fn with_materialized_payloads(
+    values: &StructArray,
+    fields: &Fields,
+    data: ArrayRef,
+    uris: ArrayRef,
+    materialized: &[bool],
+) -> Result<ArrayRef> {
+    let columns = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| -> Result<ArrayRef> {
+            Ok(match field.name().as_str() {
+                "data" => data.clone(),
+                "uri" => uris.clone(),
+                // Range metadata applies only to preserved URI references.
+                _ => {
+                    let validity = arrow_buffer::NullBuffer::from(
+                        materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
+                    );
+                    let original = values.column(index).to_data();
+                    arrow_array::make_array(
+                        original
+                            .into_builder()
+                            .nulls(arrow_buffer::NullBuffer::union(
+                                values.column(index).nulls(),
+                                Some(&validity),
+                            ))
+                            .build()
+                            .map_err(Error::backend)?,
+                    )
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(
+        StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
+            .map_err(Error::backend)?,
+    ) as ArrayRef)
 }
 
 #[cfg(test)]

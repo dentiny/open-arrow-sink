@@ -1,8 +1,12 @@
-//! Explicitly select URL columns for the backend's bounded blob downloader.
+//! Select URL leaves for the backend's bounded blob downloader.
+//!
+//! Opening a writer resolves selections, marks only their text leaves, and adapts
+//! nested array metadata. Values remain URLs here; the backend converts the marked
+//! leaves to logical Blobs and owns all downloading and payload reservations.
 use std::{collections::HashSet, sync::Arc};
 
 use arrow_cast::cast;
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, FieldRef, Schema};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, BLOB_METADATA_VALUE, DownloadFailurePolicy, DownloadMetrics,
     DownloadRecovery, Error, Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
@@ -82,44 +86,14 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
         if !self.columns.is_empty() && !self.inner.capability().supports_blob_handle {
             return Err(Error::Unsupported("blob URL inputs".into()));
         }
-        let mut fields = schema.fields().to_vec();
-        let mut roots = HashSet::new();
-        for name in self.columns.iter() {
-            let path = if validation::unique_column_index(schema, name).is_some() {
-                vec![name.clone()]
-            } else {
-                name.split('.').map(str::to_owned).collect()
-            };
-            let selected = validation::unique_column_index(schema, &path[0]).and_then(|index| {
-                mark_blob_field(&fields[index], &path[1..]).map(|field| (index, field))
-            });
-            let (index, field) = selected.ok_or_else(|| {
-                Error::InvalidInput(format!(
-                    "blob URL path must select a unique text field: {name}"
-                ))
-            })?;
-            fields[index] = Arc::new(field.with_nullable(
-                fields[index].is_nullable() || self.failure_policy == DownloadFailurePolicy::Null,
-            ));
-            roots.insert(path[0].clone());
-        }
+        let (fields, roots) = mark_selected_urls(schema, &self.columns, self.failure_policy)?;
         options.download_recovery = Some(DownloadRecovery {
             columns: roots.clone(),
             policy: self.failure_policy,
             metrics: self.metrics.clone(),
         });
-        // Align nested array field metadata with the marked schema, sharing data buffers.
-        let metadata_adapters = fields
-            .into_iter()
-            .filter(|field| roots.contains(field.name()))
-            .map(|field| {
-                let ty = field.data_type().clone();
-                FieldRemap::new(field.name().clone(), field, move |array| {
-                    cast(&array, &ty).map_err(Error::backend)
-                })
-            })
-            .collect::<Vec<_>>();
-        let plan = Plan::new(schema, &metadata_adapters)?;
+        let remaps = metadata_adapters(fields, &roots);
+        let plan = Plan::new(schema, &remaps)?;
         // Keep the caller's input schema on the outer writer. The metadata-only
         // transform shares arrays, so it cannot reserve a payload twice.
         *schema = plan.target.clone();
@@ -139,6 +113,56 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
     }
 }
 
+/// Resolve every selection against the original schema, but accumulate markings so
+/// paths such as `parent.image` and `parent.thumbnail` can share a root.
+fn mark_selected_urls(
+    schema: &Schema,
+    columns: &HashSet<String>,
+    failure_policy: DownloadFailurePolicy,
+) -> Result<(Vec<FieldRef>, HashSet<String>)> {
+    let mut fields = schema.fields().to_vec();
+    let mut roots = HashSet::new();
+    for name in columns.iter() {
+        // A literal top-level name wins even when it contains dots.
+        let path = if validation::unique_column_index(schema, name).is_some() {
+            vec![name.clone()]
+        } else {
+            name.split('.').map(str::to_owned).collect()
+        };
+        let selected = validation::unique_column_index(schema, &path[0]).and_then(|index| {
+            mark_blob_field(&fields[index], &path[1..]).map(|field| (index, field))
+        });
+        let (index, field) = selected.ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "blob URL path must select a unique text field: {name}"
+            ))
+        })?;
+        // Recovery replaces the whole top-level value, including sibling fields.
+        fields[index] = Arc::new(field.with_nullable(
+            fields[index].is_nullable() || failure_policy == DownloadFailurePolicy::Null,
+        ));
+        roots.insert(path[0].clone());
+    }
+    Ok((fields, roots))
+}
+
+/// Nested fields are part of an array's DataType. Updating the batch schema alone
+/// would leave those fields unmarked, so adapt the arrays too, sharing buffers.
+fn metadata_adapters(fields: Vec<FieldRef>, roots: &HashSet<String>) -> Vec<FieldRemap> {
+    fields
+        .into_iter()
+        .filter(|field| roots.contains(field.name()))
+        .map(|field| {
+            let ty = field.data_type().clone();
+            FieldRemap::new(field.name().clone(), field, move |array| {
+                cast(&array, &ty).map_err(Error::backend)
+            })
+        })
+        .collect()
+}
+
+/// Consume one path segment per struct field. List elements are implicit and do
+/// not consume a segment: `parent.items` can select a List<Utf8> leaf.
 fn mark_blob_field(field: &Field, path: &[String]) -> Option<Field> {
     let ty = match field.data_type() {
         DataType::List(item) => DataType::List(Arc::new(mark_blob_field(item, path)?)),
