@@ -6,6 +6,7 @@ use arrow_array::{
     RecordBatchOptions, StringArray, StructArray,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_cast::cast;
 use arrow_schema::DataType;
 use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
 use open_arrow_sink_core::{
@@ -229,7 +230,7 @@ impl BlobMaterializer {
         plan: &BlobInputPlan,
     ) -> Result<RecordBatch> {
         let schema = &plan.schema;
-        let input = crate::blob::logical_batch(batch.slice(range.start, range.len()), schema)?;
+        let input = batch.slice(range.start, range.len());
         let mut group = self.downloader.begin().await?;
         let mut columns = input.columns().to_vec();
         let mut failed = false;
@@ -270,7 +271,9 @@ impl BlobMaterializer {
         RecordBatch::try_new_with_options(
             schema.clone(),
             columns,
-            &RecordBatchOptions::new().with_row_count(Some(range.len())),
+            &RecordBatchOptions::new()
+                .with_match_field_names(false)
+                .with_row_count(Some(range.len())),
         )
         .map_err(Error::backend)
     }
@@ -284,6 +287,11 @@ impl BlobMaterializer {
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
             let field = &plan.field;
+            let array = if plan.native {
+                crate::blob::convert_blob_leaf(array, field)?
+            } else {
+                array.clone()
+            };
             let nulls = NullBuffer::union(array.nulls(), parent_nulls.as_ref());
             // Lists can contain several logical blobs in one input row. Slice their
             // child range before materializing so a sliced batch cannot retain/read
@@ -495,6 +503,9 @@ impl BlobMaterializer {
                 columns[*index] = self
                     .materialize(values.column(*index), child, group, nulls.clone())
                     .await?;
+            }
+            for (array, field) in columns.iter_mut().zip(fields) {
+                *array = cast(array, field.data_type()).map_err(Error::backend)?;
             }
             Ok(Arc::new(
                 StructArray::try_new(fields.clone(), columns, values.nulls().cloned())

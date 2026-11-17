@@ -1,7 +1,13 @@
-use arrow_array::{ArrayRef, LargeBinaryArray, RecordBatch, cast::AsArray};
+use arrow_array::{
+    Array, ArrayRef, LargeBinaryArray, ListArray, RecordBatch, StringArray, StructArray,
+    cast::AsArray,
+};
+use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
-use open_arrow_sink_core::{BLOB_METADATA_KEY, Sink, WriteMode};
+use lance::datatypes::BlobHandling;
+use open_arrow_sink_core::{BLOB_METADATA_KEY, Sink, SinkExt, WriteMode};
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_layer::DownloadBlobLayer;
 use open_arrow_sink_storage::ObjectPath;
 use open_arrow_sink_test_support::unordered_options as options;
 use open_arrow_sink_test_support::within;
@@ -79,12 +85,6 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
 
 #[tokio::test]
 async fn null_ancestors_do_not_download_hidden_blob_uris() {
-    use arrow_array::{Array, ListArray, StructArray};
-    use arrow_buffer::{NullBuffer, OffsetBuffer};
-    use lance::{
-        blob::{BlobArrayBuilder, blob_field},
-        datatypes::BlobHandling,
-    };
     let source = open_arrow_sink_test_support::memory_storage("memory://source/");
     let visible = source.url(&ObjectPath::parse("visible").unwrap()).unwrap();
     source
@@ -92,15 +92,12 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
         .await
         .unwrap();
     let missing = source.url(&ObjectPath::parse("missing").unwrap()).unwrap();
-    let mut blobs = BlobArrayBuilder::new(3);
-    for uri in [&missing, &missing, &visible] {
-        blobs.push_uri(uri.as_str()).unwrap();
-    }
-    let blob = Arc::new(blob_field("item", true));
+    let blobs = StringArray::from(vec![missing.as_str(), missing.as_str(), visible.as_str()]);
+    let blob = Arc::new(Field::new("item", DataType::Utf8, true));
     let lists = ListArray::new(
         blob.clone(),
         OffsetBuffer::from_lengths([1, 1, 1]),
-        blobs.finish().unwrap(),
+        Arc::new(blobs),
         Some(NullBuffer::from(vec![true, false, true])),
     );
     let items = Arc::new(Field::new("items", DataType::List(blob), true));
@@ -109,18 +106,31 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
         vec![Arc::new(lists)],
         Some(NullBuffer::from(vec![false, true, true])),
     );
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "parent",
-        parent.data_type().clone(),
-        true,
-    )]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(parent)]).unwrap();
+    let batch = RecordBatch::try_from_iter([
+        ("parent", Arc::new(parent) as ArrayRef),
+        (
+            "top",
+            Arc::new(StringArray::from(vec![visible.as_str(); 3])),
+        ),
+        (
+            "untouched",
+            Arc::new(StringArray::from(vec![missing.as_str(); 3])),
+        ),
+    ])
+    .unwrap();
     let destination = storage();
     let url = destination
         .url(&ObjectPath::parse("nested/").unwrap())
         .unwrap();
     let sink = LanceDatasetSink::new(destination).with_source_storage(source);
-    let mut writer = sink.open(url.clone(), schema, options()).await.unwrap();
+    let mut writer = sink
+        .clone()
+        .layer(DownloadBlobLayer::new(
+            ["parent.items".into(), "top".into()].into(),
+        ))
+        .open(url.clone(), batch.schema(), options())
+        .await
+        .unwrap();
     writer.write(batch).await.unwrap();
     writer.commit().await.unwrap();
     let output = sink
@@ -134,6 +144,11 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
         .try_into_batch()
         .await
         .unwrap();
+    assert_eq!(output.column(1).as_binary::<i64>().value(0), b"ok");
+    assert_eq!(
+        output.column(2).as_string::<i32>().value(0),
+        missing.as_str()
+    );
     let parent = output.column(0).as_struct();
     // Find by null structure since this sink provides no scan ordering guarantee.
     let lists = parent.column(0).as_list::<i32>();

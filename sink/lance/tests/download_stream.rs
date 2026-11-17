@@ -1,8 +1,5 @@
 use arrow_array::cast::AsArray;
-use arrow_array::{
-    Array, ArrayRef, Int32Array, LargeBinaryArray, ListArray, RecordBatch, StringArray, StructArray,
-};
-use arrow_buffer::OffsetBuffer;
+use arrow_array::{Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink, SinkExt};
@@ -179,75 +176,4 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
             _ => unreachable!(),
         }
     }
-}
-
-#[tokio::test]
-async fn one_download_layer_handles_top_level_and_nested_urls() {
-    let temp = tempfile::tempdir().unwrap();
-    let source = temp.path().join("source");
-    std::fs::write(&source, b"blob contents").unwrap();
-    let uri = Url::from_file_path(&source).unwrap().to_string();
-    let item = Arc::new(Field::new("item", DataType::Utf8, true));
-    let urls = ListArray::new(
-        item,
-        OffsetBuffer::from_lengths([2]),
-        Arc::new(StringArray::from(vec![Some(uri.as_str()), None])),
-        None,
-    );
-    let media = StructArray::from(vec![(
-        Arc::new(Field::new("urls", urls.data_type().clone(), false)),
-        Arc::new(urls) as ArrayRef,
-    )]);
-    let batch = RecordBatch::try_from_iter([
-        (
-            "top",
-            Arc::new(StringArray::from(vec![uri.as_str()])) as ArrayRef,
-        ),
-        ("media", Arc::new(media)),
-        (
-            "untouched",
-            Arc::new(StringArray::from(vec!["https://example.invalid/keep"])),
-        ),
-    ])
-    .unwrap();
-    let sink = LanceDatasetSink::default().layer(DownloadBlobLayer::new(
-        ["top".to_owned(), "media.urls".to_owned()].into(),
-    ));
-    let path = temp.path().join("dataset");
-    let mut writer = sink
-        .open(
-            Url::from_directory_path(&path).unwrap(),
-            batch.schema(),
-            options(),
-        )
-        .await
-        .unwrap();
-    writer.write(batch).await.unwrap();
-    writer.commit().await.unwrap();
-    std::fs::remove_file(source).unwrap();
-    let output = Dataset::open(path.to_str().unwrap())
-        .await
-        .unwrap()
-        .scan()
-        .blob_handling(BlobHandling::AllBinary)
-        .try_into_batch()
-        .await
-        .unwrap();
-    assert_eq!(
-        output.column(0).as_binary::<i64>().value(0),
-        b"blob contents"
-    );
-    let urls = output
-        .column(1)
-        .as_struct()
-        .column(0)
-        .as_list::<i32>()
-        .value(0);
-    assert_eq!(urls.len(), 2);
-    assert_eq!(urls.as_binary::<i64>().value(0), b"blob contents");
-    assert!(urls.is_null(1));
-    assert_eq!(
-        output.column(2).as_string::<i32>().value(0),
-        "https://example.invalid/keep"
-    );
 }
