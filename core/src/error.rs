@@ -63,3 +63,14 @@ impl IndexCommitError {
         }
     }
 }
+
+/// Retains the original input or sink error, even if abort also fails.
+/// No dependency on the input producer's library or error type is required.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum WriteAllError<E> {
+    #[error("input stream failed: {0}")]
+    Input(#[source] E),
+    #[error(transparent)]
+    Sink(#[from] Error),
+}

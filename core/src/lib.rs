@@ -16,7 +16,6 @@ mod sink;
 pub mod validation;
 mod write_all;
 mod writer;
-pub use write_all::WriteAllError;
 
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;
@@ -26,7 +25,7 @@ pub use compression::{
     CompressionCapability, CompressionCodec, CompressionOptions, CompressionSpec,
     StructuralEncoding, ZSTD_COMPRESSION_LEVEL_RANGE,
 };
-pub use error::{Error, IndexCommitError, Result};
+pub use error::{Error, IndexCommitError, Result, WriteAllError};
 pub use index::{ExistingIndexPolicy, IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, UploadConfig, WriteMode, WriteOptions};
