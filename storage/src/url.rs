@@ -1,4 +1,13 @@
 use ::url::Url;
+use open_arrow_sink_core::Result;
+
+pub(crate) fn namespace_base(url: &Url) -> Result<Url> {
+    crate::validation::validate_url(url)?;
+    crate::validation::decoded_path(url)?;
+    let mut base = url.clone();
+    base.set_path("/");
+    Ok(base)
+}
 
 /// Strip a single well-formed S3 MD5 query as metadata, without verifying the
 /// payload checksum. Preserve other queries for normal storage URL validation.

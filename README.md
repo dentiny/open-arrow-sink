@@ -98,6 +98,24 @@ For integration details, start with the examples above and the
 cargo doc --workspace --all-features --no-deps --locked --open
 ```
 
+When an application already has an OpenDAL operator configured with an endpoint,
+region, credentials, or layers, bind it to a target URL without rebuilding it:
+
+```rust,no_run
+use open_arrow_sink::storage::{Storage, Url, opendal::Operator};
+
+fn destination(operator: Operator, url: &Url) -> open_arrow_sink::Result<Storage> {
+    Storage::for_url(operator, url)
+}
+```
+
+`Storage::for_url` maps `s3://bucket/prefix/data.lance` to the bucket root
+`s3://bucket/`, and local file URLs to `file:///`. The operator must address the
+same backend and bucket with its root set to `/`. For an operator rooted at a
+prefix, use `Storage::new(operator, base_url)` with the corresponding explicit
+base. The helper also works for custom blob sources registered through
+`StorageResolver::with_storage`; registrations remain scoped to each namespace.
+
 For S3 blob downloads, a single `md5=<32 hexadecimal digits>` query (as in PMC
 content URLs) is stripped before resolving source storage. The payload checksum
 is not verified. Other storage queries remain unsupported; HTTP(S) queries are
