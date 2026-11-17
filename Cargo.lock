@@ -4298,9 +4298,11 @@ name = "open-arrow-sink-storage"
 version = "0.3.0"
 dependencies = [
  "async-stream",
+ "backon",
  "bytes",
  "futures",
  "http",
+ "httpdate",
  "more-asserts",
  "object_store 0.14.2",
  "object_store_opendal",

@@ -2,7 +2,7 @@
 name = "open-arrow-sink-storage"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT AND Apache-2.0"
 repository.workspace = true
 description = "Shared OpenDAL storage for Arrow sinks"
 
@@ -13,12 +13,14 @@ gcp = ["opendal/services-gcs"]
 azure = ["opendal/services-azblob"]
 
 [dependencies]
+backon = "1.6"
 async-stream.workspace = true
 object_store.workspace = true
 object_store_opendal = { version = "0.60.5", default-features = false }
 bytes.workspace = true
 futures.workspace = true
 http = "1"
+httpdate = "1"
 tokio = { workspace = true, features = ["sync"] }
 open-arrow-sink-core.workspace = true
 opendal = { version = "0.59.5", default-features = false, features = [
@@ -34,8 +36,9 @@ percent-encoding = "2"
 url = "2"
 
 [dev-dependencies]
+opendal = { version = "0.59.5", default-features = false, features = ["services-s3"] }
 more-asserts.workspace = true
 open-arrow-sink-test-support.workspace = true
 tempfile.workspace = true
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs", "test-util"] }
