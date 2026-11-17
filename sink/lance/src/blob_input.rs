@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, LargeBinaryArray, LargeListArray, ListArray, MapArray,
-    RecordBatchOptions, StringArray, StructArray,
+    OffsetSizeTrait, RecordBatchOptions, StringArray, StructArray,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::DataType;
@@ -133,6 +133,22 @@ fn next_range(
         end += 1;
     }
     start..end.max(start + 1)
+}
+
+/// Restrict nested materialization to the visible child span and rebase its offsets.
+fn rebase_offsets<O: OffsetSizeTrait>(
+    offsets: &OffsetBuffer<O>,
+) -> (std::ops::Range<usize>, OffsetBuffer<O>) {
+    let start = offsets[0];
+    let end = *offsets.last().unwrap();
+    let range = start.as_usize()..end.as_usize();
+    let offsets = OffsetBuffer::new(ScalarBuffer::from(
+        offsets
+            .iter()
+            .map(|offset| *offset - start)
+            .collect::<Vec<O>>(),
+    ));
+    (range, offsets)
 }
 
 fn child_nulls(
@@ -289,14 +305,10 @@ impl BlobMaterializer {
             // child range before materializing so a sliced batch cannot retain/read
             // unrelated list elements outside this row's reservation.
             macro_rules! list {
-                ($ty:ty, $offset:ty, $child:expr) => {{
+                ($ty:ty, $child:expr) => {{
                     let values = array.as_any().downcast_ref::<$ty>().unwrap();
-                    let offsets = values.value_offsets();
-                    let start = offsets[0];
-                    let end = *offsets.last().unwrap();
-                    let child = values
-                        .values()
-                        .slice(start as usize, (end - start) as usize);
+                    let (range, offsets) = rebase_offsets(values.offsets());
+                    let child = values.values().slice(range.start, range.len());
                     let visibility = child_nulls(
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
@@ -304,12 +316,6 @@ impl BlobMaterializer {
                     let child = self
                         .materialize(&child, &plan.children[0].1, group, visibility)
                         .await?;
-                    let offsets = OffsetBuffer::new(ScalarBuffer::from(
-                        offsets
-                            .iter()
-                            .map(|offset| offset - start)
-                            .collect::<Vec<$offset>>(),
-                    ));
                     return Ok(Arc::new(
                         <$ty>::try_new($child.clone(), offsets, child, values.nulls().cloned())
                             .map_err(Error::backend)?,
@@ -317,8 +323,8 @@ impl BlobMaterializer {
                 }};
             }
             match field.data_type() {
-                DataType::List(child) => list!(ListArray, i32, child),
-                DataType::LargeList(child) => list!(LargeListArray, i64, child),
+                DataType::List(child) => list!(ListArray, child),
+                DataType::LargeList(child) => list!(LargeListArray, child),
                 DataType::FixedSizeList(child, size) => {
                     let values = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
                     let child_values = values.values().clone();
@@ -341,14 +347,9 @@ impl BlobMaterializer {
                 }
                 DataType::Map(child, ordered) => {
                     let values = array.as_any().downcast_ref::<MapArray>().unwrap();
-                    let offsets = values.value_offsets();
-                    let start = offsets[0];
-                    let end = *offsets.last().unwrap();
-                    let entries: ArrayRef = Arc::new(
-                        values
-                            .entries()
-                            .slice(start as usize, (end - start) as usize),
-                    );
+                    let (range, offsets) = rebase_offsets(values.offsets());
+                    let entries: ArrayRef =
+                        Arc::new(values.entries().slice(range.start, range.len()));
                     let visibility = child_nulls(
                         nulls.as_ref(),
                         offsets.windows(2).map(|span| (span[1] - span[0]) as usize),
@@ -356,12 +357,6 @@ impl BlobMaterializer {
                     let entries = self
                         .materialize(&entries, &plan.children[0].1, group, visibility)
                         .await?;
-                    let offsets = OffsetBuffer::new(ScalarBuffer::from(
-                        offsets
-                            .iter()
-                            .map(|offset| offset - start)
-                            .collect::<Vec<_>>(),
-                    ));
                     return Ok(Arc::new(
                         MapArray::try_new(
                             child.clone(),
@@ -387,109 +382,11 @@ impl BlobMaterializer {
                 return Ok(array.clone());
             }
             if plan.native && values.column_by_name("kind").is_none() {
-                let malformed = || {
-                    Error::backend(std::io::Error::other(format!(
-                        "invalid logical blob field {}",
-                        field.name()
-                    )))
-                };
-                let data = values
-                    .column_by_name("data")
-                    .and_then(|array| array.as_any().downcast_ref::<LargeBinaryArray>())
-                    .ok_or_else(malformed)?;
-                let uris = values
-                    .column_by_name("uri")
-                    .and_then(|array| array.as_any().downcast_ref::<StringArray>())
-                    .ok_or_else(malformed)?;
-                let mut payload = Vec::new();
-                let mut offsets = vec![0_i64];
-                let mut output_uris = Vec::with_capacity(values.len());
-                let mut data_validity = Vec::with_capacity(values.len());
-                let mut materialized = Vec::with_capacity(values.len());
-                for row in 0..values.len() {
-                    let mut uri = None;
-                    let bytes = if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
-                        None
-                    } else if data.is_valid(row) {
-                        Some(group.buffer(data.value(row))?)
-                    } else if uris.is_valid(row) && self.mode == ExternalBlobMode::Ingest {
-                        let bytes = group
-                            .download(uris.value(row), self.metrics.as_ref())
-                            .await?;
-                        let number = |name: &str| {
-                            values.column_by_name(name).and_then(|array| {
-                                let array =
-                                    array.as_any().downcast_ref::<arrow_array::UInt64Array>()?;
-                                array.is_valid(row).then(|| array.value(row))
-                            })
-                        };
-                        let start = number("position").unwrap_or(0);
-                        let end = number("size")
-                            .map(|size| start.checked_add(size))
-                            .unwrap_or(Some(bytes.len() as u64))
-                            .filter(|&end| start <= end && end <= bytes.len() as u64)
-                            .ok_or_else(|| {
-                                Error::backend(std::io::Error::other(
-                                    "blob range exceeds downloaded source",
-                                ))
-                            })?;
-                        Some(bytes.slice(start as usize..end as usize))
-                    } else {
-                        if uris.is_valid(row) {
-                            uri = Some(uris.value(row).to_owned());
-                        }
-                        None
-                    };
-                    data_validity.push(bytes.is_some());
-                    materialized.push(bytes.is_some());
-                    if let Some(bytes) = bytes {
-                        payload
-                            .try_reserve_exact(bytes.len())
-                            .map_err(Error::backend)?;
-                        payload.extend_from_slice(&bytes);
-                    }
-                    offsets.push(i64::try_from(payload.len()).map_err(Error::backend)?);
-                    output_uris.push(uri);
-                }
-                let payload = group.finish_buffer(payload)?;
-                let data: ArrayRef = Arc::new(LargeBinaryArray::new(
-                    OffsetBuffer::new(ScalarBuffer::from(offsets)),
-                    Buffer::from(payload),
-                    Some(arrow_buffer::NullBuffer::from(data_validity)),
-                ));
-                let uris: ArrayRef = Arc::new(StringArray::from(output_uris));
-                let columns = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, field)| -> Result<ArrayRef> {
-                        Ok(match field.name().as_str() {
-                            "data" => data.clone(),
-                            "uri" => uris.clone(),
-                            // Range metadata applies only to preserved URI references.
-                            _ => {
-                                let validity = arrow_buffer::NullBuffer::from(
-                                    materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
-                                );
-                                let original = values.column(index).to_data();
-                                arrow_array::make_array(
-                                    original
-                                        .into_builder()
-                                        .nulls(arrow_buffer::NullBuffer::union(
-                                            values.column(index).nulls(),
-                                            Some(&validity),
-                                        ))
-                                        .build()
-                                        .map_err(Error::backend)?,
-                                )
-                            }
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                return Ok(Arc::new(
-                    StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
-                        .map_err(Error::backend)?,
-                ) as ArrayRef);
+                return self
+                    .materialize_native_blob(values, field, group, nulls)
+                    .await;
             }
+
             let mut columns = values.columns().to_vec();
             for (index, child) in &plan.children {
                 columns[*index] = self
@@ -501,5 +398,118 @@ impl BlobMaterializer {
                     .map_err(Error::backend)?,
             ) as ArrayRef)
         })
+    }
+
+    async fn materialize_native_blob(
+        &self,
+        values: &StructArray,
+        field: &arrow_schema::Field,
+        group: &mut BlobDownload,
+        nulls: Option<NullBuffer>,
+    ) -> Result<ArrayRef> {
+        let DataType::Struct(fields) = field.data_type() else {
+            unreachable!("native blob is a struct");
+        };
+        let malformed = || {
+            Error::backend(std::io::Error::other(format!(
+                "invalid logical blob field {}",
+                field.name()
+            )))
+        };
+        let data = values
+            .column_by_name("data")
+            .and_then(|array| array.as_any().downcast_ref::<LargeBinaryArray>())
+            .ok_or_else(malformed)?;
+        let uris = values
+            .column_by_name("uri")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(malformed)?;
+        let mut payload = Vec::new();
+        let mut offsets = vec![0_i64];
+        let mut output_uris = Vec::with_capacity(values.len());
+        let mut data_validity = Vec::with_capacity(values.len());
+        let mut materialized = Vec::with_capacity(values.len());
+        for row in 0..values.len() {
+            let mut uri = None;
+            let bytes = if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
+                None
+            } else if data.is_valid(row) {
+                Some(group.buffer(data.value(row))?)
+            } else if uris.is_valid(row) && self.mode == ExternalBlobMode::Ingest {
+                let bytes = group
+                    .download(uris.value(row), self.metrics.as_ref())
+                    .await?;
+                let number = |name: &str| {
+                    values.column_by_name(name).and_then(|array| {
+                        let array = array.as_any().downcast_ref::<arrow_array::UInt64Array>()?;
+                        array.is_valid(row).then(|| array.value(row))
+                    })
+                };
+                let start = number("position").unwrap_or(0);
+                let end = number("size")
+                    .map(|size| start.checked_add(size))
+                    .unwrap_or(Some(bytes.len() as u64))
+                    .filter(|&end| start <= end && end <= bytes.len() as u64)
+                    .ok_or_else(|| {
+                        Error::backend(std::io::Error::other(
+                            "blob range exceeds downloaded source",
+                        ))
+                    })?;
+                Some(bytes.slice(start as usize..end as usize))
+            } else {
+                if uris.is_valid(row) {
+                    uri = Some(uris.value(row).to_owned());
+                }
+                None
+            };
+            data_validity.push(bytes.is_some());
+            materialized.push(bytes.is_some());
+            if let Some(bytes) = bytes {
+                payload
+                    .try_reserve_exact(bytes.len())
+                    .map_err(Error::backend)?;
+                payload.extend_from_slice(&bytes);
+            }
+            offsets.push(i64::try_from(payload.len()).map_err(Error::backend)?);
+            output_uris.push(uri);
+        }
+        let payload = group.finish_buffer(payload)?;
+        let data: ArrayRef = Arc::new(LargeBinaryArray::new(
+            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            Buffer::from(payload),
+            Some(arrow_buffer::NullBuffer::from(data_validity)),
+        ));
+        let uris: ArrayRef = Arc::new(StringArray::from(output_uris));
+        let columns = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| -> Result<ArrayRef> {
+                Ok(match field.name().as_str() {
+                    "data" => data.clone(),
+                    "uri" => uris.clone(),
+                    // Range metadata applies only to preserved URI references.
+                    _ => {
+                        let validity = arrow_buffer::NullBuffer::from(
+                            materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
+                        );
+                        let original = values.column(index).to_data();
+                        arrow_array::make_array(
+                            original
+                                .into_builder()
+                                .nulls(arrow_buffer::NullBuffer::union(
+                                    values.column(index).nulls(),
+                                    Some(&validity),
+                                ))
+                                .build()
+                                .map_err(Error::backend)?,
+                        )
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Arc::new(
+            StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
+                .map_err(Error::backend)?,
+        ) as ArrayRef)
     }
 }
