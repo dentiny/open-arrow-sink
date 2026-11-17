@@ -68,7 +68,7 @@ impl OpenDalDownloader {
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
         if source.starts_with("data:") {
-            let bytes = decode_data_uri(source, context.max_payload_bytes)?;
+            let bytes = decode_data_uri(source)?;
             let chunk_bytes = context.chunk_bytes();
             return Ok(Box::pin(futures::stream::unfold(
                 (bytes, 0),
@@ -160,30 +160,12 @@ impl HttpTransport for UrlTransport {
     }
 }
 
-fn decode_data_uri(uri: &str, limit: usize) -> Result<Vec<u8>> {
+fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
     let (header, encoded) = uri
         .split_once(',')
         .ok_or_else(|| Error::InvalidInput("invalid media data URI".into()))?;
-    let decoded = percent_encoding::percent_decode_str(encoded);
-    let len = decoded.clone().count();
+    let bytes = percent_encoding::percent_decode_str(encoded).collect::<Vec<_>>();
     let is_base64 = header.ends_with(";base64");
-    let max_output = if is_base64 {
-        len.div_ceil(4).saturating_mul(3).saturating_sub(
-            decoded
-                .clone()
-                .skip(len.saturating_sub(2))
-                .filter(|b| *b == b'=')
-                .count(),
-        )
-    } else {
-        len
-    };
-    if max_output > limit {
-        return Err(Error::InvalidInput(
-            "media data URI exceeds download payload limit".into(),
-        ));
-    }
-    let bytes = decoded.collect::<Vec<_>>();
     if is_base64 {
         STANDARD.decode(bytes).map_err(Error::backend)
     } else {

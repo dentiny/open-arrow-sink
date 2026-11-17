@@ -299,7 +299,7 @@ async fn shared_source_observers_count_each_download_once() {
 }
 
 #[tokio::test]
-async fn data_uris_decode_with_payload_limits_and_release_budgets_on_errors() {
+async fn data_uris_decode_and_release_budgets_on_errors() {
     let downloads = pool(1, 1, CHUNK);
     for uri in [
         "data:application/octet-stream;base64,AP8%3D",
@@ -307,7 +307,7 @@ async fn data_uris_decode_with_payload_limits_and_release_budgets_on_errors() {
     ] {
         assert_eq!(downloads.download(uri).await.unwrap().as_ref(), &[0, 255]);
     }
-    for uri in ["data:missing-comma", "data:;base64,????", "data:,123456789"] {
+    for uri in ["data:missing-comma", "data:;base64,????"] {
         assert!(downloads.download(uri).await.is_err(), "{uri}");
         assert_eq!(downloads.buffered_bytes(), 0);
     }

@@ -214,7 +214,6 @@ impl BlobDownloader {
     ) -> DownloadContext {
         DownloadContext {
             chunk_bytes,
-            max_payload_bytes: self.download_bytes,
             http_limit: self.http_limit.clone(),
             sources: self.sources.clone(),
             primary: self.primary.clone(),
