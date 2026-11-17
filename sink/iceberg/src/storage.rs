@@ -72,15 +72,9 @@ impl IcebergStorage for OpenDalStorageFactory {
     async fn metadata(&self, path: &str) -> Result<FileMetadata> {
         let metadata = self
             .storage
-            .stat(&self.path(path)?)
+            .metadata(&self.path(path)?)
             .await
-            .map_err(backend)?
-            .ok_or_else(|| {
-                backend(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Iceberg file does not exist: {path}"),
-                ))
-            })?;
+            .map_err(backend)?;
         Ok(FileMetadata {
             size: metadata.content_length(),
         })
