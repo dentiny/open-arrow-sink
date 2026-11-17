@@ -4235,6 +4235,7 @@ version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
+ "arrow-cast",
  "arrow-schema",
  "bytes",
  "datafusion-physical-plan",
@@ -4264,6 +4265,7 @@ name = "open-arrow-sink-layer"
 version = "0.2.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
  "async-trait",
  "futures",

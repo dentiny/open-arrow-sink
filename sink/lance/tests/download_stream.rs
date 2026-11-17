@@ -194,36 +194,32 @@ async fn one_download_layer_handles_top_level_and_nested_urls() {
         Arc::new(StringArray::from(vec![Some(uri.as_str()), None])),
         None,
     );
-    let media = StructArray::new(
-        vec![Arc::new(Field::new(
-            "urls",
-            urls.data_type().clone(),
-            false,
-        ))]
-        .into(),
-        vec![Arc::new(urls)],
-        None,
-    );
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("top", DataType::Utf8, false),
-        Field::new("media", media.data_type().clone(), false),
-        Field::new("untouched", DataType::Utf8, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(StringArray::from(vec![uri.as_str()])),
-            Arc::new(media),
+    let media = StructArray::from(vec![(
+        Arc::new(Field::new("urls", urls.data_type().clone(), false)),
+        Arc::new(urls) as ArrayRef,
+    )]);
+    let batch = RecordBatch::try_from_iter([
+        (
+            "top",
+            Arc::new(StringArray::from(vec![uri.as_str()])) as ArrayRef,
+        ),
+        ("media", Arc::new(media)),
+        (
+            "untouched",
             Arc::new(StringArray::from(vec!["https://example.invalid/keep"])),
-        ],
-    )
+        ),
+    ])
     .unwrap();
     let sink = LanceDatasetSink::default().layer(DownloadBlobLayer::new(
         ["top".to_owned(), "media.urls".to_owned()].into(),
     ));
     let path = temp.path().join("dataset");
     let mut writer = sink
-        .open(Url::from_directory_path(&path).unwrap(), schema, options())
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            batch.schema(),
+            options(),
+        )
         .await
         .unwrap();
     writer.write(batch).await.unwrap();

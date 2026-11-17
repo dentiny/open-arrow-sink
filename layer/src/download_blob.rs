@@ -1,7 +1,7 @@
 //! Explicitly select URL columns for the backend's bounded blob downloader.
 use std::{collections::HashSet, sync::Arc};
 
-use arrow_array::{ArrayRef, make_array};
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field};
 use open_arrow_sink_core::{
     BLOB_METADATA_KEY, BLOB_METADATA_VALUE, DownloadFailurePolicy, DownloadMetrics,
@@ -82,7 +82,7 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
         if !self.columns.is_empty() && !self.inner.capability().supports_blob_handle {
             return Err(Error::Unsupported("blob URL inputs".into()));
         }
-        let mut selected = HashSet::new();
+        let mut fields = schema.fields().to_vec();
         let mut roots = HashSet::new();
         for name in self.columns.iter() {
             let path = if validation::unique_column_index(schema, name).is_some() {
@@ -90,41 +90,31 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
             } else {
                 name.split('.').map(str::to_owned).collect()
             };
-            let field = validation::nested_field(schema, &path).ok_or_else(|| {
-                Error::InvalidInput(format!("blob URL field must exist and be unique: {name}"))
+            let selected = validation::unique_column_index(schema, &path[0]).and_then(|index| {
+                mark_blob_field(&fields[index], &path[1..]).map(|field| (index, field))
+            });
+            let (index, field) = selected.ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "blob URL path must select a unique text field: {name}"
+                ))
             })?;
-            let mut ty = field.data_type();
-            while let DataType::List(item)
-            | DataType::LargeList(item)
-            | DataType::FixedSizeList(item, _) = ty
-            {
-                ty = item.data_type();
-            }
-            if !ty.is_string() {
-                return Err(Error::InvalidInput(format!(
-                    "blob URL field must be text: {name}"
-                )));
-            }
+            fields[index] = Arc::new(field.with_nullable(
+                fields[index].is_nullable() || self.failure_policy == DownloadFailurePolicy::Null,
+            ));
             roots.insert(path[0].clone());
-            selected.insert(path);
         }
         options.download_recovery = Some(DownloadRecovery {
             columns: roots.clone(),
             policy: self.failure_policy,
             metrics: self.metrics.clone(),
         });
-        let remaps = schema
-            .fields()
-            .iter()
+        let remaps = fields
+            .into_iter()
             .filter(|field| roots.contains(field.name()))
             .map(|field| {
-                let target = mark_blob_fields(field, &[field.name().clone()], &selected)
-                    .with_nullable(
-                        field.is_nullable() || self.failure_policy == DownloadFailurePolicy::Null,
-                    );
-                let ty = target.data_type().clone();
-                FieldRemap::new(field.name().clone(), target, move |array| {
-                    retype_array(array, &ty)
+                let ty = field.data_type().clone();
+                FieldRemap::new(field.name().clone(), field, move |array| {
+                    cast(&array, &ty).map_err(Error::backend)
                 })
             })
             .collect::<Vec<_>>();
@@ -148,59 +138,25 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
     }
 }
 
-fn mark_blob_fields(field: &Field, path: &[String], selected: &HashSet<Vec<String>>) -> Field {
+fn mark_blob_field(field: &Field, path: &[String]) -> Option<Field> {
     let ty = match field.data_type() {
-        DataType::List(item) => DataType::List(Arc::new(mark_blob_fields(item, path, selected))),
-        DataType::LargeList(item) => {
-            DataType::LargeList(Arc::new(mark_blob_fields(item, path, selected)))
-        }
+        DataType::List(item) => DataType::List(Arc::new(mark_blob_field(item, path)?)),
+        DataType::LargeList(item) => DataType::LargeList(Arc::new(mark_blob_field(item, path)?)),
         DataType::FixedSizeList(item, size) => {
-            DataType::FixedSizeList(Arc::new(mark_blob_fields(item, path, selected)), *size)
+            DataType::FixedSizeList(Arc::new(mark_blob_field(item, path)?), *size)
         }
-        _ if selected.contains(path) => {
+        DataType::Struct(fields) if !path.is_empty() => {
+            let index = validation::unique_field_index(fields, &path[0])?;
+            let mut fields = fields.to_vec();
+            fields[index] = Arc::new(mark_blob_field(&fields[index], &path[1..])?);
+            DataType::Struct(fields.into())
+        }
+        ty if path.is_empty() && ty.is_string() => {
             let mut metadata = field.metadata().clone();
             metadata.insert(BLOB_METADATA_KEY.into(), BLOB_METADATA_VALUE.into());
-            return field.clone().with_metadata(metadata);
+            return Some(field.clone().with_metadata(metadata));
         }
-        DataType::Struct(fields) => DataType::Struct(
-            fields
-                .iter()
-                .map(|child| {
-                    let mut path = path.to_vec();
-                    path.push(child.name().clone());
-                    Arc::new(mark_blob_fields(child, &path, selected))
-                })
-                .collect(),
-        ),
-        _ => return field.clone(),
+        _ => return None,
     };
-    field.clone().with_data_type(ty)
-}
-
-fn retype_array(array: ArrayRef, ty: &DataType) -> Result<ArrayRef> {
-    if array.data_type() == ty {
-        return Ok(array);
-    }
-    let fields: &[Arc<Field>] = match ty {
-        DataType::Struct(fields) => fields,
-        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
-            std::slice::from_ref(item)
-        }
-        _ => unreachable!("only container metadata changes"),
-    };
-    let data = array.to_data();
-    let children = fields
-        .iter()
-        .zip(data.child_data())
-        .map(|(field, child)| {
-            retype_array(make_array(child.clone()), field.data_type()).map(|array| array.to_data())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(make_array(
-        data.into_builder()
-            .data_type(ty.clone())
-            .child_data(children)
-            .build()
-            .map_err(Error::backend)?,
-    ))
+    Some(field.clone().with_data_type(ty))
 }

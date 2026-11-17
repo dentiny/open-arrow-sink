@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema};
 use lance::{
-    blob::{BlobFieldOptions, blob_field, blob_field_with_options},
+    blob::{BlobFieldOptions, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
 use open_arrow_sink_core::{
@@ -80,14 +80,33 @@ fn convert_blob_field(
     config: Option<&BlobHandleConfig>,
     has_blobs: &mut bool,
 ) -> Arc<Field> {
+    let marked = is_blob_field(field);
+    if marked || crate::blob::is_native_blob(field) {
+        *has_blobs |= marked;
+        let native = blob_field_with_options(
+            field.name(),
+            field.is_nullable(),
+            BlobFieldOptions {
+                inline_size_threshold: config.and_then(|config| config.inline_size_threshold),
+                dedicated_size_threshold: config.and_then(|config| config.dedicated_size_threshold),
+            },
+        );
+        let mut metadata = field.metadata().clone();
+        metadata.extend(native.metadata().clone());
+        let ty = if marked {
+            native.data_type()
+        } else {
+            field.data_type()
+        };
+        return Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(ty.clone())
+                .with_metadata(metadata),
+        );
+    }
     let ty = match field.data_type() {
-        _ if is_blob_field(field) => {
-            *has_blobs = true;
-            let native = blob_field(field.name(), field.is_nullable());
-            let mut metadata = field.metadata().clone();
-            metadata.extend(native.metadata().clone());
-            return blob_field_options(&Arc::new(native.with_metadata(metadata)), config);
-        }
         DataType::Struct(fields) => DataType::Struct(
             fields
                 .iter()
@@ -104,35 +123,7 @@ fn convert_blob_field(
         DataType::Map(item, sorted) => {
             DataType::Map(convert_blob_field(item, config, has_blobs), *sorted)
         }
-        _ => return blob_field_options(field, config),
+        _ => return field.clone(),
     };
-    blob_field_options(&Arc::new(field.as_ref().clone().with_data_type(ty)), config)
-}
-
-/// Apply per-write layout options to logical blob fields.
-/// Keep the input shape and metadata, overriding only explicitly configured thresholds.
-fn blob_field_options(field: &Arc<Field>, config: Option<&BlobHandleConfig>) -> Arc<Field> {
-    let Some(config) = config else {
-        return field.clone();
-    };
-    if (config.inline_size_threshold.is_none() && config.dedicated_size_threshold.is_none())
-        || field
-            .metadata()
-            .get("ARROW:extension:name")
-            .map(String::as_str)
-            != Some("lance.blob.v2")
-    {
-        return field.clone();
-    }
-    let native = blob_field_with_options(
-        field.name(),
-        field.is_nullable(),
-        BlobFieldOptions {
-            inline_size_threshold: config.inline_size_threshold,
-            dedicated_size_threshold: config.dedicated_size_threshold,
-        },
-    );
-    let mut metadata = field.metadata().clone();
-    metadata.extend(native.metadata().clone());
-    Arc::new(field.as_ref().clone().with_metadata(metadata))
+    Arc::new(field.as_ref().clone().with_data_type(ty))
 }

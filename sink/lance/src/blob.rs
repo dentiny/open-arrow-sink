@@ -1,8 +1,6 @@
 //! Logical blob input conversion. Layout and object ownership belong to Lance.
-use arrow_array::{
-    ArrayRef, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray, StructArray,
-    make_array,
-};
+use arrow_array::{ArrayRef, StructArray, make_array, new_null_array};
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field};
 use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
 use std::sync::Arc;
@@ -33,40 +31,17 @@ fn convert_blob_array(array: ArrayRef, ty: &DataType) -> Result<ArrayRef> {
     if array.data_type() == ty {
         return Ok(array);
     }
-    if matches!(
-        array.data_type(),
-        DataType::LargeBinary | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    ) {
+    if array.data_type().is_string() || array.data_type() == &DataType::LargeBinary {
         let DataType::Struct(fields) = ty else {
             unreachable!("logical blob field is a struct")
         };
-        let (data, uris): (ArrayRef, ArrayRef) = match array.data_type() {
-            DataType::LargeBinary => (array.clone(), Arc::new(StringArray::new_null(array.len()))),
-            DataType::Utf8 => (
-                Arc::new(LargeBinaryArray::new_null(array.len())),
-                array.clone(),
-            ),
-            DataType::LargeUtf8 => (
-                Arc::new(LargeBinaryArray::new_null(array.len())),
-                Arc::new(StringArray::from_iter(
-                    array
-                        .as_any()
-                        .downcast_ref::<LargeStringArray>()
-                        .unwrap()
-                        .iter(),
-                )),
-            ),
-            DataType::Utf8View => (
-                Arc::new(LargeBinaryArray::new_null(array.len())),
-                Arc::new(StringArray::from_iter(
-                    array
-                        .as_any()
-                        .downcast_ref::<StringViewArray>()
-                        .unwrap()
-                        .iter(),
-                )),
-            ),
-            _ => unreachable!("validated blob input type"),
+        let (data, uris) = if array.data_type() == &DataType::LargeBinary {
+            (array.clone(), new_null_array(&DataType::Utf8, array.len()))
+        } else {
+            (
+                new_null_array(&DataType::LargeBinary, array.len()),
+                cast(&array, &DataType::Utf8).map_err(Error::backend)?,
+            )
         };
 
         return Ok(Arc::new(StructArray::new(
@@ -104,7 +79,7 @@ fn convert_blob_array(array: ArrayRef, ty: &DataType) -> Result<ArrayRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::Array;
+    use arrow_array::{Array, LargeStringArray, StringArray, StringViewArray};
     use arrow_schema::{Field, Schema};
     use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteOptions, is_blob_field};
 
