@@ -44,6 +44,32 @@ commits or performs async cleanup. Failed or cancelled writes make the writer
 terminal; abort stops I/O and retains persisted output. A commit error can leave
 publication uncertain, so check the destination before retrying.
 
+For a complete input stream, import `SinkExt` and let the sink own the loop:
+
+```rust,ignore
+use open_arrow_sink::{SinkExt, WriteOptions};
+
+let summary = sink
+    .write_all(destination, schema, WriteOptions::default(), batches)
+    .await?;
+```
+
+`batches` can be any `Send` stream of `Result<RecordBatch, E>`, including an
+unpinned async stream with its own error type. The helper opens once, writes
+one batch at a time, and commits at EOF, even for empty input. Input or write
+errors trigger best-effort abort; `WriteAllError::Input(E)` or
+`WriteAllError::Sink(Error)` retains the original error if abort also fails.
+Open errors return before reading input. Commit errors return directly because
+commit consumes the writer and may have already published data. Cancelling the
+future or panicking drops the writer without async cleanup.
+
+Use `.write_all_with_progress(destination, schema, options, batches, |rows| { ... })`
+for a synchronous callback after each accepted batch, including empty batches.
+`summary.rows` and `summary.batches` count accepted input, before backend
+filtering or transformation; progress does not imply successful publication.
+See the [Parquet example](sink/parquet/examples/write_directory.rs) for a runnable
+use of `write_all`.
+
 `Layer<S>` wraps a sink while preserving its request type.
 `sink.layer(a).layer(b)` runs through `b → a → sink`.
 `UnorderedWriteLayer` uses `ParallelSink` to create several data writers with one

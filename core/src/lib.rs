@@ -14,7 +14,9 @@ pub use poison::Poison;
 mod session;
 mod sink;
 pub mod validation;
+mod write_all;
 mod writer;
+pub use write_all::{WriteAllError, WriteSummary};
 
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;
