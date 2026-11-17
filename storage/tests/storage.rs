@@ -305,3 +305,85 @@ fn object_paths_round_trip_through_urls_without_double_decoding() {
         );
     }
 }
+
+#[tokio::test]
+async fn for_url_reuses_the_operator_and_maps_bucket_relative_keys() {
+    // A caller-supplied backend needs no sink cloud feature. Keeping this exact
+    // operator is also what preserves custom OCI endpoints and credentials.
+    let operator = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+    operator
+        .write("prefix/雪 space/data", "existing")
+        .await
+        .unwrap();
+    let url: Url = "s3://oci-bucket/prefix/%E9%9B%AA%20space/data"
+        .parse()
+        .unwrap();
+    let storage = Storage::for_url(operator.clone(), &url).unwrap();
+    assert_eq!(storage.base_url().as_str(), "s3://oci-bucket/");
+    let path = storage.path(&url).unwrap();
+    assert_eq!(path.as_str(), "prefix/雪 space/data");
+    assert_eq!(storage.read(&path).await.unwrap(), "existing");
+    storage.write(&path, "updated".into()).await.unwrap();
+    assert_eq!(
+        operator.read(path.as_str()).await.unwrap().to_bytes(),
+        "updated"
+    );
+    assert!(
+        storage
+            .path(&"s3://other-bucket/prefix/data".parse().unwrap())
+            .is_err()
+    );
+    assert_eq!(storage.url(&path).unwrap(), url);
+}
+
+#[tokio::test]
+async fn for_url_filesystem_uses_absolute_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("雪 space").join("data.lance");
+    let url = Url::from_file_path(&file).unwrap();
+    let operator = opendal::Operator::new(opendal::services::Fs::default().root("/")).unwrap();
+    let storage = Storage::for_url(operator, &url).unwrap();
+    assert_eq!(storage.base_url().as_str(), "file:///");
+    let path = storage.path(&url).unwrap();
+    storage.write(&path, "data".into()).await.unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"data");
+    assert_eq!(storage.read(&path).await.unwrap(), "data");
+}
+
+#[test]
+fn for_url_rejects_invalid_urls_before_deriving_the_base() {
+    let operator = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+    for url in [
+        "s3://bucket/path?token=secret",
+        "s3://bucket/path#fragment",
+        "s3://user:secret@bucket/path",
+        "s3://bucket/%2e%2e%2foutside",
+        "s3://bucket/%FF",
+        "file://remote-host/path",
+        "mailto:user@example.com",
+    ] {
+        assert!(
+            matches!(
+                Storage::for_url(operator.clone(), &url.parse().unwrap()),
+                Err(Error::InvalidInput(_))
+            ),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn for_url_rejects_prefixed_operators_and_keeps_explicit_bases_available() {
+    let temp = tempfile::tempdir().unwrap();
+    let operator = opendal::Operator::new(
+        opendal::services::Fs::default().root(temp.path().to_str().unwrap()),
+    )
+    .unwrap();
+    let url = Url::from_file_path(temp.path().join("data.lance")).unwrap();
+    assert!(matches!(
+        Storage::for_url(operator.clone(), &url),
+        Err(Error::InvalidInput(_))
+    ));
+    let storage = Storage::new(operator, Url::from_directory_path(temp.path()).unwrap()).unwrap();
+    assert_eq!(storage.path(&url).unwrap().as_str(), "data.lance");
+}

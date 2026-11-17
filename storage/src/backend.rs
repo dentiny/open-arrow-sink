@@ -71,15 +71,38 @@ impl Storage {
         Ok(storage)
     }
 
+    /// Bind an existing operator to the root namespace of a target URL.
+    /// For example, `s3://bucket/prefix/data.lance` uses `s3://bucket/`,
+    /// and `file:///tmp/data.lance` uses `file:///`.
+    ///
+    /// The operator must already address the URL's backend and authority (for
+    /// example, the same S3 bucket), with its root set to `/`. Custom endpoints,
+    /// credentials, transports, and layers are preserved; no backend is rebuilt
+    /// and no I/O is performed. Cloud features are not required when the caller
+    /// supplies the operator. Filesystem operators must leave `atomic_write_dir`
+    /// unset, as required by [`Self::new`].
+    ///
+    /// Operators rooted at a prefix must use [`Self::new`] with the matching
+    /// explicit base URL instead. The URL must not contain queries, fragments,
+    /// or credentials.
+    pub fn for_url(operator: Operator, url: &Url) -> Result<Self> {
+        let base = crate::url::namespace_base(url)?;
+        if operator.info().root() != "/" {
+            return Err(Error::InvalidInput(
+                "Storage::for_url requires an operator rooted at /; use Storage::new for a custom root"
+                    .into(),
+            ));
+        }
+        Self::new(operator, base)
+    }
+
     /// Resolve a URL using enabled OpenDAL services. For custom credentials,
-    /// endpoints, or shared memory stores, pass a configured operator to `new`.
+    /// endpoints, or shared memory stores, pass a configured operator to
+    /// [`Self::for_url`] or [`Self::new`].
     /// Backend features are additive; no cloud services are enabled by default.
     pub fn from_url(url: &Url) -> Result<Self> {
-        validation::validate_url(url)?;
-        let mut base = url.clone();
-        base.set_path("/");
+        let base = crate::url::namespace_base(url)?;
         let operator = if url.scheme() == "file" {
-            validation::validate_file_url(url)?;
             // Keep create_new atomic. OpenDAL Fs atomic_write_dir checks for
             // existence before rename, which is insufficient for competing claims.
             Operator::new(opendal::services::Fs::default().root("/"))
