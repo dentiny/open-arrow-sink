@@ -2,12 +2,10 @@ use arrow_array::RecordBatch;
 use open_arrow_sink_core::{Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
-use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::memory_warehouse as storage;
+use open_arrow_sink_test_support::url as fixture_url;
 use std::num::NonZeroUsize;
 
-fn storage() -> Storage {
-    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
-}
 fn batch() -> RecordBatch {
     open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
@@ -24,7 +22,7 @@ fn options() -> WriteOptions {
 #[tokio::test]
 async fn shared_storage_abort_preserves_output() {
     let storage = storage();
-    let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+    let directory = fixture_url(&storage, "output/");
     let mut writer = ParquetDirectorySink::new(storage.clone())
         .open(directory.clone(), batch().schema(), options())
         .await
@@ -45,7 +43,7 @@ async fn shared_storage_abort_preserves_output() {
 async fn rolling_collision_is_preserved() {
     let storage = storage();
     let sink = ParquetDirectorySink::new(storage.clone());
-    let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+    let directory = fixture_url(&storage, "output/");
     let mut writer = sink
         .open(directory.clone(), batch().schema(), options())
         .await
@@ -97,7 +95,7 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
         (ParquetDirectorySink::default(), storage, directory)
     } else {
         let storage = storage();
-        let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+        let directory = fixture_url(&storage, "output/");
         (
             ParquetDirectorySink::new(storage.clone()),
             storage,
@@ -137,9 +135,7 @@ async fn session_observer_counts_parquet_output() {
     let metrics = open_arrow_sink_core::IoMetrics::default();
     let mut writer = ParquetDirectorySink::new(storage.clone())
         .open(
-            storage
-                .url(&ObjectPath::parse("measured/").unwrap())
-                .unwrap(),
+            fixture_url(&storage, "measured/"),
             batch().schema(),
             options().with_io_metrics(metrics.clone()),
         )
@@ -164,7 +160,7 @@ async fn empty_parallel_create_writes_one_file_and_append_adds_none(#[case] file
         (Storage::from_url(&directory).unwrap(), directory)
     } else {
         let storage = storage();
-        let directory = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+        let directory = fixture_url(&storage, "output/");
         (storage, directory)
     };
     let sink = ParquetDirectorySink::new(storage.clone());

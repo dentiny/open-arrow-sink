@@ -17,7 +17,7 @@ pub use sink_fixture::write_batches;
 mod parquet_fixture;
 mod storage_fixture;
 pub use parquet_fixture::read_parquet_dir;
-pub use storage_fixture::{memory_storage, path, sorted_list};
+pub use storage_fixture::{memory_storage, memory_warehouse, path, sorted_list, url};
 
 /// Bound asynchronous fixture work so a leaked permit fails instead of hanging.
 pub async fn within<F: std::future::Future>(future: F) -> F::Output {
