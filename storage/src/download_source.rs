@@ -31,6 +31,7 @@ pub trait Downloader: Send + Sync {
 #[derive(Clone)]
 pub struct DownloadContext {
     pub(crate) chunk_bytes: usize,
+    pub(crate) max_payload_bytes: usize,
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,

@@ -297,3 +297,67 @@ async fn shared_source_observers_count_each_download_once() {
         assert_eq!(independent.snapshot().bytes_read, expected);
     }
 }
+
+#[tokio::test]
+async fn data_uris_decode_with_payload_limits_and_release_budgets_on_errors() {
+    let downloads = pool(1, 1, CHUNK);
+    for uri in [
+        "data:application/octet-stream;base64,AP8%3D",
+        "data:,%00%ff",
+    ] {
+        assert_eq!(downloads.download(uri).await.unwrap().as_ref(), &[0, 255]);
+    }
+    for uri in ["data:missing-comma", "data:;base64,????", "data:,123456789"] {
+        assert!(downloads.download(uri).await.is_err(), "{uri}");
+        assert_eq!(downloads.buffered_bytes(), 0);
+    }
+    assert_eq!(downloads.download("data:,").await.unwrap().as_ref(), b"");
+}
+
+#[tokio::test]
+async fn registered_http_sources_apply_scoped_credentials_and_preserve_queries() {
+    struct ScopedTransport(bool);
+    impl HttpTransport for ScopedTransport {
+        async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
+            assert_eq!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap()),
+                self.0.then_some("Bearer source-token")
+            );
+            assert_eq!(request.uri().query(), Some("signature=keep"));
+            assert_eq!(request.uri().path().starts_with("/runs/"), self.0);
+            Transport.fetch(request).await
+        }
+    }
+    let source = open_arrow_sink_storage::Storage::new(
+        opendal::Operator::new(
+            opendal::services::Http::default()
+                .endpoint(URL)
+                .root("/runs/")
+                .token("source-token"),
+        )
+        .unwrap(),
+        format!("{URL}/runs/").parse().unwrap(),
+    )
+    .unwrap()
+    .with_http_transport(HttpTransporter::new(ScopedTransport(true)));
+    let downloads = pool(1, 1, BODY.len())
+        .with_downloader(Arc::new(
+            OpenDalDownloader::new(StorageConfig::default())
+                .unwrap()
+                .with_http_transport(HttpTransporter::new(ScopedTransport(false))),
+        ))
+        .with_source_storage(source);
+    for path in ["runs/media", "outside/media"] {
+        assert_eq!(
+            downloads
+                .download(&format!("{URL}/{path}?signature=keep#ignored"))
+                .await
+                .unwrap()
+                .as_ref(),
+            BODY
+        );
+    }
+}

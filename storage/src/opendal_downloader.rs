@@ -3,6 +3,7 @@ use crate::{
     DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer, Storage, StorageConfig,
     error, validation,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::TryStreamExt;
 use http::{Request, Response, Uri};
 use open_arrow_sink_core::{Error, Result, async_trait};
@@ -66,24 +67,48 @@ impl OpenDalDownloader {
 #[async_trait]
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
+        if source.starts_with("data:") {
+            let bytes = decode_data_uri(source, context.max_payload_bytes)?;
+            let chunk_bytes = context.chunk_bytes();
+            return Ok(Box::pin(futures::stream::unfold(
+                (bytes, 0),
+                move |(bytes, offset)| async move {
+                    if offset == bytes.len() {
+                        return None;
+                    }
+                    let end = offset.saturating_add(chunk_bytes).min(bytes.len());
+                    let chunk = bytes::Bytes::copy_from_slice(&bytes[offset..end]);
+                    Some((Ok(chunk), (bytes, end)))
+                },
+            )));
+        }
         let mut url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
-            let transport = if self
+            // Resolve credentials from explicit source namespaces. Keep query strings
+            // on the request URI, but omit them when matching storage scopes.
+            let mut scope = url.clone();
+            scope.set_query(None);
+            scope.set_fragment(None);
+            let downloader = match context.sources.configured_storage_for(&scope) {
+                Some(storage) => self.clone().with_http_storage(storage)?,
+                None => self.clone(),
+            };
+            let transport = if downloader
                 .http_budget
                 .as_ref()
                 .is_some_and(|limit| limit.shares_budget(&context.http_limit))
             {
-                self.transport.clone()
+                downloader.transport.clone()
             } else {
-                context.http_limit.wrap(self.transport.clone())
+                context.http_limit.wrap(downloader.transport.clone())
             };
             let transport = HttpTransporter::new(UrlTransport {
                 uri,
                 inner: transport,
             });
-            let mut operator = self.http.clone();
-            if let Some(observers) = context.unobserved_metrics(self.http_metrics.clone()) {
+            let mut operator = downloader.http.clone();
+            if let Some(observers) = context.unobserved_metrics(downloader.http_metrics.clone()) {
                 for metrics in observers.iter() {
                     operator = operator.layer(crate::IoMetricsLayer(metrics.clone()));
                 }
@@ -132,5 +157,36 @@ impl HttpTransport for UrlTransport {
     async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
         *request.uri_mut() = self.uri.clone();
         Ok(error::download_response(self.inner.fetch(request).await?))
+    }
+}
+
+fn decode_data_uri(uri: &str, limit: usize) -> Result<Vec<u8>> {
+    let (header, encoded) = uri
+        .split_once(',')
+        .ok_or_else(|| Error::InvalidInput("invalid media data URI".into()))?;
+    let decoded = percent_encoding::percent_decode_str(encoded);
+    let len = decoded.clone().count();
+    let is_base64 = header.ends_with(";base64");
+    let max_output = if is_base64 {
+        len.div_ceil(4).saturating_mul(3).saturating_sub(
+            decoded
+                .clone()
+                .skip(len.saturating_sub(2))
+                .filter(|b| *b == b'=')
+                .count(),
+        )
+    } else {
+        len
+    };
+    if max_output > limit {
+        return Err(Error::InvalidInput(
+            "media data URI exceeds download payload limit".into(),
+        ));
+    }
+    let bytes = decoded.collect::<Vec<_>>();
+    if is_base64 {
+        STANDARD.decode(bytes).map_err(Error::backend)
+    } else {
+        Ok(bytes)
     }
 }

@@ -4304,6 +4304,7 @@ name = "open-arrow-sink-storage"
 version = "0.3.0"
 dependencies = [
  "async-stream",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "http",
