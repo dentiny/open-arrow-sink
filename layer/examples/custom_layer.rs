@@ -74,8 +74,7 @@ impl Writer for LimitedWriter {
     }
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.check_batch(&batch)?;
-        self.inner.write(batch).await?;
-        Ok(())
+        self.inner.write(batch).await
     }
     async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         self.inner.commit().await
