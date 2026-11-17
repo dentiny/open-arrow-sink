@@ -96,3 +96,69 @@ fn nested_paths_reject_missing_or_ambiguous_siblings() {
         }
     }
 }
+
+#[test]
+fn compression_specs_visit_all_scopes_in_stable_order() {
+    use open_arrow_sink_core::CompressionSpec::*;
+    let options = CompressionOptions {
+        global: Some(Snappy),
+        columns: [("z".into(), Gzip), ("a".into(), Uncompressed)].into(),
+        nested_columns: [
+            (vec!["root".into(), "z".into()], Lz4Raw),
+            (vec!["root".into(), "a".into()], Zstd { level: None }),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        options.specs().collect::<Vec<_>>(),
+        [Snappy, Uncompressed, Gzip, Zstd { level: None }, Lz4Raw]
+    );
+    assert_eq!(CompressionOptions::default().specs().count(), 0);
+}
+
+#[test]
+fn zstd_levels_check_boundaries_and_every_scope() {
+    use open_arrow_sink_core::{CompressionSpec, Error, ZSTD_COMPRESSION_LEVEL_RANGE};
+    for level in [None, Some(-1), Some(0), Some(1), Some(22), Some(23)] {
+        let spec = CompressionSpec::Zstd { level };
+        for options in [
+            CompressionOptions {
+                global: Some(spec),
+                ..Default::default()
+            },
+            CompressionOptions {
+                columns: [("value".into(), spec)].into(),
+                ..Default::default()
+            },
+            CompressionOptions {
+                nested_columns: [(vec!["root".into(), "value".into()], spec)].into(),
+                ..Default::default()
+            },
+        ] {
+            for allow_zero in [false, true] {
+                let result = validation::validate_zstd_levels(
+                    &options,
+                    ZSTD_COMPRESSION_LEVEL_RANGE,
+                    allow_zero,
+                );
+                let valid = level
+                    .is_none_or(|level| (1..=22).contains(&level) || (allow_zero && level == 0));
+                if valid {
+                    result.unwrap();
+                } else {
+                    assert!(matches!(result, Err(Error::InvalidConfig(_))));
+                }
+            }
+        }
+    }
+    validation::validate_zstd_levels(
+        &CompressionOptions {
+            global: Some(CompressionSpec::Uncompressed),
+            ..Default::default()
+        },
+        ZSTD_COMPRESSION_LEVEL_RANGE,
+        false,
+    )
+    .unwrap();
+}

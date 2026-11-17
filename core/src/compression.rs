@@ -83,6 +83,17 @@ pub struct CompressionOptions {
     pub column_encodings: BTreeMap<String, StructuralEncoding>,
 }
 
+impl CompressionOptions {
+    /// Visit every codec request: global first, then top-level columns and nested
+    /// paths in their respective map order. Structural encodings are independent.
+    pub fn specs(&self) -> impl Iterator<Item = CompressionSpec> + '_ {
+        self.global
+            .into_iter()
+            .chain(self.columns.values().copied())
+            .chain(self.nested_columns.values().copied())
+    }
+}
+
 /// Supported codec scopes and structural encodings.
 /// An empty list means that scope is unsupported, including Uncompressed.
 /// Codec support does not imply support for every level; backends validate levels.

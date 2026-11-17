@@ -164,3 +164,60 @@ async fn option_layers_compose_before_backend_validation() {
         writer.commit().await.unwrap();
     }
 }
+
+#[cfg(feature = "zstd")]
+#[tokio::test]
+async fn invalid_zstd_levels_are_rejected_before_destination_io() {
+    for level in [-1, 0, 23] {
+        let spec = CompressionSpec::Zstd { level: Some(level) };
+        for compression in [
+            CompressionOptions {
+                global: Some(spec),
+                ..Default::default()
+            },
+            CompressionOptions {
+                columns: [("literal.dot".into(), spec)].into(),
+                ..Default::default()
+            },
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let directory = temp.path().join("uncreated");
+            let result = ParquetDirectorySink::default()
+                .open(
+                    Url::from_directory_path(&directory).unwrap(),
+                    batch().schema(),
+                    open_arrow_sink_test_support::unordered_options().with_compression(compression),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(open_arrow_sink_core::Error::InvalidConfig(_))
+            ));
+            assert!(!directory.exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn unsupported_zstd_scope_precedes_level_validation() {
+    let result = ParquetDirectorySink::default()
+        .open(
+            Url::parse("unsupported-scheme://destination/").unwrap(),
+            batch().schema(),
+            open_arrow_sink_test_support::unordered_options().with_compression(
+                CompressionOptions {
+                    nested_columns: [(
+                        vec!["nested".into(), "value".into()],
+                        CompressionSpec::Zstd { level: Some(23) },
+                    )]
+                    .into(),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(open_arrow_sink_core::Error::Unsupported(_))
+    ));
+}

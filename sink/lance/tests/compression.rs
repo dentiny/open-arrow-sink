@@ -363,3 +363,39 @@ async fn compression_survives_rolling_and_round_trips() {
     .unwrap();
     assert_eq!(actual_values, expected_values);
 }
+
+#[tokio::test]
+async fn invalid_zstd_levels_are_rejected_before_destination_io() {
+    for level in [-1, 23] {
+        let spec = CompressionSpec::Zstd { level: Some(level) };
+        for compression in [
+            CompressionOptions {
+                global: Some(spec),
+                ..Default::default()
+            },
+            CompressionOptions {
+                columns: [("raw".into(), spec)].into(),
+                ..Default::default()
+            },
+            CompressionOptions {
+                nested_columns: [(vec!["nested".into(), "text".into()], spec)].into(),
+                ..Default::default()
+            },
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("uncreated");
+            let result = LanceDatasetSink::default()
+                .open(
+                    Url::from_directory_path(&path).unwrap(),
+                    batch(1).schema(),
+                    options().with_compression(compression),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(open_arrow_sink_core::Error::InvalidConfig(_))
+            ));
+            assert!(!path.exists());
+        }
+    }
+}

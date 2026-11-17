@@ -37,6 +37,11 @@ pub(crate) fn writer_properties(
     schema: &SchemaRef,
     options: &CompressionOptions,
 ) -> Result<WriterProperties> {
+    open_arrow_sink_core::validation::validate_zstd_levels(
+        options,
+        open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE,
+        false,
+    )?;
     let mut builder = WriterProperties::builder();
     if let Some(global) = options.global {
         builder = builder.set_compression(codec(global)?);

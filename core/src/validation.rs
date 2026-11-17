@@ -105,6 +105,34 @@ pub fn validate_compression_options(
     Ok(())
 }
 
+/// Check explicit Zstandard levels in every compression scope before destination I/O.
+/// Call after [`validate_options`] or [`validate_compression_options`] so unsupported
+/// scopes and codecs retain their capability errors. `allow_zero` permits a backend's
+/// native default level in addition to the inclusive range; omitted levels are valid.
+pub fn validate_zstd_levels(
+    options: &CompressionOptions,
+    range: std::ops::RangeInclusive<i32>,
+    allow_zero: bool,
+) -> Result<()> {
+    for spec in options.specs() {
+        if let crate::CompressionSpec::Zstd { level: Some(level) } = spec
+            && !(range.contains(&level) || (allow_zero && level == 0))
+        {
+            let default = if allow_zero {
+                " or 0 (native default)"
+            } else {
+                ""
+            };
+            return Err(Error::InvalidConfig(format!(
+                "Zstd compression level must be between {} and {}{default}: {level}",
+                range.start(),
+                range.end(),
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Check that the sink supports the requested partition transform.
 pub fn validate_partition_options(
     options: Option<PartitionOptions>,
