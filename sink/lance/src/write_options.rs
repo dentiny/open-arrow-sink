@@ -99,11 +99,7 @@ fn blob_field_options(field: &Arc<Field>, config: Option<&BlobHandleConfig>) -> 
         return field.clone();
     };
     if (config.inline_size_threshold.is_none() && config.dedicated_size_threshold.is_none())
-        || field
-            .metadata()
-            .get("ARROW:extension:name")
-            .map(String::as_str)
-            != Some("lance.blob.v2")
+        || !crate::blob::is_native_blob(field)
     {
         return field.clone();
     }

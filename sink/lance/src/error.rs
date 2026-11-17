@@ -31,7 +31,7 @@ pub(crate) fn unsupported_compression(compression: open_arrow_sink_core::Compres
 }
 
 pub(crate) fn invalid_compression_path(path: &[String]) -> Error {
-    Error::Unsupported(format!(
+    Error::InvalidConfig(format!(
         "nested compression path must identify one field: {path:?}"
     ))
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::error;
+use crate::{blob::is_native_blob, error};
 
 use arrow_array::RecordBatchOptions;
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -19,15 +19,9 @@ pub(crate) fn validate_encoding(schema: &Schema, options: &CompressionOptions) -
     // Native blob descriptors are opaque to Lance users. Keep this backend rule
     // here rather than teaching core's Arrow path resolver about Lance metadata.
     for path in options.nested_columns.keys() {
-        if (1..path.len()).any(|end| {
-            validation::nested_field(schema, &path[..end]).is_some_and(|field| {
-                field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2")
-            })
-        }) {
+        if (1..path.len())
+            .any(|end| validation::nested_field(schema, &path[..end]).is_some_and(is_native_blob))
+        {
             return Err(error::nested_blob_compression(path));
         }
     }
@@ -37,14 +31,7 @@ pub(crate) fn validate_encoding(schema: &Schema, options: &CompressionOptions) -
             .get(field.name())
             .copied()
             .or(options.structural_encoding);
-        if encoding.is_some()
-            && (is_blob_field(field)
-                || field
-                    .metadata()
-                    .get("ARROW:extension:name")
-                    .map(String::as_str)
-                    == Some("lance.blob.v2"))
-        {
+        if encoding.is_some() && (is_blob_field(field) || is_native_blob(field)) {
             return Err(error::blob_structural_encoding(field.name()));
         }
     }
