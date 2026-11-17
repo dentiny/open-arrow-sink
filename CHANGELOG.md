@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-11-16
+
+- Download S3 blobs whose URLs include MD5 metadata query parameters.
+- Replace positional return tuples with named result structs.
+- Release all public workspace crates at 0.2.0 with matching internal dependency requirements; retain Arrow 58, Lance 14.0.3, and OpenDAL 0.59.5 compatibility.
+
 ## 0.1.1
 
 - Update the Lance crate family to 14.0.3.
