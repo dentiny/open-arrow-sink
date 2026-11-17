@@ -11,7 +11,8 @@ async fn missing_metadata_preserves_the_shared_not_found_error_as_source() {
         .unwrap()
         .metadata()
         .await
-        .unwrap_err();
+        .err()
+        .expect("missing metadata must fail");
     let source = std::error::Error::source(&error).unwrap();
     assert!(matches!(
         source.downcast_ref::<open_arrow_sink_core::Error>(),
