@@ -8,7 +8,7 @@ use more_asserts::assert_gt;
 use open_arrow_sink_core::{
     BlobHandleConfig, IndexSpec, IndexType, ParallelSink, Sink, SinkExt, UploadConfig, WriteOptions,
 };
-use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_lance::LanceDatasetSink;
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::ObjectPath;
 use open_arrow_sink_test_support::memory_warehouse as storage;
