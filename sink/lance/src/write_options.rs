@@ -75,6 +75,11 @@ pub(crate) fn write_params(
     }
 }
 
+/// Recursively convert blob-marked binary/URL fields to Lance's logical Blob type.
+/// Apply only explicitly configured size thresholds to new and existing Blob fields,
+/// preserving other metadata and nullability. Ordinary fields keep their types.
+/// Set `has_blobs` when a marked field is converted, without clearing its prior value;
+/// the caller uses it to enable managed blobs in the schema metadata.
 fn convert_blob_field(
     field: &Arc<Field>,
     config: Option<&BlobHandleConfig>,
