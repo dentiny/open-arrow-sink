@@ -1,4 +1,6 @@
-use open_arrow_sink_storage::{BlobDownloader, Storage, StorageConfig, StorageResolver, Url};
+use open_arrow_sink_storage::{
+    BlobDownloader, DestinationResolver, Storage, StorageConfig, StorageResolver, Url,
+};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -14,10 +16,7 @@ use crate::{
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
 #[derive(Debug, Clone)]
 pub struct LanceDatasetSink {
-    storage: Option<Storage>,
-    // Clones share URL-derived backends and their HTTP request budgets.
-    resolved: StorageResolver,
-    config: StorageConfig,
+    destination_resolver: DestinationResolver,
     sources: Option<Arc<StorageResolver>>,
     downloader: Arc<BlobDownloader>,
     encoding_buffer_size: Option<NonZeroUsize>,
@@ -26,9 +25,7 @@ pub struct LanceDatasetSink {
 impl Default for LanceDatasetSink {
     fn default() -> Self {
         Self {
-            storage: None,
-            resolved: StorageResolver::default(),
-            config: StorageConfig::default(),
+            destination_resolver: DestinationResolver::default(),
             sources: None,
             downloader: Arc::new(
                 BlobDownloader::with_defaults().expect("valid default download limits"),
@@ -40,7 +37,7 @@ impl Default for LanceDatasetSink {
 impl LanceDatasetSink {
     pub fn new(storage: Storage) -> Self {
         Self {
-            storage: Some(storage),
+            destination_resolver: DestinationResolver::new(storage),
             ..Self::default()
         }
     }
@@ -48,8 +45,7 @@ impl LanceDatasetSink {
     /// Validation happens now, before opening a destination or performing I/O.
     /// External source stores retain their independently configured policies.
     pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
-        config.validate()?;
-        self.config = config;
+        self.destination_resolver = self.destination_resolver.with_config(config)?;
         Ok(self)
     }
 
@@ -87,11 +83,7 @@ impl LanceDatasetSink {
     }
     fn destination_for(&self, url: Url, options: &WriteOptions) -> Result<LanceDestination> {
         let sources = self.source_resolver();
-        let storage = match &self.storage {
-            Some(storage) => storage.clone(),
-            None => self.resolved.storage_for(&url)?,
-        }
-        .with_config(self.config.clone())?;
+        let storage = self.destination_resolver.resolve(&url)?;
         let downloader = Arc::new(
             self.downloader
                 .as_ref()

@@ -1,10 +1,10 @@
-use open_arrow_sink_core::{Error, Result};
+use open_arrow_sink_core::Result;
 
 use crate::validation;
 
-/// A validated, decoded path relative to a Storage namespace.
-/// Convert external URLs with `Storage::path`, or parse decoded relative keys. Paths
-/// contain no endpoint or credentials; use them with the storage that resolved them.
+/// A decoded object key within a Storage namespace.
+/// Convert external URLs with `Storage::path`, or parse keys without URL decoding.
+/// Keys contain no endpoint or credentials; use them with the storage that resolved them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectPath(String);
 
@@ -13,13 +13,9 @@ impl ObjectPath {
         Self(path)
     }
 
-    /// Parse a decoded path relative to a storage root, without URL decoding.
-    /// Reject absolute paths and traversal; percent signs remain literal key bytes.
+    /// Parse a decoded object key, preserving its bytes without URL decoding.
+    /// Leading slashes, dot segments, backslashes, and percent signs are literal.
     pub fn parse(path: &str) -> Result<Self> {
-        validation::validate_path(path)?;
-        if path.starts_with('/') {
-            return Err(Error::InvalidInput("invalid storage path".into()));
-        }
         Ok(Self(path.to_owned()))
     }
 
@@ -45,12 +41,8 @@ impl ObjectPath {
         Self(self.0.trim_end_matches('/').to_owned())
     }
 
-    /// Append a decoded relative path beneath this directory.
+    /// Append a decoded key to this directory prefix without interpreting its segments.
     pub fn join(&self, child: &str) -> Result<Self> {
-        validation::validate_path(child)?;
-        if child.starts_with('/') {
-            return Err(Error::InvalidInput("invalid storage path".into()));
-        }
         Ok(Self(format!("{}{child}", self.as_dir().as_str())))
     }
 

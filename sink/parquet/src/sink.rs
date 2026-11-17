@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{Storage, StorageConfig, StorageResolver, Url};
+use open_arrow_sink_storage::{DestinationResolver, Storage, StorageConfig, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -18,27 +18,21 @@ use crate::{
 /// directory transaction. Drop does not commit or clean up incomplete files.
 #[derive(Debug, Clone, Default)]
 pub struct ParquetDirectorySink {
-    storage: Option<Storage>,
-    // Clones share URL-derived backends and their HTTP request budgets.
-    resolved: StorageResolver,
-    config: StorageConfig,
+    destination_resolver: DestinationResolver,
 }
 
 impl ParquetDirectorySink {
     /// Reuse a configured OpenDAL operator, including credentials and layers.
     pub fn new(storage: Storage) -> Self {
         Self {
-            storage: Some(storage),
-            resolved: StorageResolver::default(),
-            config: StorageConfig::default(),
+            destination_resolver: DestinationResolver::new(storage),
         }
     }
 
     /// Configure retry/timeout policies for explicit or URL-derived storage.
     /// Validation happens now, before opening a destination or performing I/O.
     pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
-        config.validate()?;
-        self.config = config;
+        self.destination_resolver = self.destination_resolver.with_config(config)?;
         Ok(self)
     }
 }
@@ -103,12 +97,10 @@ impl ParquetDirectorySink {
     ) -> Result<WriteSession<u64>> {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
-        let storage = match &self.storage {
-            Some(storage) => storage.clone(),
-            None => self.resolved.storage_for(&directory)?,
-        }
-        .with_config(self.config.clone())?
-        .with_write_options(&options);
+        let storage = self
+            .destination_resolver
+            .resolve(&directory)?
+            .with_write_options(&options);
         let destination =
             Arc::new(Destination::open(storage, directory, &schema, options.mode).await?);
         let committer = Box::new(ParquetCommitter {
@@ -116,20 +108,17 @@ impl ParquetDirectorySink {
             schema: schema.clone(),
             properties: properties.clone(),
         });
-        let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
-        for index in 0..count.get() {
-            writers.push(ParquetDirectoryWriter::new(
-                destination.clone(),
-                schema.clone(),
-                options.target_file_size,
-                properties.clone(),
-                index,
-            ));
-        }
         Ok(WriteSession {
-            writers: writers
-                .into_iter()
-                .map(|writer| Box::new(writer) as Box<dyn DataWriter<Output = u64>>)
+            writers: (0..count.get())
+                .map(|index| {
+                    Box::new(ParquetDirectoryWriter::new(
+                        destination.clone(),
+                        schema.clone(),
+                        options.target_file_size,
+                        properties.clone(),
+                        index,
+                    )) as Box<dyn DataWriter<Output = u64>>
+                })
                 .collect(),
             committer,
         })

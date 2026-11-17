@@ -40,7 +40,6 @@ pub(crate) fn decoded_path(url: &Url) -> Result<Cow<'_, str>> {
     let decoded = percent_decode_str(url.path())
         .decode_utf8()
         .map_err(|_| Error::InvalidInput("URL path must be UTF-8".into()))?;
-    validate_path(decoded.trim_start_matches('/'))?;
     Ok(decoded)
 }
 
@@ -58,18 +57,6 @@ pub(crate) fn relative_path(base_url: &Url, base: &str, url: &Url) -> Result<Str
     path.strip_prefix(base)
         .map(str::to_owned)
         .ok_or_else(|| Error::InvalidInput("URL is outside the storage root".into()))
-}
-
-pub(crate) fn validate_path(path: &str) -> Result<()> {
-    if path.contains(['\\', '\0'])
-        || path
-            .trim_end_matches('/')
-            .split('/')
-            .any(|part| part == "." || part == "..")
-    {
-        return Err(Error::InvalidInput("invalid storage path".into()));
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_nonroot_path(path: &str) -> Result<()> {

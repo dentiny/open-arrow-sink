@@ -82,8 +82,7 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
     }
 
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
-        self.writer.write(batch).await?;
-        Ok(())
+        self.writer.write(batch).await
     }
 
     async fn commit(mut self: Box<Self>) -> Result<crate::CommitSummary> {

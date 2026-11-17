@@ -126,23 +126,6 @@ is not verified. Other storage queries remain unsupported; HTTP(S) queries are
 preserved. For the public PMC bucket, register an unsigned S3 operator configured
 with `region("us-east-1")` and `skip_signature()` via `with_source_storage`.
 
-## Extending and developing
-
-Implement a **sink** for a new destination, or a **layer** for reusable policy or
-batch transformation. Read [Extending](docs/extending.md) for the contracts and
-runnable examples. Extensions can live in separate crates without registration.
-
-Use a Rust toolchain supporting edition 2024. Lance dependencies also need
-`protoc`. Run the workspace checks from the repository root:
-
-```sh
-cargo fmt --all --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-```
-
-MIT licensed.
-
 ## Commit results
 
 `Writer::commit()`, `SessionCommitter::commit(outputs)`, and
@@ -161,3 +144,20 @@ progress.finish(summary.rows_committed, summary.rows_failed_blobs);
 Empty sessions report zero rows; errors
 return no summary and do not imply publication was rolled back. Custom writers,
 committers, and decorators must return or forward the summary.
+
+## Extending and developing
+
+Implement a **sink** for a new destination, or a **layer** for reusable policy or
+batch transformation. Read [Extending](docs/extending.md) for the contracts and
+runnable examples. Extensions can live in separate crates without registration.
+
+Use a Rust toolchain supporting edition 2024. Lance dependencies also need
+`protoc`. Run the workspace checks from the repository root:
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+```
+
+MIT licensed.

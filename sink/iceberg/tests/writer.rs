@@ -9,7 +9,6 @@ use iceberg::spec::{
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions};
 use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, iceberg};
-use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -29,62 +28,113 @@ impl Default for TableSpec {
         }
     }
 }
-async fn table(spec: TableSpec) -> (Arc<dyn Catalog>, TableIdent, SchemaRef) {
-    let catalog: Arc<dyn Catalog> = Arc::new(
-        MemoryCatalogBuilder::default()
-            .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
-                open_arrow_sink_test_support::memory_storage("memory:///"),
-            )))
-            .load(
-                "test",
-                HashMap::from([(
-                    MEMORY_CATALOG_WAREHOUSE.into(),
-                    "memory:///warehouse".into(),
-                )]),
+struct TestTable {
+    catalog: Arc<dyn Catalog>,
+    identifier: TableIdent,
+    schema: SchemaRef,
+}
+
+impl TestTable {
+    async fn new(spec: TableSpec) -> Self {
+        let catalog: Arc<dyn Catalog> = Arc::new(
+            MemoryCatalogBuilder::default()
+                .with_storage_factory(Arc::new(OpenDalStorageFactory::new(
+                    open_arrow_sink_test_support::memory_storage("memory:///"),
+                )))
+                .load(
+                    "test",
+                    HashMap::from([(
+                        MEMORY_CATALOG_WAREHOUSE.into(),
+                        "memory:///warehouse".into(),
+                    )]),
+                )
+                .await
+                .unwrap(),
+        );
+        let namespace = NamespaceIdent::new("tests".into());
+        catalog
+            .create_namespace(&namespace, HashMap::new())
+            .await
+            .unwrap();
+        let schema = Schema::builder()
+            .with_fields(vec![
+                Arc::new(NestedField::optional(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Int),
+                )),
+                Arc::new(NestedField::optional(
+                    2,
+                    "value",
+                    Type::Primitive(spec.value_type),
+                )),
+            ])
+            .build()
+            .unwrap();
+        let table = catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name("numbers".into())
+                    .schema(schema)
+                    .partition_spec_opt(spec.partition)
+                    .properties(spec.properties)
+                    .build(),
             )
             .await
-            .unwrap(),
-    );
-    let namespace = NamespaceIdent::new("tests".into());
-    catalog
-        .create_namespace(&namespace, HashMap::new())
-        .await
-        .unwrap();
-    let schema = Schema::builder()
-        .with_fields(vec![
-            Arc::new(NestedField::optional(
-                1,
-                "id",
-                Type::Primitive(PrimitiveType::Int),
-            )),
-            Arc::new(NestedField::optional(
-                2,
-                "value",
-                Type::Primitive(spec.value_type),
-            )),
-        ])
-        .build()
-        .unwrap();
-    let table = catalog
-        .create_table(
-            &namespace,
-            TableCreation::builder()
-                .name("numbers".into())
-                .schema(schema)
-                .partition_spec_opt(spec.partition)
-                .properties(spec.properties)
-                .build(),
+            .unwrap();
+        let schema = Arc::new(
+            iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema()).unwrap(),
+        );
+        Self {
+            catalog,
+            identifier: TableIdent::new(namespace, "numbers".into()),
+            schema,
+        }
+    }
+
+    fn sink(&self) -> IcebergTableSink {
+        IcebergTableSink::new(self.catalog.clone())
+    }
+
+    async fn open(&self, options: WriteOptions) -> Box<dyn open_arrow_sink_core::Writer> {
+        self.sink()
+            .open(self.identifier.clone(), self.schema.clone(), options)
+            .await
+            .unwrap()
+    }
+
+    async fn load(&self) -> iceberg::table::Table {
+        self.catalog.load_table(&self.identifier).await.unwrap()
+    }
+
+    async fn snapshot(&self) -> Option<i64> {
+        self.load().await.metadata().current_snapshot_id()
+    }
+
+    async fn rows(&self) -> RecordBatch {
+        open_arrow_sink_test_support::concat_sorted(
+            &self.schema,
+            &read(&self.load().await).await,
+            &["id", "value"],
         )
-        .await
+        .unwrap()
+    }
+
+    async fn assert_rows(&self, expected: &[RecordBatch]) {
+        let actual = self.rows().await;
+        let expected = open_arrow_sink_test_support::concat_sorted(
+            &actual.schema(),
+            expected,
+            &["id", "value"],
+        )
         .unwrap();
-    let schema = Arc::new(
-        iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema()).unwrap(),
-    );
-    (
-        catalog,
-        TableIdent::new(namespace, "numbers".into()),
-        schema,
-    )
+        assert_eq!(actual, expected);
+    }
+
+    async fn files(&self) -> Vec<iceberg::scan::FileScanTask> {
+        files(&self.load().await).await
+    }
 }
 
 fn batch(schema: SchemaRef) -> RecordBatch {
@@ -127,29 +177,6 @@ async fn files(table: &iceberg::table::Table) -> Vec<iceberg::scan::FileScanTask
         .await
         .unwrap()
 }
-async fn snapshot(catalog: &dyn Catalog, identifier: &TableIdent) -> Option<i64> {
-    catalog
-        .load_table(identifier)
-        .await
-        .unwrap()
-        .metadata()
-        .current_snapshot_id()
-}
-async fn rows(catalog: &dyn Catalog, identifier: &TableIdent) -> RecordBatch {
-    let table = catalog.load_table(identifier).await.unwrap();
-    let schema = Arc::new(
-        iceberg::arrow::schema_to_arrow_schema(table.metadata().current_schema()).unwrap(),
-    );
-    open_arrow_sink_test_support::concat_sorted(&schema, &read(&table).await, &["id", "value"])
-        .unwrap()
-}
-async fn assert_rows(catalog: &dyn Catalog, identifier: &TableIdent, expected: &[RecordBatch]) {
-    let actual = rows(catalog, identifier).await;
-    let expected =
-        open_arrow_sink_test_support::concat_sorted(&actual.schema(), expected, &["id", "value"])
-            .unwrap();
-    assert_eq!(actual, expected);
-}
 async fn assert_partitions(table: &iceberg::table::Table, expected: HashSet<Struct>) {
     let files = files(table).await;
     assert_eq!(files.len(), expected.len());
@@ -168,10 +195,30 @@ async fn assert_partitions(table: &iceberg::table::Table, expected: HashSet<Stru
     }
 }
 
+async fn partitioned_round_trip(
+    table: &TestTable,
+    data: &RecordBatch,
+    partition_type: PartitionType,
+    slices: &[(usize, usize)],
+    expected_partitions: HashSet<Struct>,
+) {
+    let mut writer = table
+        .open(options().with_partition(PartitionOptions { partition_type }))
+        .await;
+    let mut expected_rows = Vec::new();
+    for &(offset, length) in slices {
+        let batch = data.slice(offset, length);
+        writer.write(batch.clone()).await.unwrap();
+        expected_rows.push(batch);
+    }
+    assert!(table.snapshot().await.is_none());
+    writer.commit().await.unwrap();
+    table.assert_rows(&expected_rows).await;
+    assert_partitions(&table.load().await, expected_partitions).await;
+}
+
 struct ConformanceFixture {
-    catalog: Arc<dyn Catalog>,
-    identifier: TableIdent,
-    schema: SchemaRef,
+    table: TestTable,
     sink: IcebergTableSink,
 }
 
@@ -179,36 +226,33 @@ struct ConformanceFixture {
 impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixture {
     type Sink = IcebergTableSink;
     async fn new() -> Self {
-        let (catalog, identifier, schema) = table(TableSpec::default()).await;
+        let table = TestTable::new(TableSpec::default()).await;
         Self {
-            sink: IcebergTableSink::new(catalog.clone()),
-            catalog,
-            identifier,
-            schema,
+            sink: table.sink(),
+            table,
         }
     }
     fn sink(&self) -> &Self::Sink {
         &self.sink
     }
     fn request(&self) -> TableIdent {
-        self.identifier.clone()
+        self.table.identifier.clone()
     }
     fn batch(&self) -> RecordBatch {
-        batch(self.schema.clone())
+        batch(self.table.schema.clone())
     }
     fn options(&self) -> WriteOptions {
         options()
     }
     async fn read(&self) -> Vec<RecordBatch> {
-        let table = self.catalog.load_table(&self.identifier).await.unwrap();
+        let table = self.table.load().await;
         read(&table).await
     }
     async fn assert_rolled(&self) {
-        let table = self.catalog.load_table(&self.identifier).await.unwrap();
-        assert!(files(&table).await.len() > 1);
+        assert!(self.table.files().await.len() > 1);
     }
     async fn create_sibling(&self) {
-        let table = self.catalog.load_table(&self.identifier).await.unwrap();
+        let table = self.table.load().await;
         let mut writer = table
             .file_io()
             .new_output("memory:///warehouse/keep")
@@ -220,7 +264,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         writer.close().await.unwrap();
     }
     async fn assert_sibling(&self) {
-        let table = self.catalog.load_table(&self.identifier).await.unwrap();
+        let table = self.table.load().await;
         assert_eq!(
             table
                 .file_io()
@@ -233,54 +277,30 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         );
     }
     async fn assert_aborted(&self) {
-        assert_eq!(
-            snapshot(self.catalog.as_ref(), &self.identifier).await,
-            None
-        );
-        assert_eq!(
-            rows(self.catalog.as_ref(), &self.identifier)
-                .await
-                .num_rows(),
-            0
-        );
+        assert_eq!(self.table.snapshot().await, None);
+        assert_eq!(self.table.rows().await.num_rows(), 0);
     }
 }
 
-#[rstest::rstest]
-#[case::round_trip(Case::RoundTrip)]
-#[case::rolling(Case::Rolling)]
-#[case::unsupported_modes(Case::UnsupportedModes)]
-#[case::empty_commit(Case::EmptyCommit)]
-#[case::abort(Case::Abort)]
-#[case::schema_mismatch(Case::SchemaMismatch)]
-#[case::abort_before_write(Case::AbortBeforeWrite)]
-#[case::poisoned_commit(Case::PoisonedCommit)]
-#[tokio::test]
-async fn shared_sink_contracts(#[case] case: Case) {
-    assert_case::<ConformanceFixture>(case).await;
-}
+open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);
 
 #[tokio::test]
 async fn commits_round_trip_batches_and_preserve_existing_rows() {
-    let (catalog, identifier, schema) = table(TableSpec::default()).await;
-    let sink = IcebergTableSink::new(catalog.clone());
-    let batch = batch(schema.clone());
-    let mut writer = sink
-        .open(identifier.clone(), schema.clone(), options())
-        .await
-        .unwrap();
-    assert_eq!(writer.schema(), &schema);
+    let table = TestTable::new(TableSpec::default()).await;
+    let batch = batch(table.schema.clone());
+    let mut writer = table.open(options()).await;
+    assert_eq!(writer.schema(), &table.schema);
     writer.write(batch.slice(0, 1)).await.unwrap();
     writer.write(batch.slice(1, 2)).await.unwrap();
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_committed, 3);
 
-    let table = catalog.load_table(&identifier).await.unwrap();
+    let loaded = table.load().await;
     let data_prefix = format!(
         "{}/data/",
-        table.metadata().location().trim_end_matches('/')
+        loaded.metadata().location().trim_end_matches('/')
     );
-    let tasks = files(&table).await;
+    let tasks = files(&loaded).await;
     assert!(!tasks.is_empty());
     for task in tasks {
         let name = task.data_file_path().strip_prefix(&data_prefix).unwrap();
@@ -289,57 +309,39 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
             "expected a file directly under data/: {name}"
         );
     }
-    assert_rows(catalog.as_ref(), &identifier, std::slice::from_ref(&batch)).await;
+    table.assert_rows(std::slice::from_ref(&batch)).await;
 
-    let mut writer = sink
-        .open(identifier.clone(), schema, options())
-        .await
-        .unwrap();
+    let mut writer = table.open(options()).await;
     writer.write(batch.slice(0, 1)).await.unwrap();
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_committed, 1);
-    assert_rows(
-        catalog.as_ref(),
-        &identifier,
-        &[batch.clone(), batch.slice(0, 1)],
-    )
-    .await;
+    table.assert_rows(&[batch.clone(), batch.slice(0, 1)]).await;
 }
 
 #[tokio::test]
 async fn abort_preserves_snapshot_and_committed_content() {
-    let (catalog, identifier, schema) = table(TableSpec::default()).await;
-    let sink = IcebergTableSink::new(catalog.clone());
-    let batch = batch(schema.clone());
-    let mut writer = sink
-        .open(identifier.clone(), schema.clone(), options())
-        .await
-        .unwrap();
+    let table = TestTable::new(TableSpec::default()).await;
+    let batch = batch(table.schema.clone());
+    let mut writer = table.open(options()).await;
     writer.write(batch.clone()).await.unwrap();
     writer.commit().await.unwrap();
-    let before = snapshot(catalog.as_ref(), &identifier).await;
-    let expected = rows(catalog.as_ref(), &identifier).await;
-    let mut writer = sink
-        .open(identifier.clone(), schema, options())
-        .await
-        .unwrap();
+    let before = table.snapshot().await;
+    let expected = table.rows().await;
+    let mut writer = table.open(options()).await;
     writer.write(batch).await.unwrap();
     writer.abort().await.unwrap();
-    assert_eq!(snapshot(catalog.as_ref(), &identifier).await, before);
-    assert_eq!(rows(catalog.as_ref(), &identifier).await, expected);
+    assert_eq!(table.snapshot().await, before);
+    assert_eq!(table.rows().await, expected);
 }
 
 #[tokio::test]
 async fn empty_commit_keeps_table_empty() {
-    let (catalog, identifier, schema) = table(TableSpec::default()).await;
-    let before = snapshot(catalog.as_ref(), &identifier).await;
-    let writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, options())
-        .await
-        .unwrap();
+    let table = TestTable::new(TableSpec::default()).await;
+    let before = table.snapshot().await;
+    let writer = table.open(options()).await;
     writer.commit().await.unwrap();
-    assert_eq!(snapshot(catalog.as_ref(), &identifier).await, before);
-    assert_eq!(rows(catalog.as_ref(), &identifier).await.num_rows(), 0);
+    assert_eq!(table.snapshot().await, before);
+    assert_eq!(table.rows().await.num_rows(), 0);
 }
 
 #[rstest::rstest]
@@ -356,31 +358,26 @@ async fn target_file_size_rolls_files_without_losing_rows(
         .map(|size| ("write.target-file-size-bytes".to_owned(), size.to_owned()))
         .into_iter()
         .collect();
-    let (catalog, identifier, schema) = table(TableSpec {
+    let table = TestTable::new(TableSpec {
         properties,
         ..Default::default()
     })
     .await;
-    let batch = batch(schema.clone());
+    let batch = batch(table.schema.clone());
     let mut write_options = options();
     write_options.target_file_size = target_file_size;
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(identifier.clone(), schema, write_options)
-        .await
-        .unwrap();
+    let mut writer = table.open(write_options).await;
     for _ in 0..3 {
         writer.write(batch.clone()).await.unwrap();
     }
     writer.commit().await.unwrap();
-    let table = catalog.load_table(&identifier).await.unwrap();
-    let files = files(&table).await;
-    assert_eq!(files.len(), file_count);
-    assert_rows(catalog.as_ref(), &identifier, &vec![batch; 3]).await;
+    assert_eq!(table.files().await.len(), file_count);
+    table.assert_rows(&vec![batch; 3]).await;
 }
 
 #[tokio::test]
 async fn identity_partitions_round_trip_and_record_metadata() {
-    let (catalog, identifier, schema) = table(TableSpec {
+    let table = TestTable::new(TableSpec {
         partition: Some(
             UnboundPartitionSpec::builder()
                 .add_partition_field(1, "id_partition", Transform::Identity)
@@ -393,7 +390,7 @@ async fn identity_partitions_round_trip_and_record_metadata() {
     })
     .await;
     let batch = RecordBatch::try_new(
-        schema.clone(),
+        table.schema.clone(),
         vec![
             Arc::new(Int32Array::from(vec![
                 Some(1),
@@ -414,21 +411,6 @@ async fn identity_partitions_round_trip_and_record_metadata() {
         ],
     )
     .unwrap();
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            options().with_partition(PartitionOptions::default()),
-        )
-        .await
-        .unwrap();
-    writer.write(batch.slice(0, 0)).await.unwrap();
-    writer.write(batch.slice(0, 4)).await.unwrap();
-    writer.write(batch.slice(4, 2)).await.unwrap();
-    assert!(snapshot(catalog.as_ref(), &identifier).await.is_none());
-    writer.commit().await.unwrap();
-    assert_rows(catalog.as_ref(), &identifier, &[batch]).await;
-    let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<Struct> = [
         (Some(1), Some(10)),
         (Some(2), Some(20)),
@@ -439,15 +421,21 @@ async fn identity_partitions_round_trip_and_record_metadata() {
     .into_iter()
     .map(|(id, value)| Struct::from_iter([id.map(Literal::int), value.map(Literal::long)]))
     .collect();
-    assert_partitions(&table, expected).await;
+    partitioned_round_trip(
+        &table,
+        &batch,
+        PartitionType::Identity,
+        &[(0, 0), (0, 4), (4, 2)],
+        expected,
+    )
+    .await;
 }
 
 async fn partition_writer(
     transform: Transform,
     partition_type: PartitionType,
 ) -> (
-    Arc<dyn Catalog>,
-    TableIdent,
+    TestTable,
     RecordBatch,
     Box<dyn open_arrow_sink_core::Writer>,
 ) {
@@ -455,23 +443,20 @@ async fn partition_writer(
         .add_partition_field(1, "id_partition", transform)
         .unwrap()
         .build();
-    let (catalog, identifier, schema) = table(TableSpec {
+    let table = TestTable::new(TableSpec {
         partition: Some(spec),
         ..Default::default()
     })
     .await;
-    let data = batch(schema.clone());
-    let writer = IcebergTableSink::new(catalog.clone())
+    let data = batch(table.schema.clone());
+    let writer = table
         .open(
-            identifier.clone(),
-            schema,
             options()
                 .with_target_file_size(1)
                 .with_partition(PartitionOptions { partition_type }),
         )
-        .await
-        .unwrap();
-    (catalog, identifier, data, writer)
+        .await;
+    (table, data, writer)
 }
 
 #[rstest::rstest]
@@ -482,10 +467,10 @@ async fn partitioned_empty_sessions_do_not_publish(
     #[case] transform: Transform,
     #[case] partition_type: PartitionType,
 ) {
-    let (catalog, identifier, data, mut writer) = partition_writer(transform, partition_type).await;
+    let (table, data, mut writer) = partition_writer(transform, partition_type).await;
     writer.write(data.slice(0, 0)).await.unwrap();
     writer.commit().await.unwrap();
-    assert!(snapshot(catalog.as_ref(), &identifier).await.is_none());
+    assert!(table.snapshot().await.is_none());
 }
 
 #[rstest::rstest]
@@ -497,14 +482,13 @@ async fn partitioned_file_rolling_preserves_rows(
     #[case] partition_type: PartitionType,
     #[case] file_count: usize,
 ) {
-    let (catalog, identifier, data, mut writer) = partition_writer(transform, partition_type).await;
+    let (table, data, mut writer) = partition_writer(transform, partition_type).await;
     writer.write(data.slice(0, 0)).await.unwrap();
     writer.write(data.clone()).await.unwrap();
     writer.write(data.clone()).await.unwrap();
     writer.commit().await.unwrap();
-    let table = catalog.load_table(&identifier).await.unwrap();
-    assert_eq!(files(&table).await.len(), file_count);
-    assert_rows(catalog.as_ref(), &identifier, &[data.clone(), data]).await;
+    assert_eq!(table.files().await.len(), file_count);
+    table.assert_rows(&[data.clone(), data]).await;
 }
 
 // Before the epoch, two values in the same year, next year, and null.
@@ -535,42 +519,29 @@ async fn temporal_partitions_round_trip_and_record_metadata(
         .add_partition_field(2, "time_partition", transform)
         .unwrap()
         .build();
-    let (catalog, identifier, schema) = table(TableSpec {
+    let table = TestTable::new(TableSpec {
         partition: Some(spec),
         value_type,
         ..Default::default()
     })
     .await;
     let data = RecordBatch::try_new(
-        schema.clone(),
+        table.schema.clone(),
         vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3, 4])), values],
     )
     .unwrap();
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            options().with_partition(PartitionOptions { partition_type }),
-        )
-        .await
-        .unwrap();
-    writer.write(data.slice(0, 0)).await.unwrap();
-    // Revisit partitions across batch boundaries.
-    writer.write(data.slice(0, 3)).await.unwrap();
-    writer.write(data.slice(3, 2)).await.unwrap();
-    writer.write(data.slice(1, 1)).await.unwrap();
-    writer.commit().await.unwrap();
-    let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<_> = expected_keys
         .into_iter()
         .map(|key| Struct::from_iter([Some(Literal::int(key))]))
         .chain([Struct::from_iter([None])])
         .collect();
-    assert_partitions(&table, expected).await;
-    assert_rows(
-        catalog.as_ref(),
-        &identifier,
-        &[data.clone(), data.slice(1, 1)],
+    // Revisit partitions across batch boundaries and preserve the repeated row.
+    partitioned_round_trip(
+        &table,
+        &data,
+        partition_type,
+        &[(0, 0), (0, 3), (3, 2), (1, 1)],
+        expected,
     )
     .await;
 }
@@ -590,42 +561,32 @@ async fn numeric_partitions_round_trip_and_record_metadata(
         .add_partition_field(2, "value_partition", transform)
         .unwrap()
         .build();
-    let (catalog, identifier, schema) = table(TableSpec {
+    let table = TestTable::new(TableSpec {
         partition: Some(spec),
         ..Default::default()
     })
     .await;
     let ids: Vec<i32> = (0..values.len() as i32).collect();
     let data = RecordBatch::try_new(
-        schema.clone(),
+        table.schema.clone(),
         vec![
             Arc::new(Int32Array::from(ids.clone())),
             Arc::new(Int64Array::from(values.clone())),
         ],
     )
     .unwrap();
-    let mut writer = IcebergTableSink::new(catalog.clone())
-        .open(
-            identifier.clone(),
-            schema,
-            options().with_partition(PartitionOptions { partition_type }),
-        )
-        .await
-        .unwrap();
-    writer.write(data.slice(0, 0)).await.unwrap();
-    writer.write(data.slice(0, 1)).await.unwrap();
-    writer
-        .write(data.slice(1, data.num_rows() - 1))
-        .await
-        .unwrap();
-    writer.commit().await.unwrap();
-    assert_rows(catalog.as_ref(), &identifier, &[data]).await;
-    let table = catalog.load_table(&identifier).await.unwrap();
     let expected: HashSet<_> = keys
         .into_iter()
         .map(|key| Struct::from_iter([key]))
         .collect();
-    assert_partitions(&table, expected).await;
+    partitioned_round_trip(
+        &table,
+        &data,
+        partition_type,
+        &[(0, 0), (0, 1), (1, data.num_rows() - 1)],
+        expected,
+    )
+    .await;
 }
 
 #[rstest::rstest]
@@ -655,28 +616,24 @@ async fn compression_survives_rolling_and_round_trips(
     #[case] expected: parquet::basic::Compression,
 ) {
     use parquet::file::reader::{FileReader, SerializedFileReader};
-    let (catalog, identifier, schema) = table(TableSpec::default()).await;
-    let before = catalog.load_table(&identifier).await.unwrap();
-    let sink = IcebergTableSink::new(catalog.clone());
+    let table = TestTable::new(TableSpec::default()).await;
+    let before = table.load().await;
     let mut options = options();
     options.compression.global = Some(codec);
     options.target_file_size = Some(1);
-    let mut writer = sink
-        .open(identifier.clone(), schema.clone(), options)
-        .await
-        .unwrap();
-    writer.write(batch(schema.clone())).await.unwrap();
-    writer.write(batch(schema)).await.unwrap();
+    let mut writer = table.open(options).await;
+    writer.write(batch(table.schema.clone())).await.unwrap();
+    writer.write(batch(table.schema.clone())).await.unwrap();
     writer.commit().await.unwrap();
-    let table = catalog.load_table(&identifier).await.unwrap();
+    let loaded = table.load().await;
     assert_eq!(
-        table.metadata().properties(),
+        loaded.metadata().properties(),
         before.metadata().properties()
     );
-    let files = files(&table).await;
+    let files = files(&loaded).await;
     assert!(!files.is_empty());
     for file in files {
-        let bytes = table
+        let bytes = loaded
             .file_io()
             .new_input(file.data_file_path())
             .unwrap()
@@ -690,7 +647,7 @@ async fn compression_survives_rolling_and_round_trips(
             }
         }
     }
-    assert_eq!(rows(catalog.as_ref(), &identifier).await.num_rows(), 6);
+    assert_eq!(table.rows().await.num_rows(), 6);
 }
 
 #[tokio::test]
@@ -699,16 +656,17 @@ async fn unordered_commit_preserves_all_rows() {
     use open_arrow_sink_layer::UnorderedWriteLayer;
     use std::num::NonZeroUsize;
 
-    let (catalog, identifier, schema) = table(TableSpec::default()).await;
-    let mut writer = IcebergTableSink::new(catalog.clone())
+    let table = TestTable::new(TableSpec::default()).await;
+    let mut writer = table
+        .sink()
         .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
-        .open(identifier.clone(), schema.clone(), options())
+        .open(table.identifier.clone(), table.schema.clone(), options())
         .await
         .unwrap();
     let mut expected = Vec::new();
     for id in 0..8 {
         let batch = RecordBatch::try_new(
-            schema.clone(),
+            table.schema.clone(),
             vec![
                 Arc::new(Int32Array::from(vec![Some(id * 2), Some(id * 2 + 1), None])),
                 Arc::new(Int64Array::from(vec![Some(i64::from(id)), None, Some(-1)])),
@@ -719,5 +677,5 @@ async fn unordered_commit_preserves_all_rows() {
         expected.push(batch);
     }
     writer.commit().await.unwrap();
-    assert_rows(catalog.as_ref(), &identifier, &expected).await;
+    table.assert_rows(&expected).await;
 }
