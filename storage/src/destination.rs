@@ -56,9 +56,9 @@ mod tests {
     async fn explicit_operator_and_observers_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
         let url = Url::from_file_path(temp.path().join("key")).unwrap();
-        let storage = open_arrow_sink_test_support::memory_storage(
-            Url::from_directory_path(temp.path()).unwrap().as_str(),
-        );
+        let operator = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+        let storage =
+            Storage::new(operator, Url::from_directory_path(temp.path()).unwrap()).unwrap();
         let metrics = IoMetrics::default();
         let storage = storage.with_io_metrics(metrics.clone());
         let destination = DestinationStorage::new(storage.clone());
