@@ -3,6 +3,7 @@
 //! their owning tests; the HTTP helper serves valid protocol responses.
 mod batch;
 pub mod conformance;
+mod destination;
 pub mod http;
 mod options;
 pub mod parallel_sink;
@@ -10,6 +11,7 @@ mod payload;
 mod sink_fixture;
 
 pub use batch::{concat_sorted, int64_batch, int64_schema, sort_batch};
+pub use destination::TempDirDestination;
 pub use options::unordered_options;
 pub use payload::seeded_bytes;
 pub use sink_fixture::write_batches;
