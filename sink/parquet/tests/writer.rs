@@ -96,8 +96,7 @@ async fn write_all_round_trips_the_input_stream() {
 }
 
 struct ConformanceFixture {
-    _temp: tempfile::TempDir,
-    path: std::path::PathBuf,
+    destination: open_arrow_sink_test_support::TempDirDestination,
     sink: ParquetDirectorySink,
 }
 
@@ -105,11 +104,8 @@ struct ConformanceFixture {
 impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixture {
     type Sink = ParquetDirectorySink;
     async fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("output");
         Self {
-            _temp: temp,
-            path,
+            destination: open_arrow_sink_test_support::TempDirDestination::new("output"),
             sink: ParquetDirectorySink::default(),
         }
     }
@@ -117,7 +113,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         &self.sink
     }
     fn request(&self) -> Url {
-        Url::from_directory_path(&self.path).unwrap()
+        self.destination.url()
     }
     fn batch(&self) -> RecordBatch {
         batch()
@@ -126,7 +122,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         options()
     }
     async fn read(&self) -> Vec<RecordBatch> {
-        let directory = Url::from_directory_path(&self.path).unwrap();
+        let directory = self.destination.url();
         let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
         let batches = open_arrow_sink_test_support::read_parquet_dir(
             &storage,
@@ -153,24 +149,20 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         );
     }
     async fn create_sibling(&self) {
-        tokio::fs::write(self.path.parent().unwrap().join("keep.txt"), "keep")
-            .await
-            .unwrap();
+        self.destination.create_sibling().await;
     }
     async fn assert_sibling(&self) {
-        assert_eq!(
-            tokio::fs::read_to_string(self.path.parent().unwrap().join("keep.txt"))
-                .await
-                .unwrap(),
-            "keep"
-        );
+        self.destination.assert_sibling().await;
     }
     async fn assert_aborted(&self) {
         // Lazy writers may abort before creating the destination. Once data
         // exists, abort must retain it (also covered by the preservation test).
-        if tokio::fs::try_exists(&self.path).await.unwrap() {
+        if tokio::fs::try_exists(self.destination.path())
+            .await
+            .unwrap()
+        {
             assert!(
-                tokio::fs::read_dir(&self.path)
+                tokio::fs::read_dir(self.destination.path())
                     .await
                     .unwrap()
                     .next_entry()

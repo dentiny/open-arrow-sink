@@ -15,4 +15,5 @@ open-arrow-sink-storage.workspace = true
 parquet = { workspace = true, features = ["arrow"] }
 axum.workspace = true
 futures.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "sync", "time"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "time", "fs"] }
