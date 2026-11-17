@@ -84,7 +84,7 @@ async fn rejects_urls_outside_the_namespace() {
         "memory:///outside/file",
         "s3://bucket/warehouse/file",
         "memory:///warehouse/file?x=y",
-        "memory:///warehouse/%2e%2e%2ffile",
+        "memory:///warehouse/%FF",
     ] {
         assert!(
             matches!(
@@ -94,10 +94,6 @@ async fn rejects_urls_outside_the_namespace() {
             "{url}"
         );
     }
-    assert!(matches!(
-        ObjectPath::parse("../outside"),
-        Err(Error::InvalidInput(_))
-    ));
 }
 
 #[tokio::test]
@@ -298,10 +294,44 @@ fn object_paths_round_trip_through_urls_without_double_decoding() {
         assert!(url.query().is_none());
         assert!(url.fragment().is_none());
     }
-    for key in ["/absolute", "../outside", "a/../b", "a/./b", "a\\b", "a\0b"] {
-        assert!(
-            matches!(ObjectPath::parse(key), Err(Error::InvalidInput(_))),
-            "{key}"
-        );
+}
+
+#[test]
+fn object_keys_preserve_literal_segments_when_parsed_and_joined() {
+    let prefix = ObjectPath::parse("prefix").unwrap();
+    for key in ["/leading", "../outside", "a/../b", "a/./b", "a\\b", "a\0b"] {
+        let path = ObjectPath::parse(key).unwrap();
+        assert_eq!(path.as_str(), key);
+        assert_eq!(prefix.join(key).unwrap().as_str(), format!("prefix/{key}"));
     }
+}
+
+#[test]
+fn object_key_urls_decode_segments_without_filesystem_checks() {
+    let storage = memory();
+    for (url, key) in [
+        ("memory:///warehouse/%2e%2e%2ffile", "../file"),
+        ("memory:///warehouse/a%2f.%2fb", "a/./b"),
+        ("memory:///warehouse/a%5cb", "a\\b"),
+        ("memory:///warehouse/%2fleading", "/leading"),
+    ] {
+        assert_eq!(storage.path(&url.parse().unwrap()).unwrap().as_str(), key);
+    }
+}
+
+#[tokio::test]
+async fn object_keys_with_dot_segments_and_backslashes_are_readable_and_listable() {
+    let storage = memory();
+    let keys = ["a/../b", "a/./b", "a\\b"];
+    for key in keys {
+        let path = ObjectPath::parse(key).unwrap();
+        storage.write(&path, key.into()).await.unwrap();
+        assert_eq!(storage.read(&path).await.unwrap(), key);
+    }
+    let root = ObjectPath::parse("").unwrap();
+    let mut listed = storage.list(&root).await.unwrap();
+    listed.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let mut expected = keys.map(|key| ObjectPath::parse(key).unwrap());
+    expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(listed, expected);
 }
