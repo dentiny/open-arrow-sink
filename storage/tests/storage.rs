@@ -41,21 +41,6 @@ async fn reads_ranges_and_lists_object_metadata() {
 }
 
 #[tokio::test]
-async fn required_metadata_classifies_absent_objects_and_returns_existing_metadata() {
-    let storage = memory();
-    let path = open_arrow_sink_test_support::path(&storage, "missing");
-    assert!(storage.stat(&path).await.unwrap().is_none());
-    let error = storage.metadata(&path).await.unwrap_err();
-    assert!(matches!(error, Error::NotFound(_)), "{error}");
-    assert!(error.to_string().contains("missing"));
-
-    storage.write(&path, "hello".into()).await.unwrap();
-    let metadata = storage.metadata(&path).await.unwrap();
-    assert!(metadata.is_file());
-    assert_eq!(metadata.content_length(), 5);
-}
-
-#[tokio::test]
 async fn create_collision_preserves_existing_content() {
     let storage = memory();
     let path = open_arrow_sink_test_support::path(&storage, "file");

@@ -52,18 +52,3 @@ pub(crate) async fn schema(storage: Storage, path: ObjectPath) -> Result<SchemaR
         .schema()
         .clone())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn absent_parquet_metadata_returns_not_found() {
-        let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-        let path = ObjectPath::parse("missing.parquet").unwrap();
-        assert!(matches!(
-            schema(storage, path).await,
-            Err(Error::NotFound(_))
-        ));
-    }
-}

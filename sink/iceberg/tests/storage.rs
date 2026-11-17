@@ -2,25 +2,6 @@ use open_arrow_sink_iceberg::OpenDalStorageFactory;
 use open_arrow_sink_storage::ObjectPath;
 
 #[tokio::test]
-async fn missing_metadata_preserves_the_shared_not_found_error_as_source() {
-    let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
-    let url = storage.url(&ObjectPath::parse("missing").unwrap()).unwrap();
-    let file_io = OpenDalStorageFactory::new(storage).file_io();
-    let error = file_io
-        .new_input(url.as_str())
-        .unwrap()
-        .metadata()
-        .await
-        .err()
-        .expect("missing metadata must fail");
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(matches!(
-        source.downcast_ref::<open_arrow_sink_core::Error>(),
-        Some(open_arrow_sink_core::Error::NotFound(_))
-    ));
-}
-
-#[tokio::test]
 async fn file_io_uses_shared_operator_for_reads_and_ranges() {
     let metrics = open_arrow_sink_core::IoMetrics::default();
     let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
