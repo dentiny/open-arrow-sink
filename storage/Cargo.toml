@@ -15,9 +15,9 @@ azure = ["opendal/services-azblob"]
 [dependencies]
 thiserror.workspace = true
 async-stream.workspace = true
-object_store = { version = "0.14.2", default-features = false }
+object_store.workspace = true
 object_store_opendal = { version = "0.60.5", default-features = false }
-bytes = "1"
+bytes.workspace = true
 futures.workspace = true
 http = "1"
 tokio = { workspace = true, features = ["sync"] }
