@@ -16,10 +16,7 @@ impl ObjectPath {
     /// Parse a decoded path relative to a storage root, without URL decoding.
     /// Reject absolute paths and traversal; percent signs remain literal key bytes.
     pub fn parse(path: &str) -> Result<Self> {
-        validation::validate_path(path)?;
-        if path.starts_with('/') {
-            return Err(Error::InvalidInput("invalid storage path".into()));
-        }
+        validate_relative(path)?;
         Ok(Self(path.to_owned()))
     }
 
@@ -47,14 +44,19 @@ impl ObjectPath {
 
     /// Append a decoded relative path beneath this directory.
     pub fn join(&self, child: &str) -> Result<Self> {
-        validation::validate_path(child)?;
-        if child.starts_with('/') {
-            return Err(Error::InvalidInput("invalid storage path".into()));
-        }
+        validate_relative(child)?;
         Ok(Self(format!("{}{child}", self.as_dir().as_str())))
     }
 
     pub(crate) fn require_nonroot(&self) -> Result<()> {
         validation::validate_nonroot_path(self.as_str())
     }
+}
+
+fn validate_relative(path: &str) -> Result<()> {
+    validation::validate_path(path)?;
+    if path.starts_with('/') {
+        return Err(Error::InvalidInput("invalid storage path".into()));
+    }
+    Ok(())
 }
