@@ -87,12 +87,7 @@ impl Storage {
     /// or credentials.
     pub fn for_url(operator: Operator, url: &Url) -> Result<Self> {
         let base = crate::url::namespace_base(url)?;
-        if operator.info().root() != "/" {
-            return Err(Error::InvalidInput(
-                "Storage::for_url requires an operator rooted at /; use Storage::new for a custom root"
-                    .into(),
-            ));
-        }
+        validation::validate_operator_root(&operator)?;
         Self::new(operator, base)
     }
 

@@ -5,6 +5,16 @@ use open_arrow_sink_core::{Error, Result};
 use percent_encoding::percent_decode_str;
 use url::{Position, Url};
 
+pub(crate) fn validate_operator_root(operator: &opendal::Operator) -> Result<()> {
+    if operator.info().root() != "/" {
+        return Err(Error::InvalidInput(
+            "Storage::for_url requires an operator rooted at /; use Storage::new for a custom root"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_url(url: &Url) -> Result<()> {
     if url.cannot_be_a_base()
         || url.query().is_some()
