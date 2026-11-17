@@ -93,6 +93,13 @@ impl<T: Send + 'static> UnorderedWriter<T> {
         result
     }
 
+    fn drain_ready(&mut self) -> Result<()> {
+        while let Some(Some(completed)) = self.pending.next().now_or_never() {
+            self.complete(completed)?;
+        }
+        Ok(())
+    }
+
     async fn drain_all(&mut self) -> Result<()> {
         let mut first_error = None;
         while let Some(completed) = self.pending.next().await {
@@ -129,9 +136,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         // The outer GuardedWriter makes cancellation and errors terminal.
         validation::validate_batch(&self.schema, &batch)?;
-        while let Some(Some(completed)) = self.pending.next().now_or_never() {
-            self.complete(completed)?;
-        }
+        self.drain_ready()?;
         if batch.num_rows() > 0 {
             if self.idle.is_empty() {
                 let completed = self.pending.next().await.expect("writer set is nonempty");
@@ -146,9 +151,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
                 .boxed(),
             );
             // Poll all pending writers, including the newly accepted batch.
-            while let Some(Some(completed)) = self.pending.next().now_or_never() {
-                self.complete(completed)?;
-            }
+            self.drain_ready()?;
         }
         Ok(())
     }
