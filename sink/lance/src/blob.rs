@@ -5,12 +5,14 @@ use arrow_array::{
 use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef, is_blob_field};
 use std::sync::Arc;
 
+const NATIVE_BLOB_EXTENSION: &str = "lance.blob.v2";
+
 pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
     field
         .metadata()
         .get("ARROW:extension:name")
         .map(String::as_str)
-        == Some("lance.blob.v2")
+        == Some(NATIVE_BLOB_EXTENSION)
 }
 
 /// Logical input reuses the binary buffers, retaining download reservations until
