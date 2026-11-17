@@ -119,15 +119,7 @@ async fn uninstrumented_sessions_leave_measured_totals_intact() {
 async fn io_is_visible_before_commit_and_retained_after_failure(#[case] fail_commit: bool) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let sink = sink(Config {
-        failures: if fail_commit {
-            [Failure::Commit].into()
-        } else {
-            Default::default()
-        },
-        ..config()
-    })
-    .layer(layer);
+    let sink = sink(config().failing(fail_commit.then_some(Failure::Commit))).layer(layer);
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
     writer.write(input()).await.unwrap();
     assert_eq!(metrics.snapshot().bytes_written, 10);
@@ -162,15 +154,7 @@ async fn shared_handle_in_nested_layers_does_not_duplicate_io() {
 async fn poisoned_writer_operations_do_not_change_metrics(#[case] abort: bool) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let backend = sink(config());
-    backend
-        .0
-        .lock()
-        .unwrap()
-        .config
-        .failures
-        .insert(Failure::Write);
-    let sink = backend.layer(layer);
+    let sink = sink(config().failing([Failure::Write])).layer(layer);
     let mut writer = sink.open((), input().schema(), options()).await.unwrap();
     assert!(matches!(
         writer.write(input()).await,
@@ -201,20 +185,14 @@ async fn poisoned_data_writer_operations_do_not_change_metrics(
 ) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let backend = sink(Config {
-        gated: cancelled,
-        ..config()
-    });
-    if !cancelled && !finished {
-        backend
-            .0
-            .lock()
-            .unwrap()
-            .config
-            .failures
-            .insert(Failure::Write);
-    }
-    let sink = backend.layer(layer);
+    let sink = sink(
+        Config {
+            gated: cancelled,
+            ..config()
+        }
+        .failing((!cancelled && !finished).then_some(Failure::Write)),
+    )
+    .layer(layer);
     let mut session = sink
         .open_writers((), input().schema(), options(), NonZeroUsize::MIN)
         .await

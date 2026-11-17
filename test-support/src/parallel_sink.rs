@@ -52,6 +52,13 @@ pub struct Config {
     pub write_bytes: u64,
     pub commit_read_bytes: u64,
 }
+impl Config {
+    /// Add failures while retaining the rest of this fixture's configuration.
+    pub fn failing(mut self, operations: impl IntoIterator<Item = Failure>) -> Self {
+        self.failures.extend(operations);
+        self
+    }
+}
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -88,10 +95,7 @@ impl State {
         id
     }
     pub fn failing(operations: impl IntoIterator<Item = Failure>) -> SharedState {
-        Self::shared(Config {
-            failures: operations.into_iter().collect(),
-            ..Default::default()
-        })
+        Self::shared(Config::default().failing(operations))
     }
     pub fn count(&self, expected: Event) -> usize {
         self.events
