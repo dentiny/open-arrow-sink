@@ -16,7 +16,13 @@ pub struct IoSnapshot {
 }
 /// Cloneable observation handle. Equality compares counter identity.
 #[derive(Clone, Default)]
-pub struct IoMetrics(Arc<[AtomicU64; 2]>);
+pub struct IoMetrics(Arc<Counters>);
+
+#[derive(Default)]
+struct Counters {
+    read: AtomicU64,
+    written: AtomicU64,
+}
 impl fmt::Debug for IoMetrics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("IoMetrics").field(&self.snapshot()).finish()
@@ -32,15 +38,15 @@ impl IoMetrics {
     /// Each counter is read independently; concurrent I/O can advance between loads.
     pub fn snapshot(&self) -> IoSnapshot {
         IoSnapshot {
-            bytes_read: self.0[0].load(Ordering::Relaxed),
-            bytes_written: self.0[1].load(Ordering::Relaxed),
+            bytes_read: self.0.read.load(Ordering::Relaxed),
+            bytes_written: self.0.written.load(Ordering::Relaxed),
         }
     }
     pub fn record_read(&self, bytes: u64) {
-        self.0[0].fetch_add(bytes, Ordering::Relaxed);
+        self.0.read.fetch_add(bytes, Ordering::Relaxed);
     }
     pub fn record_write(&self, bytes: u64) {
-        self.0[1].fetch_add(bytes, Ordering::Relaxed);
+        self.0.written.fetch_add(bytes, Ordering::Relaxed);
     }
 }
 
@@ -53,7 +59,16 @@ impl From<IoMetrics> for IoObservers {
         Self(vec![metrics])
     }
 }
+impl FromIterator<IoMetrics> for IoObservers {
+    fn from_iter<T: IntoIterator<Item = IoMetrics>>(iter: T) -> Self {
+        iter.into_iter().fold(Self::default(), Self::combine)
+    }
+}
 impl IoObservers {
+    /// Whether this collection contains no observation handles.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     /// Add distinct handles, preserving their identity and counters.
     pub fn combine(mut self, other: impl Into<Self>) -> Self {
         for metrics in other.into().0 {

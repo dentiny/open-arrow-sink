@@ -1,5 +1,5 @@
 //! Successful OpenDAL payload transfers, independent of publication and cleanup.
-use open_arrow_sink_core::IoMetrics;
+use open_arrow_sink_core::{IoMetrics, IoObservers};
 use opendal::{Buffer, BytesRange, Capability, Metadata, OperationContext, Result, raw::*};
 use std::sync::Arc;
 
@@ -11,6 +11,14 @@ use std::sync::Arc;
 pub struct IoMetricsLayer(pub IoMetrics);
 impl Layer for IoMetricsLayer {
     fn apply_service(&self, inner: Servicer) -> Servicer {
+        IoObserversLayer(self.0.clone().into()).apply_service(inner)
+    }
+}
+/// Fan out each successful payload transfer through one service wrapper.
+#[derive(Clone, Debug)]
+pub(crate) struct IoObserversLayer(pub IoObservers);
+impl Layer for IoObserversLayer {
+    fn apply_service(&self, inner: Servicer) -> Servicer {
         Arc::new(Metered {
             inner,
             metrics: self.0.clone(),
@@ -20,7 +28,7 @@ impl Layer for IoMetricsLayer {
 #[derive(Debug)]
 struct Metered<T> {
     inner: T,
-    metrics: IoMetrics,
+    metrics: IoObservers,
 }
 impl<T> Metered<T> {
     fn wrap<U>(&self, inner: U) -> Metered<U> {
