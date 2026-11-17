@@ -108,20 +108,17 @@ impl ParquetDirectorySink {
             schema: schema.clone(),
             properties: properties.clone(),
         });
-        let mut writers: Vec<ParquetDirectoryWriter> = Vec::new();
-        for index in 0..count.get() {
-            writers.push(ParquetDirectoryWriter::new(
-                destination.clone(),
-                schema.clone(),
-                options.target_file_size,
-                properties.clone(),
-                index,
-            ));
-        }
         Ok(WriteSession {
-            writers: writers
-                .into_iter()
-                .map(|writer| Box::new(writer) as Box<dyn DataWriter<Output = u64>>)
+            writers: (0..count.get())
+                .map(|index| {
+                    Box::new(ParquetDirectoryWriter::new(
+                        destination.clone(),
+                        schema.clone(),
+                        options.target_file_size,
+                        properties.clone(),
+                        index,
+                    )) as Box<dyn DataWriter<Output = u64>>
+                })
                 .collect(),
             committer,
         })
