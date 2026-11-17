@@ -28,7 +28,7 @@ pub(crate) async fn write_all<T, S, E>(
     request: T::Request,
     schema: SchemaRef,
     options: WriteOptions,
-    batches: S,
+    stream: S,
 ) -> Result<WriteSummary, WriteAllError<E>>
 where
     T: Sink,
@@ -37,8 +37,8 @@ where
 {
     let mut writer = sink.open(request, schema, options).await?;
     let mut summary = WriteSummary::default();
-    pin_mut!(batches);
-    while let Some(batch) = batches.next().await {
+    pin_mut!(stream);
+    while let Some(batch) = stream.next().await {
         let batch = match batch {
             Ok(batch) => batch,
             Err(error) => {

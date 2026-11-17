@@ -50,11 +50,11 @@ For a complete input stream, import `SinkExt` and let the sink own the loop:
 use open_arrow_sink::{SinkExt, WriteOptions};
 
 let summary = sink
-    .write_all(destination, schema, WriteOptions::default(), batches)
+    .write_all(destination, schema, WriteOptions::default(), stream)
     .await?;
 ```
 
-`batches` can be any `Send` stream of `Result<RecordBatch, E>`, including an
+`stream` can be any `Send` stream of `Result<RecordBatch, E>`, including an
 unpinned async stream with its own error type. The helper opens once, writes
 one batch at a time, and commits at EOF, even for empty input. Input or write
 errors trigger best-effort abort; `WriteAllError::Input(E)` or

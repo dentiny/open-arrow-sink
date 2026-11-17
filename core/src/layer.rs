@@ -34,13 +34,13 @@ pub trait SinkExt: Sink + Sized {
         request: Self::Request,
         schema: SchemaRef,
         options: WriteOptions,
-        batches: S,
+        stream: S,
     ) -> impl Future<Output = Result<WriteSummary, WriteAllError<E>>> + Send
     where
         S: Stream<Item = Result<RecordBatch, E>> + Send,
         E: Send,
     {
-        crate::write_all::write_all(self, request, schema, options, batches)
+        crate::write_all::write_all(self, request, schema, options, stream)
     }
 
     /// The last installed layer is outermost: `sink.layer(a).layer(b)` sends
