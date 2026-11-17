@@ -25,9 +25,10 @@ backends and HTTP budgets across clones. Apply session options with
    physical output and returns backend-owned metadata without publishing table
    or dataset state. The writer remains abortable after finish.
 3. Implement [`SessionCommitter<Output>`](../core/src/session.rs). Publish all
-   finished outputs once and return `Result<()>`. Publication and
-   visibility follow your backend's semantics; document them.
-4. Assemble a `WriteSession` with one writer and use `into_writer().await` for
+   finished outputs once and return `Result<CommitSummary>` with actual published
+   row counts aggregated across all outputs. Publication and visibility follow
+   your backend's semantics; document them.
+4. Assemble a `WriteSession` with one writer and use synchronous `into_writer()` for
    ordinary `Sink::open`. For concurrent writes, implement `ParallelSink`:
    reserve the destination once, return exactly the requested number of writers
    with disjoint output ownership, and share one committer.
