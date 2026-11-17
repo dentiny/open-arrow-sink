@@ -320,6 +320,16 @@ impl Storage {
             Err(error) => Err(map_error("stat", path, error)),
         }
     }
+    /// Read exact-object metadata, returning [`Error::NotFound`] if it is absent.
+    /// Use [`Self::stat`] when absence is an expected result, or
+    /// [`Self::inspect_directory`] to discover virtual directory prefixes.
+    pub async fn metadata(&self, path: &ObjectPath) -> Result<opendal::Metadata> {
+        let path = path.as_str();
+        self.operator()
+            .stat(path)
+            .await
+            .map_err(|error| map_error("stat", path, error))
+    }
     pub async fn read(&self, path: &ObjectPath) -> Result<Bytes> {
         let path = path.as_str();
         self.operator()
