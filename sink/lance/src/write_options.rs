@@ -2,7 +2,7 @@
 //! This module performs no destination I/O and owns the configuration conversion order.
 use std::sync::Arc;
 
-use arrow_schema::{Field, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use lance::{
     blob::{BlobFieldOptions, blob_field, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
@@ -37,24 +37,7 @@ impl LanceSchemas {
         let fields = compressed
             .fields()
             .iter()
-            .map(|field| {
-                let logical = if is_blob_field(field) {
-                    has_blobs = true;
-                    let native = blob_field(field.name(), field.is_nullable());
-                    let mut metadata = field.metadata().clone();
-                    metadata.extend(native.metadata().clone());
-                    Arc::new(
-                        field
-                            .as_ref()
-                            .clone()
-                            .with_data_type(native.data_type().clone())
-                            .with_metadata(metadata),
-                    )
-                } else {
-                    field.clone()
-                };
-                blob_field_options(&logical, options.blob_handle.as_ref())
-            })
+            .map(|field| convert_blob_field(field, options.blob_handle.as_ref(), &mut has_blobs))
             .collect::<Vec<_>>();
         let mut metadata = compressed.metadata().clone();
         if has_blobs {
@@ -92,7 +75,41 @@ pub(crate) fn write_params(
     }
 }
 
-/// Apply per-write layout options to top-level logical blob fields.
+fn convert_blob_field(
+    field: &Arc<Field>,
+    config: Option<&BlobHandleConfig>,
+    has_blobs: &mut bool,
+) -> Arc<Field> {
+    let ty = match field.data_type() {
+        _ if is_blob_field(field) => {
+            *has_blobs = true;
+            let native = blob_field(field.name(), field.is_nullable());
+            let mut metadata = field.metadata().clone();
+            metadata.extend(native.metadata().clone());
+            return blob_field_options(&Arc::new(native.with_metadata(metadata)), config);
+        }
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|child| convert_blob_field(child, config, has_blobs))
+                .collect(),
+        ),
+        DataType::List(item) => DataType::List(convert_blob_field(item, config, has_blobs)),
+        DataType::LargeList(item) => {
+            DataType::LargeList(convert_blob_field(item, config, has_blobs))
+        }
+        DataType::FixedSizeList(item, size) => {
+            DataType::FixedSizeList(convert_blob_field(item, config, has_blobs), *size)
+        }
+        DataType::Map(item, sorted) => {
+            DataType::Map(convert_blob_field(item, config, has_blobs), *sorted)
+        }
+        _ => return blob_field_options(field, config),
+    };
+    blob_field_options(&Arc::new(field.as_ref().clone().with_data_type(ty)), config)
+}
+
+/// Apply per-write layout options to logical blob fields.
 /// Keep the input shape and metadata, overriding only explicitly configured thresholds.
 fn blob_field_options(field: &Arc<Field>, config: Option<&BlobHandleConfig>) -> Arc<Field> {
     let Some(config) = config else {

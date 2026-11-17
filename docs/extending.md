@@ -41,7 +41,8 @@ accepting logical blob values through ordinary batch writes; see
 the backend SDK and let it select inline, packed, or dedicated storage. Do not
 write blob objects or construct physical blob descriptors in this library.
 
-`DownloadBlobLayer` marks selected URL columns for blob ingestion. The backend
+`DownloadBlobLayer` marks selected URL fields for blob ingestion, using the same
+interface for top-level columns and dotted paths through structs and lists. The backend
 owns downloads, resource limits, and blob layout; the layer does not download
 or buffer payloads.
 

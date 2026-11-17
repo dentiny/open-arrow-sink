@@ -1,8 +1,10 @@
 //! Logical blob input conversion. Layout and object ownership belong to Lance.
 use arrow_array::{
     ArrayRef, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray, StructArray,
+    make_array,
 };
-use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef, is_blob_field};
+use arrow_schema::{DataType, Field};
+use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
 use std::sync::Arc;
 
 pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
@@ -20,54 +22,83 @@ pub(crate) fn logical_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Re
     let columns = batch
         .columns()
         .iter()
-        .zip(batch.schema().fields())
         .zip(schema.fields())
-        .map(|((array, source), target)| {
-            if !is_blob_field(source) {
-                return array.clone();
-            }
-            let arrow_schema::DataType::Struct(fields) = target.data_type() else {
-                unreachable!("logical blob field is a struct");
-            };
-            let (data, uris): (ArrayRef, ArrayRef) = match source.data_type() {
-                arrow_schema::DataType::LargeBinary => {
-                    (array.clone(), Arc::new(StringArray::new_null(array.len())))
-                }
-                arrow_schema::DataType::Utf8 => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    array.clone(),
-                ),
-                arrow_schema::DataType::LargeUtf8 => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    Arc::new(StringArray::from_iter(
-                        array
-                            .as_any()
-                            .downcast_ref::<LargeStringArray>()
-                            .unwrap()
-                            .iter(),
-                    )),
-                ),
-                arrow_schema::DataType::Utf8View => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    Arc::new(StringArray::from_iter(
-                        array
-                            .as_any()
-                            .downcast_ref::<StringViewArray>()
-                            .unwrap()
-                            .iter(),
-                    )),
-                ),
-                _ => unreachable!("validated blob input type"),
-            };
-            Arc::new(StructArray::new(
-                fields.clone(),
-                vec![data, uris],
-                array.nulls().cloned(),
-            )) as ArrayRef
-        })
-        .collect();
+        .map(|(array, field)| convert_blob_array(array.clone(), field.data_type()))
+        .collect::<Result<Vec<_>>>()?;
     let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
     RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(Error::backend)
+}
+
+fn convert_blob_array(array: ArrayRef, ty: &DataType) -> Result<ArrayRef> {
+    if array.data_type() == ty {
+        return Ok(array);
+    }
+    if matches!(
+        array.data_type(),
+        DataType::LargeBinary | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    ) {
+        let DataType::Struct(fields) = ty else {
+            unreachable!("logical blob field is a struct")
+        };
+        let (data, uris): (ArrayRef, ArrayRef) = match array.data_type() {
+            DataType::LargeBinary => (array.clone(), Arc::new(StringArray::new_null(array.len()))),
+            DataType::Utf8 => (
+                Arc::new(LargeBinaryArray::new_null(array.len())),
+                array.clone(),
+            ),
+            DataType::LargeUtf8 => (
+                Arc::new(LargeBinaryArray::new_null(array.len())),
+                Arc::new(StringArray::from_iter(
+                    array
+                        .as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .unwrap()
+                        .iter(),
+                )),
+            ),
+            DataType::Utf8View => (
+                Arc::new(LargeBinaryArray::new_null(array.len())),
+                Arc::new(StringArray::from_iter(
+                    array
+                        .as_any()
+                        .downcast_ref::<StringViewArray>()
+                        .unwrap()
+                        .iter(),
+                )),
+            ),
+            _ => unreachable!("validated blob input type"),
+        };
+
+        return Ok(Arc::new(StructArray::new(
+            fields.clone(),
+            vec![data, uris],
+            array.nulls().cloned(),
+        )));
+    }
+    let fields: &[Arc<Field>] = match ty {
+        DataType::Struct(fields) => fields,
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::FixedSizeList(item, _)
+        | DataType::Map(item, _) => std::slice::from_ref(item),
+        _ => unreachable!("logical blob parent is a struct or list"),
+    };
+    let data = array.to_data();
+    let children = fields
+        .iter()
+        .zip(data.child_data())
+        .map(|(field, child)| {
+            convert_blob_array(make_array(child.clone()), field.data_type())
+                .map(|array| array.to_data())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(make_array(
+        data.into_builder()
+            .data_type(ty.clone())
+            .child_data(children)
+            .build()
+            .map_err(Error::backend)?,
+    ))
 }
 
 #[cfg(test)]
@@ -75,7 +106,7 @@ mod tests {
     use super::*;
     use arrow_array::Array;
     use arrow_schema::{Field, Schema};
-    use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteOptions};
+    use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteOptions, is_blob_field};
 
     #[test]
     fn selected_text_inputs_become_logical_uris_without_changing_nulls() {
