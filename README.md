@@ -126,6 +126,15 @@ is not verified. Other storage queries remain unsupported; HTTP(S) queries are
 preserved. For the public PMC bucket, register an unsigned S3 operator configured
 with `region("us-east-1")` and `skip_signature()` via `with_source_storage`.
 
+Storage retry and timeout policies are opt-in through `StorageConfig`. With
+`RetryConfig` enabled, HTTP 429 and 503 responses honor `Retry-After` in seconds
+or HTTP-date form. The wait is the larger of the server delay and exponential
+backoff; missing or invalid headers use normal backoff. A server delay above
+`max_delay` returns the error immediately instead of retrying before the server
+allows it. `max_retries` still limits retries after the initial attempt.
+`TimeoutConfig` applies to each attempt and body read, excluding backoff.
+Cancelled operations stop waiting and issue no further requests.
+
 ## Commit results
 
 `Writer::commit()`, `SessionCommitter::commit(outputs)`, and

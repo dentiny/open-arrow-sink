@@ -9,6 +9,7 @@ mod http_limit;
 mod io_metrics;
 mod object_path;
 mod resolver;
+mod retry;
 mod url;
 mod validation;
 pub use resolver::StorageResolver;
