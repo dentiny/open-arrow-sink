@@ -103,7 +103,10 @@ struct CountCommitter(Arc<AtomicU64>);
 
 #[async_trait]
 impl SessionCommitter<u64> for CountCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<u64>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         let rows_written = outputs.into_iter().try_fold(0_u64, |total, rows| {
             total
                 .checked_add(rows)
@@ -117,7 +120,10 @@ impl SessionCommitter<u64> for CountCommitter {
                 AtomicOrdering::SeqCst,
             )
             .map_err(|_| Error::Unsupported("use a fresh destination counter".into()))?;
-        Ok(())
+        Ok(open_arrow_sink_core::CommitSummary {
+            rows_committed: rows_written,
+            ..Default::default()
+        })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

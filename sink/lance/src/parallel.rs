@@ -66,7 +66,11 @@ impl DataWriter for FragmentWriter {
     }
     async fn finish(&mut self) -> Result<Self::Output> {
         self.state.begin()?;
-        self.worker.finish().await
+        let mut output = self.worker.finish().await?;
+        let downloads = self.blobs.downloads.snapshot();
+        output.summary.rows_skipped = downloads.rows_skipped;
+        output.summary.rows_failed_blobs = downloads.rows_failed_blobs;
+        Ok(output)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
         self.worker.abort().await;

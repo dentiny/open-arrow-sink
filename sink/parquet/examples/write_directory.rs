@@ -18,14 +18,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "value",
         Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
     )])?;
-    ParquetDirectorySink::default()
+    let summary = ParquetDirectorySink::default()
         .write_all(
             directory,
             batch.schema(),
             WriteOptions::default().with_ordering(Ordering::Unordered),
-            futures::stream::iter([Ok::<_, std::io::Error>(batch)]),
+            futures::stream::iter([Ok::<_, open_arrow_sink_core::Error>(batch)]),
         )
         .await?;
-    println!("Write committed");
+    println!("Committed {} rows", summary.rows_committed);
     Ok(())
 }

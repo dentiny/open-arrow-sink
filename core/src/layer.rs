@@ -2,7 +2,7 @@ use std::future::Future;
 
 use futures::Stream;
 
-use crate::{RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions};
+use crate::{CommitSummary, RecordBatch, Result, SchemaRef, Sink, WriteOptions};
 
 /// Wrap a sink without I/O, preserving its backend-specific request type.
 /// Option decorators should leave unrelated option validation to the backend,
@@ -19,6 +19,9 @@ pub trait Layer<S: Sink> {
 /// Fluent layer composition and stream writing, available to every sized [`Sink`].
 pub trait SinkExt: Sink + Sized {
     /// Write an entire fallible batch stream, then commit once at EOF.
+    /// Return the backend's [`CommitSummary`] with actual published row counts.
+    /// Map errors from other input libraries to [`crate::Error`] at the stream
+    /// boundary, for example with `map_err(crate::Error::backend)`.
     ///
     /// Input and write errors trigger a best-effort abort; abort errors never
     /// replace the original error. Open errors return before polling input.
@@ -29,16 +32,15 @@ pub trait SinkExt: Sink + Sized {
     /// collection or extra buffering. Empty input still opens and commits using
     /// the supplied schema. Cancelling this future or panicking drops the writer
     /// without asynchronous abort, following the normal writer contract.
-    fn write_all<S, E>(
+    fn write_all<S>(
         &self,
         request: Self::Request,
         schema: SchemaRef,
         options: WriteOptions,
         stream: S,
-    ) -> impl Future<Output = Result<(), WriteAllError<E>>> + Send
+    ) -> impl Future<Output = Result<CommitSummary>> + Send
     where
-        S: Stream<Item = Result<RecordBatch, E>> + Send,
-        E: Send,
+        S: Stream<Item = Result<RecordBatch>> + Send,
     {
         crate::write_all::write_all(self, request, schema, options, stream)
     }

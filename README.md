@@ -49,20 +49,24 @@ For a complete input stream, import `SinkExt` and let the sink own the loop:
 ```rust,ignore
 use open_arrow_sink::{SinkExt, WriteOptions};
 
-sink
+let summary = sink
     .write_all(destination, schema, WriteOptions::default(), stream)
     .await?;
 ```
 
-`stream` can be any `Send` stream of `Result<RecordBatch, E>`, including an
-unpinned async stream with its own error type. The helper opens once, writes
+`stream` can be any `Send` stream of `open_arrow_sink::Result<RecordBatch>`,
+including an unpinned async stream. Map errors from other libraries at the input
+boundary with `stream.map_err(open_arrow_sink::Error::backend)` (using
+`futures::TryStreamExt`); this preserves the native error and its source chain. The helper opens once, writes
 one batch at a time, and commits at EOF, even for empty input. Input or write
-errors trigger best-effort abort; `WriteAllError::Input(E)` or
-`WriteAllError::Sink(Error)` retains the original error if abort also fails.
+errors trigger best-effort abort and return the original `Error` even if abort
+also fails.
 Open errors return before reading input. Commit errors return directly because
 commit consumes the writer and may have already published data. Cancelling the
 future or panicking drops the writer without async cleanup.
 
+`write_all` returns the backend's `CommitSummary`, including actual committed
+rows after filtering and blob recovery.
 See the [Parquet example](sink/parquet/examples/write_directory.rs) for a runnable
 use of `write_all`.
 
@@ -138,3 +142,22 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 MIT licensed.
+
+## Commit results
+
+`Writer::commit()`, `SessionCommitter::commit(outputs)`, and
+`SinkExt::write_all()` return a `CommitSummary` for the successfully published session. `rows_committed` counts
+actual output rows across all physical writers, including when blob recovery
+skips input rows. `rows_failed_blobs` counts each input row with a failed selected
+blob once, even if several blobs fail; it overlaps `rows_skipped` under `SkipRow`
+and includes retained rows under `Null`. These counters are local to the session;
+`DownloadBlobLayer::metrics()` remains a cumulative observation handle.
+
+```rust,ignore
+let summary = writer.commit().await?;
+progress.finish(summary.rows_committed, summary.rows_failed_blobs);
+```
+
+Empty sessions report zero rows; errors
+return no summary and do not imply publication was rolled back. Custom writers,
+committers, and decorators must return or forward the summary.

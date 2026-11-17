@@ -26,9 +26,11 @@ pub trait DataWriter: Send {
 #[async_trait]
 pub trait SessionCommitter<T: Send + 'static>: Send {
     /// Called exactly once, after every data writer finishes successfully.
+    /// Return actual published row counts aggregated across all outputs; recovery
+    /// counts must be local to this session, even when observers are shared.
     /// Errors leave output in place. Publication may have succeeded despite
     /// an error; no automatic rollback or retry is performed.
-    async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<()>;
+    async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<crate::CommitSummary>;
     /// End an explicitly aborted session after all data writers have stopped.
     /// Leave persisted output in place.
     async fn abort(self: Box<Self>) -> Result<()>;
@@ -84,7 +86,7 @@ impl<T: Send + 'static> crate::Writer for SessionWriter<T> {
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<()> {
+    async fn commit(mut self: Box<Self>) -> Result<crate::CommitSummary> {
         let output = self.writer.finish().await?;
         self.committer.commit(vec![output]).await
     }

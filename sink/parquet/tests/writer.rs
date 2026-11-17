@@ -42,7 +42,10 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     assert_eq!(writer.schema(), &expected.schema());
     writer.write(expected.slice(0, 1)).await.unwrap();
     writer.write(expected.slice(1, 2)).await.unwrap();
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 3);
+    assert_eq!(summary.rows_skipped, 0);
+    assert_eq!(summary.rows_failed_blobs, 0);
 
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
@@ -64,18 +67,20 @@ async fn write_all_round_trips_the_input_stream() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("output");
     let expected = batch();
-    ParquetDirectorySink::default()
+    let summary = ParquetDirectorySink::default()
         .write_all(
             Url::from_directory_path(&directory).unwrap(),
             expected.schema(),
             options(),
             futures::stream::iter([
-                Ok::<_, std::io::Error>(expected.slice(0, 1)),
+                Ok::<_, open_arrow_sink_core::Error>(expected.slice(0, 1)),
                 Ok(expected.slice(1, 2)),
             ]),
         )
         .await
         .unwrap();
+    assert_eq!(summary.rows_committed, 3);
+
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
         .unwrap();

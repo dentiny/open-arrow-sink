@@ -272,7 +272,9 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
     assert_eq!(writer.schema(), &schema);
     writer.write(batch.slice(0, 1)).await.unwrap();
     writer.write(batch.slice(1, 2)).await.unwrap();
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 3);
+
     let table = catalog.load_table(&identifier).await.unwrap();
     let data_prefix = format!(
         "{}/data/",
@@ -294,7 +296,8 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
         .await
         .unwrap();
     writer.write(batch.slice(0, 1)).await.unwrap();
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 1);
     assert_rows(
         catalog.as_ref(),
         &identifier,

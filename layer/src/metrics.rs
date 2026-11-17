@@ -5,10 +5,7 @@ use open_arrow_sink_core::{
     Sink, WriteOptions, WriteSession, Writer, async_trait,
 };
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -176,7 +173,6 @@ impl<S: Sink> Decorator for MetricsSink<S> {
         self.metrics.update(|s| s.sessions_opened += 1);
         observation.success();
         Box::new(MetricsWriter {
-            rows: 0,
             inner,
             metrics: self.metrics.clone(),
         })
@@ -189,21 +185,18 @@ impl<S: Sink> Decorator for MetricsSink<S> {
     ) -> WriteSession<T> {
         self.metrics.update(|s| s.sessions_opened += 1);
         observation.success();
-        let rows = Arc::new(AtomicU64::new(0));
         WriteSession {
             writers: session
                 .writers
                 .into_iter()
                 .map(|inner| {
                     Box::new(MetricsDataWriter {
-                        rows: rows.clone(),
                         inner: GuardedDataWriter::new(inner),
                         metrics: self.metrics.clone(),
                     }) as Box<dyn DataWriter<Output = T>>
                 })
                 .collect(),
             committer: Box::new(MetricsCommitter {
-                rows,
                 inner: session.committer,
                 metrics: self.metrics.clone(),
             }),
@@ -211,7 +204,6 @@ impl<S: Sink> Decorator for MetricsSink<S> {
     }
 }
 struct MetricsWriter {
-    rows: u64,
     inner: Box<dyn Writer>,
     metrics: WriteMetrics,
 }
@@ -222,7 +214,6 @@ impl MetricsWriter {
         let result = self.inner.write(batch).await;
         observation.complete(result)?;
         self.metrics.accepted(rows);
-        self.rows += rows;
         Ok(())
     }
 }
@@ -234,11 +225,11 @@ impl Writer for MetricsWriter {
     async fn write(&mut self, batch: RecordBatch) -> Result<()> {
         self.accept(batch).await
     }
-    async fn commit(self: Box<Self>) -> Result<()> {
+    async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        observation.complete(self.inner.commit().await)?;
-        self.metrics.committed(self.rows);
-        Ok(())
+        let summary = observation.complete(self.inner.commit().await)?;
+        self.metrics.committed(summary.rows_committed);
+        Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);
@@ -249,7 +240,6 @@ impl Writer for MetricsWriter {
 }
 
 struct MetricsDataWriter<T: Send + 'static> {
-    rows: Arc<AtomicU64>,
     inner: GuardedDataWriter<T>,
     metrics: WriteMetrics,
 }
@@ -264,7 +254,6 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
         let rows = batch.num_rows() as u64;
         observation.complete(self.inner.write(batch).await)?;
         self.metrics.accepted(rows);
-        self.rows.fetch_add(rows, Ordering::Relaxed);
         Ok(())
     }
     async fn finish(&mut self) -> Result<T> {
@@ -277,17 +266,19 @@ impl<T: Send + 'static> DataWriter for MetricsDataWriter<T> {
     }
 }
 struct MetricsCommitter<T: Send + 'static> {
-    rows: Arc<AtomicU64>,
     inner: Box<dyn SessionCommitter<T>>,
     metrics: WriteMetrics,
 }
 #[async_trait]
 impl<T: Send + 'static> SessionCommitter<T> for MetricsCommitter<T> {
-    async fn commit(self: Box<Self>, outputs: Vec<T>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<T>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         let observation = Observation::new(&self.metrics, Operation::Commit);
-        observation.complete(self.inner.commit(outputs).await)?;
-        self.metrics.committed(self.rows.load(Ordering::Relaxed));
-        Ok(())
+        let summary = observation.complete(self.inner.commit(outputs).await)?;
+        self.metrics.committed(summary.rows_committed);
+        Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         let observation = Observation::new(&self.metrics, Operation::Other);

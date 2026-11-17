@@ -153,7 +153,7 @@ impl<T: Send + 'static> Writer for UnorderedWriter<T> {
         Ok(())
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<()> {
+    async fn commit(mut self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         self.drain_all().await?;
         let outputs =
             futures::future::try_join_all(self.idle.iter_mut().map(|writer| writer.finish()))

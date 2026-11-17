@@ -67,13 +67,20 @@ impl DataWriter for Physical {
 }
 #[async_trait]
 impl SessionCommitter<u64> for Committer {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<u64>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         self.events.lock().unwrap().push(Event::Publish);
         assert_eq!(outputs, vec![7]);
         if self.faults.publish {
             Err(Error::SchemaMismatch)
         } else {
-            Ok(())
+            Ok(open_arrow_sink_core::CommitSummary {
+                rows_committed: 7,
+                rows_skipped: 2,
+                rows_failed_blobs: 3,
+            })
         }
     }
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -113,7 +120,11 @@ async fn success_finishes_before_exactly_one_publication() {
     let (session, events) = session(Faults::default(), 1);
     let mut writer = session.into_writer().unwrap();
     writer.write(empty_batch()).await.unwrap();
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 7);
+    assert_eq!(summary.rows_skipped, 2);
+    assert_eq!(summary.rows_failed_blobs, 3);
+
     assert_eq!(
         *events.lock().unwrap(),
         [Event::Write, Event::Finish, Event::Publish]

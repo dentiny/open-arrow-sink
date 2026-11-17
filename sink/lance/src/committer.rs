@@ -15,7 +15,16 @@ pub(crate) struct LanceCommitter {
 
 #[async_trait]
 impl SessionCommitter<LanceFragments> for LanceCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<LanceFragments>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<LanceFragments>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
+        let mut summary = open_arrow_sink_core::CommitSummary::default();
+        for output in &outputs {
+            summary.rows_committed += output.summary.rows_committed;
+            summary.rows_skipped += output.summary.rows_skipped;
+            summary.rows_failed_blobs += output.summary.rows_failed_blobs;
+        }
         let transaction = merge_transactions(outputs)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
@@ -37,7 +46,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
                 }));
         }
         builder.execute(transaction).await.map_err(Error::backend)?;
-        Ok(())
+        Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())
@@ -47,10 +56,12 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
 /// Combine worker fragments without publishing or discarding native transaction metadata.
 fn merge_transactions(outputs: Vec<LanceFragments>) -> Result<Transaction> {
     let mut outputs = outputs.into_iter();
-    let LanceFragments { mut transaction } =
-        outputs.next().ok_or_else(error::empty_writer_session)?;
+    let LanceFragments {
+        mut transaction, ..
+    } = outputs.next().ok_or_else(error::empty_writer_session)?;
     for LanceFragments {
         transaction: incoming,
+        ..
     } in outputs
     {
         if transaction.read_version != incoming.read_version {

@@ -214,6 +214,10 @@ mod tests {
                 ..Default::default()
             });
             LanceFragments {
+                summary: open_arrow_sink_core::CommitSummary {
+                    rows_committed: batch().num_rows() as u64,
+                    ..Default::default()
+                },
                 transaction: InsertBuilder::new(self.url.as_str())
                     .with_params(&params)
                     .execute_uncommitted(vec![batch()])
@@ -234,7 +238,7 @@ mod tests {
             &self,
             mode: WriteMode,
             indexes: Vec<IndexSpec>,
-        ) -> open_arrow_sink_core::Result<()> {
+        ) -> open_arrow_sink_core::Result<open_arrow_sink_core::CommitSummary> {
             self.committer(indexes)
                 .commit(vec![self.stage(mode).await])
                 .await
