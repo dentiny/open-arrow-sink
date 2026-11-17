@@ -3,9 +3,6 @@ use open_arrow_sink_core::Result;
 
 pub(crate) fn namespace_base(url: &Url) -> Result<Url> {
     crate::validation::validate_url(url)?;
-    if url.scheme() == "file" {
-        crate::validation::validate_file_url(url)?;
-    }
     crate::validation::decoded_path(url)?;
     let mut base = url.clone();
     base.set_path("/");

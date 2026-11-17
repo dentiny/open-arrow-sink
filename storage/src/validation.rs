@@ -27,13 +27,13 @@ pub(crate) fn validate_url(url: &Url) -> Result<()> {
                 .into(),
         ));
     }
+    if url.scheme() == "file" {
+        // A hierarchical URL can still name a remote host that cannot be
+        // represented as a local filesystem path on this platform.
+        url.to_file_path()
+            .map_err(|_| Error::InvalidInput("invalid file URL".into()))?;
+    }
     Ok(())
-}
-
-pub(crate) fn validate_file_url(url: &Url) -> Result<()> {
-    url.to_file_path()
-        .map(|_| ())
-        .map_err(|_| Error::InvalidInput("invalid file URL".into()))
 }
 
 pub(crate) fn decoded_path(url: &Url) -> Result<Cow<'_, str>> {
