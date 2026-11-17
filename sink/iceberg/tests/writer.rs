@@ -9,7 +9,6 @@ use iceberg::spec::{
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions};
 use open_arrow_sink_iceberg::{IcebergTableSink, OpenDalStorageFactory, iceberg};
-use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -246,19 +245,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
     }
 }
 
-#[rstest::rstest]
-#[case::round_trip(Case::RoundTrip)]
-#[case::rolling(Case::Rolling)]
-#[case::unsupported_modes(Case::UnsupportedModes)]
-#[case::empty_commit(Case::EmptyCommit)]
-#[case::abort(Case::Abort)]
-#[case::schema_mismatch(Case::SchemaMismatch)]
-#[case::abort_before_write(Case::AbortBeforeWrite)]
-#[case::poisoned_commit(Case::PoisonedCommit)]
-#[tokio::test]
-async fn shared_sink_contracts(#[case] case: Case) {
-    assert_case::<ConformanceFixture>(case).await;
-}
+open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);
 
 #[tokio::test]
 async fn commits_round_trip_batches_and_preserve_existing_rows() {
