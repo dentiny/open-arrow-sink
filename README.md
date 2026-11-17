@@ -63,8 +63,8 @@ Open errors return before reading input. Commit errors return directly because
 commit consumes the writer and may have already published data. Cancelling the
 future or panicking drops the writer without async cleanup.
 
-`summary.rows` and `summary.batches` count accepted input, before backend
-filtering or transformation.
+`write_all` returns the backend's `CommitSummary`, including actual committed
+rows after filtering and blob recovery.
 See the [Parquet example](sink/parquet/examples/write_directory.rs) for a runnable
 use of `write_all`.
 
@@ -122,3 +122,24 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 MIT licensed.
+
+## Commit results
+
+`Writer::commit()`, `SessionCommitter::commit(outputs)`, and
+`SinkExt::write_all()` return a `CommitSummary` for the successfully published session. `rows_committed` counts
+actual output rows across all physical writers, including when blob recovery
+skips input rows. `rows_failed_blobs` counts each input row with a failed selected
+blob once, even if several blobs fail; it overlaps `rows_skipped` under `SkipRow`
+and includes retained rows under `Null`. These counters are local to the session;
+`DownloadBlobLayer::metrics()` remains a cumulative observation handle.
+
+```rust,ignore
+let summary = writer.commit().await?;
+progress.finish(summary.rows_committed, summary.rows_failed_blobs);
+```
+
+Lance returns the published dataset version in `version`. Parquet and Iceberg
+currently return `None` (Iceberg snapshot IDs are signed identifiers rather than
+this API's unsigned dataset version). Empty sessions report zero rows; errors
+return no summary and do not imply publication was rolled back. Custom writers,
+committers, and decorators must return or forward the summary.

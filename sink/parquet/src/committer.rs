@@ -10,7 +10,10 @@ pub(crate) struct ParquetCommitter {
 
 #[async_trait]
 impl SessionCommitter<u64> for ParquetCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<u64>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         let rows_written: u64 = outputs.into_iter().sum();
         // Idle workers never open a file. A newly created empty dataset
         // still needs one footer to make its schema readable; empty Append does not.
@@ -20,7 +23,10 @@ impl SessionCommitter<u64> for ParquetCommitter {
                 .await?;
         }
         // Parquet has no metadata transaction; data writers already closed footers.
-        Ok(())
+        Ok(open_arrow_sink_core::CommitSummary {
+            rows_committed: rows_written,
+            ..Default::default()
+        })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

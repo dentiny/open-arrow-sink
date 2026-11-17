@@ -4,7 +4,9 @@ use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray, cast::A
 use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{Error, Result, Sink, SinkExt, async_trait};
 use open_arrow_sink_lance::LanceDatasetSink;
-use open_arrow_sink_layer::{DownloadBlobLayer, DownloadFailurePolicy};
+use open_arrow_sink_layer::{
+    DownloadBlobLayer, DownloadFailurePolicy, MetricsLayer, UnorderedWriteLayer,
+};
 use open_arrow_sink_storage::{
     BlobDownloader, DownloadContext, DownloadStream, Downloader, ObjectPath,
 };
@@ -37,11 +39,14 @@ fn downloader(limit: usize) -> Arc<BlobDownloader> {
 }
 
 #[rstest::rstest]
-#[case::skip(DownloadFailurePolicy::SkipRow)]
-#[case::null(DownloadFailurePolicy::Null)]
+#[case::skip(DownloadFailurePolicy::SkipRow, false)]
+#[case::null(DownloadFailurePolicy::Null, false)]
+#[case::parallel_skip(DownloadFailurePolicy::SkipRow, true)]
+#[case::parallel_null(DownloadFailurePolicy::Null, true)]
 #[tokio::test]
 async fn source_failures_recover_with_bounded_backend_downloads(
     #[case] policy: DownloadFailurePolicy,
+    #[case] parallel: bool,
 ) {
     let input = RecordBatch::try_from_iter([
         (
@@ -67,11 +72,26 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     let layer =
         DownloadBlobLayer::new(["left".into(), "right".into()].into()).with_failure_policy(policy);
     let metrics = layer.metrics();
-    let sink = backend.clone().layer(layer);
+    let write_metrics = MetricsLayer::default();
+    let written = write_metrics.metrics();
+    let sink = backend.clone().layer(layer).layer(write_metrics);
+    // Exercise both the single-writer adapter and unordered worker aggregation.
+    let sink: Box<dyn Sink<Request = open_arrow_sink_lance::Url>> = if parallel {
+        Box::new(sink.layer(UnorderedWriteLayer::new(2.try_into().unwrap())))
+    } else {
+        Box::new(sink)
+    };
     let mut writer = sink
         .open(url.clone(), input.schema(), unordered_options())
         .await
         .unwrap();
+    // Overlapping sessions share cumulative metrics but must return independent summaries.
+    let other_url = open_arrow_sink_lance::Url::parse("memory:///warehouse/other/").unwrap();
+    let mut other = sink
+        .open(other_url, input.schema(), unordered_options())
+        .await
+        .unwrap();
+    other.write(input.slice(0, 1)).await.unwrap();
     writer.write(input.clone()).await.unwrap();
     writer.write(input.slice(0, 1)).await.unwrap();
     let expected = if policy == DownloadFailurePolicy::SkipRow {
@@ -79,7 +99,38 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     } else {
         4
     };
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, expected);
+    assert_eq!(summary.rows_failed_blobs, 2);
+    assert_eq!(
+        summary.rows_skipped,
+        if policy == DownloadFailurePolicy::SkipRow {
+            2
+        } else {
+            0
+        }
+    );
+    assert_eq!(summary.version, Some(1));
+    let other_summary = other.commit().await.unwrap();
+    assert_eq!(other_summary.rows_committed, 1);
+    assert_eq!(other_summary.rows_failed_blobs, 0);
+    assert_eq!(other_summary.rows_skipped, 0);
+    assert_eq!(other_summary.version, Some(1));
+    assert_eq!(written.snapshot().rows_committed, expected + 1);
+    // A later empty append returns this session's count and the new version.
+    let mut append = unordered_options();
+    append.mode = open_arrow_sink_core::WriteMode::Append;
+    let empty = sink
+        .open(url.clone(), input.schema(), append)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(empty.rows_committed, 0);
+    assert_eq!(empty.rows_failed_blobs, 0);
+    assert_eq!(empty.rows_skipped, 0);
+    assert_eq!(empty.version, Some(2));
     assert_eq!(downloader.buffered_bytes(), 0);
     let observed = metrics.snapshot();
     assert_eq!(observed.blobs_failed, 3);
@@ -126,6 +177,39 @@ async fn source_failures_recover_with_bounded_backend_downloads(
             _ => unreachable!(),
         }
     }
+}
+
+#[tokio::test]
+async fn write_all_returns_actual_blob_recovery_counts() {
+    let input = RecordBatch::try_from_iter([(
+        "url",
+        Arc::new(StringArray::from(vec!["good", "bad", "partial"])) as ArrayRef,
+    )])
+    .unwrap();
+    let storage = memory_storage("memory:///warehouse/");
+    let url = storage
+        .url(&ObjectPath::parse("write-all/").unwrap())
+        .unwrap();
+    let sink = LanceDatasetSink::new(storage)
+        .with_blob_downloader(downloader(4))
+        .layer(
+            DownloadBlobLayer::new(["url".into()].into())
+                .with_failure_policy(DownloadFailurePolicy::SkipRow),
+        )
+        .layer(UnorderedWriteLayer::new(2.try_into().unwrap()));
+    let summary = sink
+        .write_all(
+            url,
+            input.schema(),
+            unordered_options(),
+            futures::stream::iter([Ok::<_, std::io::Error>(input)]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.rows_committed, 1);
+    assert_eq!(summary.rows_failed_blobs, 2);
+    assert_eq!(summary.rows_skipped, 2);
+    assert_eq!(summary.version, Some(1));
 }
 
 #[rstest::rstest]

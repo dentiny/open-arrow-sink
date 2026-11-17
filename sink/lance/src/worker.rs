@@ -9,6 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 // The enclosing writer guards all writes and finish with Poison. Once its
 // sender or task is taken, that writer is terminal.
 pub(crate) struct FragmentTask {
+    rows: u64,
     sender: Option<mpsc::Sender<RecordBatch>>,
     task: Option<JoinHandle<lance::Result<Transaction>>>,
 }
@@ -30,11 +31,13 @@ impl FragmentTask {
                 .await
         });
         Self {
+            rows: 0,
             sender: Some(sender),
             task: Some(task),
         }
     }
     pub async fn write(&mut self, batch: RecordBatch) -> Result<()> {
+        let rows = batch.num_rows() as u64;
         if self
             .sender
             .as_ref()
@@ -47,6 +50,7 @@ impl FragmentTask {
             // and retain task ownership across cancellation while joining it.
             return Err(self.finish().await.err().unwrap_or_else(worker_stopped));
         }
+        self.rows += rows;
         Ok(())
     }
     pub async fn finish(&mut self) -> Result<LanceFragments> {
@@ -59,6 +63,10 @@ impl FragmentTask {
             .await;
         self.task.take();
         Ok(LanceFragments {
+            summary: open_arrow_sink_core::CommitSummary {
+                rows_committed: self.rows,
+                ..Default::default()
+            },
             transaction: result.map_err(Error::backend)?.map_err(Error::backend)?,
         })
     }
@@ -90,6 +98,7 @@ mod tests {
             Err(lance::Error::invalid_input("injected fragment failure"))
         });
         let mut worker = FragmentTask {
+            rows: 0,
             sender: Some(sender),
             task: Some(task),
         };

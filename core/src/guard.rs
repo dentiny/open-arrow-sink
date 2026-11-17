@@ -36,7 +36,7 @@ impl Writer for GuardedWriter {
         Ok(())
     }
 
-    async fn commit(self: Box<Self>) -> Result<()> {
+    async fn commit(self: Box<Self>) -> Result<crate::CommitSummary> {
         self.check()?;
         self.inner.commit().await
     }

@@ -154,6 +154,7 @@ pub(crate) struct BlobMaterializer {
     mode: ExternalBlobMode,
     metrics: Option<IoObservers>,
     recovery: Option<DownloadRecovery>,
+    pub(crate) downloads: open_arrow_sink_core::DownloadMetrics,
 }
 
 impl BlobMaterializer {
@@ -167,6 +168,7 @@ impl BlobMaterializer {
                 .unwrap_or_default(),
             metrics: options.io_metrics.clone(),
             recovery: options.download_recovery.clone(),
+            downloads: Default::default(),
         }
     }
 
@@ -201,6 +203,7 @@ impl BlobMaterializer {
             if active.is_empty() && ready.is_empty() {
                 if let Some(config) = self.recovery.as_ref() {
                     config.metrics.skipped(skipped);
+                    self.downloads.skipped(skipped);
                 }
                 return Ok(());
             }
@@ -245,6 +248,7 @@ impl BlobMaterializer {
                     let source_error = matches!(&error, Error::Backend(source) if source.is::<open_arrow_sink_storage::SourceDownloadError>());
                     if let Some(config) = recover.filter(|_| source_error) {
                         config.metrics.failure(!failed);
+                        self.downloads.failure(!failed);
                         failed = true;
                         if config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail {
                             columns[*index] =

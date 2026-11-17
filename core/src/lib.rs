@@ -16,7 +16,7 @@ mod sink;
 pub mod validation;
 mod write_all;
 mod writer;
-pub use write_all::{WriteAllError, WriteSummary};
+pub use write_all::WriteAllError;
 
 pub use arrow_array::RecordBatch;
 pub use arrow_schema::SchemaRef;
@@ -31,7 +31,7 @@ pub use index::{ExistingIndexPolicy, IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, UploadConfig, WriteMode, WriteOptions};
 pub use sink::{ParallelSink, Sink};
-pub use writer::Writer;
+pub use writer::{CommitSummary, Writer};
 
 mod blob;
 pub use blob::{BlobChunk, BlobHandleConfig, ExternalBlobMode};

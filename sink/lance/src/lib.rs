@@ -18,6 +18,7 @@ pub use sink::LanceDatasetSink;
 /// Pass this opaque output to the same write session's committer to publish it.
 /// Its fields are private so native Lance transaction types remain internal.
 pub struct LanceFragments {
+    summary: open_arrow_sink_core::CommitSummary,
     transaction: lance::dataset::transaction::Transaction,
 }
 

@@ -23,6 +23,7 @@ struct TestSink {
 }
 
 struct TestWriter {
+    rows: u64,
     schema: SchemaRef,
     events: Events,
     faults: Faults,
@@ -52,6 +53,7 @@ impl Sink for TestSink {
             return Err(Error::InvalidInput("open".into()));
         }
         Ok(Box::new(TestWriter {
+            rows: 0,
             schema,
             events: self.events.clone(),
             faults: self.faults,
@@ -73,15 +75,23 @@ impl Writer for TestWriter {
         if self.faults.write {
             return Err(Error::InvalidInput("write".into()));
         }
+        self.rows += batch.num_rows() as u64;
         Ok(())
     }
 
-    async fn commit(self: Box<Self>) -> Result<()> {
+    async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         event(&self.events, "commit");
         if self.faults.commit {
             return Err(IndexCommitError::new("index").into());
         }
-        Ok(())
+        // Simulate backend filtering to verify the helper forwards publication results.
+        let skipped = u64::from(self.rows > 0);
+        Ok(open_arrow_sink_core::CommitSummary {
+            rows_committed: self.rows - skipped,
+            rows_skipped: skipped,
+            rows_failed_blobs: skipped,
+            version: Some(42),
+        })
     }
 
     async fn abort(self: Box<Self>) -> Result<()> {
@@ -127,7 +137,10 @@ async fn streams_sequentially_and_commits_once() {
         )
         .await
         .unwrap();
-    assert_eq!((summary.batches, summary.rows), (3, 5));
+    assert_eq!(summary.rows_committed, 4);
+    assert_eq!(summary.rows_skipped, 1);
+    assert_eq!(summary.rows_failed_blobs, 1);
+    assert_eq!(summary.version, Some(42));
     assert_eq!(
         *events.lock().unwrap(),
         [
@@ -148,7 +161,10 @@ async fn empty_stream_still_opens_and_commits() {
         )
         .await
         .unwrap();
-    assert_eq!((summary.batches, summary.rows), (0, 0));
+    assert_eq!(summary.rows_committed, 0);
+    assert_eq!(summary.rows_skipped, 0);
+    assert_eq!(summary.rows_failed_blobs, 0);
+    assert_eq!(summary.version, Some(42));
     assert_eq!(*sink.events.lock().unwrap(), ["open", "commit"]);
 }
 

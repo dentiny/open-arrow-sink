@@ -26,9 +26,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             futures::stream::iter([Ok::<_, std::io::Error>(batch)]),
         )
         .await?;
-    println!(
-        "Committed {} rows in {} batches",
-        summary.rows, summary.batches
-    );
+    println!("Committed {} rows", summary.rows_committed);
     Ok(())
 }

@@ -38,7 +38,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
         release(&state);
         third.await.unwrap();
     }
-    writer.commit().await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_committed, 9);
     let state = state.lock().unwrap();
     assert_eq!(state.committed_rows().is_some() as usize, 1);
     assert_eq!(state.committed_rows(), Some(9));

@@ -2,7 +2,7 @@ use std::future::Future;
 
 use futures::Stream;
 
-use crate::{RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions, WriteSummary};
+use crate::{CommitSummary, RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions};
 
 /// Wrap a sink without I/O, preserving its backend-specific request type.
 /// Option decorators should leave unrelated option validation to the backend,
@@ -19,6 +19,7 @@ pub trait Layer<S: Sink> {
 /// Fluent layer composition and stream writing, available to every sized [`Sink`].
 pub trait SinkExt: Sink + Sized {
     /// Write an entire fallible batch stream, then commit once at EOF.
+    /// Return the backend's [`CommitSummary`] with actual published row counts.
     ///
     /// Input and write errors trigger a best-effort abort; abort errors never
     /// replace the original error. Open errors return before polling input.
@@ -35,7 +36,7 @@ pub trait SinkExt: Sink + Sized {
         schema: SchemaRef,
         options: WriteOptions,
         stream: S,
-    ) -> impl Future<Output = Result<WriteSummary, WriteAllError<E>>> + Send
+    ) -> impl Future<Output = Result<CommitSummary, WriteAllError<E>>> + Send
     where
         S: Stream<Item = Result<RecordBatch, E>> + Send,
         E: Send,

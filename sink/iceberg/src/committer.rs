@@ -14,11 +14,15 @@ pub(crate) struct IcebergCommitter {
 
 #[async_trait]
 impl SessionCommitter<Vec<iceberg::spec::DataFile>> for IcebergCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<Vec<iceberg::spec::DataFile>>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<Vec<iceberg::spec::DataFile>>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         let mut files = Vec::new();
         for output in outputs {
             files.extend(output);
         }
+        let rows_committed = files.iter().map(|file| file.record_count()).sum();
         if !files.is_empty() {
             let tx = Transaction::new(&self.table);
             let tx = tx
@@ -31,7 +35,10 @@ impl SessionCommitter<Vec<iceberg::spec::DataFile>> for IcebergCommitter {
                 .await
                 .map_err(Error::backend)?;
         }
-        Ok(())
+        Ok(open_arrow_sink_core::CommitSummary {
+            rows_committed,
+            ..Default::default()
+        })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         Ok(())

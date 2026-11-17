@@ -42,7 +42,11 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
     assert_eq!(writer.schema(), &expected.schema());
     writer.write(expected.slice(0, 1)).await.unwrap();
     writer.write(expected.slice(1, 2)).await.unwrap();
-    writer.commit().await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 3);
+    assert_eq!(summary.rows_skipped, 0);
+    assert_eq!(summary.rows_failed_blobs, 0);
+    assert_eq!(summary.version, None);
 
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
@@ -76,7 +80,8 @@ async fn write_all_round_trips_the_input_stream() {
         )
         .await
         .unwrap();
-    assert_eq!((summary.batches, summary.rows), (2, 3));
+    assert_eq!(summary.rows_committed, 3);
+    assert_eq!(summary.version, None);
     let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
         .await
         .unwrap();

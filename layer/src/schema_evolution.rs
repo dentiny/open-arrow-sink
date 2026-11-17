@@ -193,7 +193,7 @@ impl Writer for EvolutionWriter {
         self.inner.write(self.output.apply(input)?).await?;
         Ok(())
     }
-    async fn commit(self: Box<Self>) -> Result<()> {
+    async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         self.inner.commit().await
     }
     async fn abort(self: Box<Self>) -> Result<()> {

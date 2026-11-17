@@ -253,7 +253,10 @@ impl DataWriter for TestWriter {
 struct TestCommitter(SharedState, Option<open_arrow_sink_core::IoObservers>);
 #[async_trait]
 impl SessionCommitter<u64> for TestCommitter {
-    async fn commit(self: Box<Self>, outputs: Vec<u64>) -> Result<()> {
+    async fn commit(
+        self: Box<Self>,
+        outputs: Vec<u64>,
+    ) -> Result<open_arrow_sink_core::CommitSummary> {
         let mut state = self.0.lock().unwrap();
         assert_eq!(state.count(Event::Finish), state.count(Event::Open));
         state.events.push(Event::CommitAttempt);
@@ -265,7 +268,10 @@ impl SessionCommitter<u64> for TestCommitter {
         }
         let rows = outputs.into_iter().sum();
         state.events.push(Event::Commit { rows });
-        Ok(())
+        Ok(open_arrow_sink_core::CommitSummary {
+            rows_committed: rows,
+            ..Default::default()
+        })
     }
     async fn abort(self: Box<Self>) -> Result<()> {
         self.0.lock().unwrap().events.push(Event::SessionAbort);

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Return `CommitSummary` from writer/session commits and stream-writing helpers,
+  with actual committed rows, session-local blob recovery counts, and Lance version.
+  This changes custom writer/committer implementations and replaces the stream
+  helper's accepted-input `WriteSummary`.
+- Count actual committed output in `MetricsLayer`, including blob row skipping.
+
 ## 0.2.0 - 2026-11-16
 
 - Download S3 blobs whose URLs include MD5 metadata query parameters.
