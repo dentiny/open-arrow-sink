@@ -16,7 +16,7 @@ pub use resolver::StorageResolver;
 pub use ::url::Url;
 pub use backend::{DirectoryState, Storage, StorageWriter};
 pub use config::{RetryConfig, StorageConfig, TimeoutConfig};
-pub use destination::DestinationStorage;
+pub use destination::DestinationResolver;
 pub use http_limit::{HttpConcurrencyLimitLayer, HttpRequestPermit};
 pub use io_metrics::IoMetricsLayer;
 pub use object_path::ObjectPath;

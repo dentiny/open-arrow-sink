@@ -1,4 +1,4 @@
-use open_arrow_sink_storage::{DestinationStorage, Storage, StorageConfig, Url};
+use open_arrow_sink_storage::{DestinationResolver, Storage, StorageConfig, Url};
 use std::{num::NonZeroUsize, sync::Arc};
 
 use open_arrow_sink_core::{
@@ -18,21 +18,21 @@ use crate::{
 /// directory transaction. Drop does not commit or clean up incomplete files.
 #[derive(Debug, Clone, Default)]
 pub struct ParquetDirectorySink {
-    destination: DestinationStorage,
+    destination_resolver: DestinationResolver,
 }
 
 impl ParquetDirectorySink {
     /// Reuse a configured OpenDAL operator, including credentials and layers.
     pub fn new(storage: Storage) -> Self {
         Self {
-            destination: DestinationStorage::new(storage),
+            destination_resolver: DestinationResolver::new(storage),
         }
     }
 
     /// Configure retry/timeout policies for explicit or URL-derived storage.
     /// Validation happens now, before opening a destination or performing I/O.
     pub fn with_config(mut self, config: StorageConfig) -> Result<Self> {
-        self.destination = self.destination.with_config(config)?;
+        self.destination_resolver = self.destination_resolver.with_config(config)?;
         Ok(self)
     }
 }
@@ -98,7 +98,7 @@ impl ParquetDirectorySink {
         validation::validate_options(&schema, &options, self.capability())?;
         let properties = crate::compression::writer_properties(&schema, &options.compression)?;
         let storage = self
-            .destination
+            .destination_resolver
             .resolve(&directory)?
             .with_write_options(&options);
         let destination =

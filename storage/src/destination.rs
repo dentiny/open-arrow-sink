@@ -10,13 +10,13 @@ use crate::{Storage, StorageConfig, StorageResolver, Url};
 /// configuration. Session upload options and observers can be applied to the resolved
 /// storage with [`Storage::with_write_options`].
 #[derive(Clone, Debug, Default)]
-pub struct DestinationStorage {
+pub struct DestinationResolver {
     explicit: Option<Storage>,
     resolver: StorageResolver,
     config: StorageConfig,
 }
 
-impl DestinationStorage {
+impl DestinationResolver {
     /// Reuse a configured operator, including credentials, transport, and layers.
     pub fn new(storage: Storage) -> Self {
         Self {
@@ -61,7 +61,7 @@ mod tests {
             Storage::new(operator, Url::from_directory_path(temp.path()).unwrap()).unwrap();
         let metrics = IoMetrics::default();
         let storage = storage.with_io_metrics(metrics.clone());
-        let destination = DestinationStorage::new(storage.clone());
+        let destination = DestinationResolver::new(storage.clone());
         let resolved = destination.resolve(&url).unwrap();
         assert!(
             resolved
@@ -80,7 +80,7 @@ mod tests {
         let scheme = "destination-storage-test";
         opendal::OperatorRegistry::get().register::<opendal::services::Memory>(scheme);
         let url = Url::parse(&format!("{scheme}://destination/key")).unwrap();
-        let destination = DestinationStorage::default();
+        let destination = DestinationResolver::default();
         // Clone before populating the shared URL cache.
         let clone = destination.clone();
         let first = destination.resolve(&url).unwrap();
@@ -110,7 +110,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            DestinationStorage::default().with_config(config),
+            DestinationResolver::default().with_config(config),
             Err(Error::InvalidConfig(_))
         ));
     }
