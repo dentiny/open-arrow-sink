@@ -1,15 +1,14 @@
 use arrow_array::{ArrayRef, LargeBinaryArray, RecordBatch, cast::AsArray};
 use arrow_schema::{DataType, Field, Schema};
 use open_arrow_sink_core::{BLOB_METADATA_KEY, Sink, WriteMode};
-use open_arrow_sink_lance::{LanceDatasetSink, Storage};
+use open_arrow_sink_lance::LanceDatasetSink;
 use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::memory_warehouse as storage;
 use open_arrow_sink_test_support::unordered_options as options;
+use open_arrow_sink_test_support::url as fixture_url;
 use open_arrow_sink_test_support::within;
 use std::sync::Arc;
 
-fn storage() -> Storage {
-    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
-}
 fn input() -> RecordBatch {
     let field = Field::new("blob", DataType::LargeBinary, true)
         .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into());
@@ -30,9 +29,7 @@ fn input() -> RecordBatch {
 #[tokio::test]
 async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
     let storage = storage();
-    let url = storage
-        .url(&ObjectPath::parse("existing/").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "existing/");
     let downloader =
         open_arrow_sink_storage::BlobDownloader::new(1.try_into().unwrap(), 25.try_into().unwrap())
             .unwrap()
@@ -86,12 +83,12 @@ async fn null_ancestors_do_not_download_hidden_blob_uris() {
         datatypes::BlobHandling,
     };
     let source = open_arrow_sink_test_support::memory_storage("memory://source/");
-    let visible = source.url(&ObjectPath::parse("visible").unwrap()).unwrap();
+    let visible = fixture_url(&source, "visible");
     source
         .write(&source.path(&visible).unwrap(), "ok".into())
         .await
         .unwrap();
-    let missing = source.url(&ObjectPath::parse("missing").unwrap()).unwrap();
+    let missing = fixture_url(&source, "missing");
     let mut blobs = BlobArrayBuilder::new(3);
     for uri in [&missing, &missing, &visible] {
         blobs.push_uri(uri.as_str()).unwrap();

@@ -11,12 +11,11 @@ use open_arrow_sink_core::{
 use open_arrow_sink_lance::{LanceDatasetSink, Storage};
 use open_arrow_sink_layer::UnorderedWriteLayer;
 use open_arrow_sink_storage::ObjectPath;
+use open_arrow_sink_test_support::memory_warehouse as storage;
+use open_arrow_sink_test_support::url as fixture_url;
 use open_arrow_sink_test_support::write_batches;
 use std::{num::NonZeroUsize, sync::Arc};
 
-fn storage() -> Storage {
-    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
-}
 fn batch() -> RecordBatch {
     open_arrow_sink_test_support::int64_batch("value", vec![Some(1), Some(2), Some(3)])
 }
@@ -39,9 +38,7 @@ async fn indexed_dataset() -> &'static IndexedDataset {
         .get_or_init(|| async {
             let storage = storage();
             let sink = LanceDatasetSink::new(storage.clone());
-            let url = storage
-                .url(&ObjectPath::parse("indexed/").unwrap())
-                .unwrap();
+            let url = fixture_url(&storage, "indexed/");
             let io = open_arrow_sink_core::IoMetrics::default();
             write_batches(
                 &sink,
@@ -61,7 +58,7 @@ async fn indexed_dataset() -> &'static IndexedDataset {
 async fn shared_operator_unordered_commit_preserves_rows() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+    let url = fixture_url(&storage, "output/");
     write_batches(
         &sink
             .clone()
@@ -112,9 +109,7 @@ async fn shared_operator_builds_requested_index() {
 async fn native_files_use_the_configured_storage_namespace() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage
-        .url(&ObjectPath::parse("雪 output%20/").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "雪 output%20/");
     write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert_gt!(
         storage
@@ -132,7 +127,7 @@ async fn native_files_use_the_configured_storage_namespace() {
 async fn duplicate_create_preserves_the_existing_dataset() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url(&ObjectPath::parse("output/").unwrap()).unwrap();
+    let url = fixture_url(&storage, "output/");
     write_batches(&sink, url.clone(), &vec![batch(); 4], write_options()).await;
     assert!(matches!(
         sink.open(url.clone(), batch().schema(), write_options()).await,
@@ -156,9 +151,7 @@ async fn duplicate_index_reports_already_exists() {
 async fn shared_operator_abort_preserves_output() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage
-        .url(&ObjectPath::parse("aborted/").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "aborted/");
     let mut session = sink
         .open_writers(
             url.clone(),
@@ -173,7 +166,7 @@ async fn shared_operator_abort_preserves_output() {
     let directory = storage.path(&url).unwrap();
     let before = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
     assert!(!before.is_empty());
-    let sibling = storage.url(&ObjectPath::parse("keep").unwrap()).unwrap();
+    let sibling = fixture_url(&storage, "keep");
     storage
         .write(&storage.path(&sibling).unwrap(), "keep".into())
         .await
@@ -196,9 +189,7 @@ async fn explicit_storage_version() {
     let sink = LanceDatasetSink::new(storage.clone());
     assert!(sink.capability().supports_storage_version);
     for version in ["2.2", "2.3"] {
-        let url = storage
-            .url(&ObjectPath::parse(&format!("version-{version}/")).unwrap())
-            .unwrap();
+        let url = fixture_url(&storage, &format!("version-{version}/"));
         let mut writer = sink
             .open(
                 url.clone(),
@@ -217,9 +208,7 @@ async fn explicit_storage_version() {
     }
     assert!(matches!(
         sink.open(
-            storage
-                .url(&ObjectPath::parse("unsupported/").unwrap())
-                .unwrap(),
+            fixture_url(&storage, "unsupported/"),
             batch().schema(),
             write_options().with_storage_version("2.1".into())
         )
@@ -240,9 +229,7 @@ async fn ingests_blob_with_configured_layout(
     #[case] parallel: bool,
 ) {
     let storage = storage();
-    let source = storage
-        .url(&ObjectPath::parse("source.bin").unwrap())
-        .unwrap();
+    let source = fixture_url(&storage, "source.bin");
     storage
         .write(
             &storage.path(&source).unwrap(),
@@ -263,9 +250,7 @@ async fn ingests_blob_with_configured_layout(
         ..Default::default()
     });
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage
-        .url(&ObjectPath::parse("ingested/").unwrap())
-        .unwrap();
+    let url = fixture_url(&storage, "ingested/");
     let mut writer = if parallel {
         sink.clone()
             .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
@@ -314,9 +299,7 @@ async fn external_blobs_resolve_independent_buckets() {
         .unwrap();
     let mut values = BlobArrayBuilder::new(3);
     for (storage, bytes) in [(&first, "first"), (&second, "second")] {
-        let uri = storage
-            .url(&ObjectPath::parse("same-key").unwrap())
-            .unwrap();
+        let uri = fixture_url(storage, "same-key");
         storage
             .write(
                 &storage.path(&uri).unwrap(),
@@ -385,7 +368,7 @@ async fn io_metrics_are_isolated_per_session() {
         let io = open_arrow_sink_core::IoMetrics::default();
         let mut writer = sink
             .open(
-                store.url(&ObjectPath::parse(name).unwrap()).unwrap(),
+                fixture_url(&store, name),
                 batch().schema(),
                 // Building the index forces reads within the measured session.
                 write_options()
@@ -407,7 +390,7 @@ async fn io_metrics_are_isolated_per_session() {
 async fn empty_fragment_workers_create_no_files() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
-    let url = storage.url(&ObjectPath::parse("empty/").unwrap()).unwrap();
+    let url = fixture_url(&storage, "empty/");
     let path = storage.path(&url).unwrap();
     let session = sink
         .open_writers(

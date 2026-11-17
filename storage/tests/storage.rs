@@ -1,3 +1,4 @@
+use open_arrow_sink_test_support::memory_warehouse as memory;
 use std::time::Duration;
 
 use open_arrow_sink_core::Error;
@@ -5,10 +6,6 @@ use open_arrow_sink_core::Error;
 use open_arrow_sink_storage::{
     DirectoryState, ObjectPath, RetryConfig, Storage, StorageConfig, TimeoutConfig, Url, opendal,
 };
-
-fn memory() -> Storage {
-    open_arrow_sink_test_support::memory_storage("memory:///warehouse/")
-}
 
 #[tokio::test]
 async fn streaming_close_publishes_chunks_in_the_shared_namespace() {
