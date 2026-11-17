@@ -26,13 +26,6 @@ pub(crate) fn unsupported_storage_version(version: impl std::fmt::Display) -> Er
     ))
 }
 
-pub(crate) fn invalid_compression_level(level: i32) -> Error {
-    Error::InvalidConfig(format!(
-        "Lance Zstd compression level must be between 0 and {}: {level}",
-        open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.end(),
-    ))
-}
-
 pub(crate) fn unsupported_compression(compression: open_arrow_sink_core::CompressionSpec) -> Error {
     Error::Unsupported(format!("Lance compression: {compression:?}"))
 }

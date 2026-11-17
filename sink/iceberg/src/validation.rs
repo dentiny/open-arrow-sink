@@ -2,8 +2,8 @@ use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::Transform;
 use iceberg::table::Table;
 use open_arrow_sink_core::{
-    CompressionSpec, Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability,
-    WriteOptions, ZSTD_COMPRESSION_LEVEL_RANGE, validation,
+    Error, PartitionOptions, PartitionType, Result, SchemaRef, SinkCapability, WriteOptions,
+    ZSTD_COMPRESSION_LEVEL_RANGE, validation,
 };
 
 use crate::error;
@@ -19,15 +19,7 @@ pub(crate) fn validate_options(
         ));
     }
     validation::validate_options(schema, options, capability)?;
-    if let Some(CompressionSpec::Zstd { level: Some(level) }) = options.compression.global
-        && !ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-    {
-        return Err(Error::InvalidConfig(format!(
-            "Iceberg Zstd compression level must be between {} and {}: {level}",
-            ZSTD_COMPRESSION_LEVEL_RANGE.start(),
-            ZSTD_COMPRESSION_LEVEL_RANGE.end()
-        )));
-    }
+    validation::validate_zstd_levels(&options.compression, ZSTD_COMPRESSION_LEVEL_RANGE, false)?;
     Ok(())
 }
 

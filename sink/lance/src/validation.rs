@@ -15,6 +15,11 @@ pub(crate) fn validate_options(
     capability: SinkCapability,
 ) -> Result<Option<LanceFileVersion>> {
     validation::validate_options(schema, options, capability)?;
+    validation::validate_zstd_levels(
+        &options.compression,
+        open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE,
+        true,
+    )?;
     let storage_version = parse_storage_version(options.storage_version.as_deref())?;
     crate::compression::validate_encoding(schema, &options.compression)?;
     validate_indexes(schema, &options.indexes)?;

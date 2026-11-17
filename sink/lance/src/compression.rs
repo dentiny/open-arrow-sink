@@ -57,16 +57,7 @@ fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig>
         CompressionSpec::Uncompressed => (CompressionScheme::None, None),
         // Preserve Lance's native codec policy, including Fullzip's native fallback.
         CompressionSpec::Lz4Raw => (CompressionScheme::Lz4, None),
-        CompressionSpec::Zstd { level } => {
-            // Lance also accepts 0 as the native Zstd default.
-            if let Some(level) = level
-                && level != 0
-                && !open_arrow_sink_core::ZSTD_COMPRESSION_LEVEL_RANGE.contains(&level)
-            {
-                return Err(error::invalid_compression_level(level));
-            }
-            (CompressionScheme::Zstd, level)
-        }
+        CompressionSpec::Zstd { level } => (CompressionScheme::Zstd, level),
         _ => {
             return Err(error::unsupported_compression(compression));
         }
