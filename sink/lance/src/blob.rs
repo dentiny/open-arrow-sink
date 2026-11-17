@@ -1,6 +1,7 @@
 //! Logical blob input conversion. Layout and object ownership belong to Lance.
 use arrow_array::{
-    ArrayRef, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray, StructArray,
+    ArrayRef, BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringArray,
+    StringViewArray, StructArray,
 };
 use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef, is_blob_field};
 use std::sync::Arc;
@@ -33,6 +34,22 @@ pub(crate) fn logical_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<Re
                 arrow_schema::DataType::LargeBinary => {
                     (array.clone(), Arc::new(StringArray::new_null(array.len())))
                 }
+                arrow_schema::DataType::Binary => (
+                    Arc::new(LargeBinaryArray::from_iter(
+                        array.as_any().downcast_ref::<BinaryArray>().unwrap().iter(),
+                    )),
+                    Arc::new(StringArray::new_null(array.len())),
+                ),
+                arrow_schema::DataType::BinaryView => (
+                    Arc::new(LargeBinaryArray::from_iter(
+                        array
+                            .as_any()
+                            .downcast_ref::<BinaryViewArray>()
+                            .unwrap()
+                            .iter(),
+                    )),
+                    Arc::new(StringArray::new_null(array.len())),
+                ),
                 arrow_schema::DataType::Utf8 => (
                     Arc::new(LargeBinaryArray::new_null(array.len())),
                     array.clone(),

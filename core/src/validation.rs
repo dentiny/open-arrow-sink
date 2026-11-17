@@ -14,25 +14,13 @@ pub fn validate_options(
     options: &WriteOptions,
     capability: SinkCapability,
 ) -> Result<()> {
-    validate_mode_options(options.mode, capability.supported_modes)?;
-    if options.blob_handle.is_some() && !capability.supports_blob_handle {
-        return Err(Error::Unsupported("blob handle configuration".into()));
-    }
-    if (options.upload.part_size.is_some() || options.upload.concurrency.is_some())
-        && !capability.supports_upload_options
+    match option_errors(schema, options, capability)
+        .into_iter()
+        .next()
     {
-        return Err(Error::Unsupported("upload part size or concurrency".into()));
+        Some((_, _, error)) => Err(error),
+        None => Ok(()),
     }
-    validate_storage_version_options(
-        options.storage_version.as_deref(),
-        capability.supports_storage_version,
-    )?;
-    validate_compression_options(schema, &options.compression, capability.compression)?;
-    validate_partition_options(options.partition, &capability.supported_partitions)?;
-    validate_index_options(&options.indexes, capability.supported_indexes)?;
-    validate_target_file_size_options(options.target_file_size)?;
-    validate_ordering_options(options.ordering, capability.ordering)?;
-    Ok(())
 }
 
 /// Reject unsupported modes, including the default, before destination I/O.
@@ -252,4 +240,162 @@ pub fn nested_field<'a>(schema: &'a Schema, path: &[String]) -> Option<&'a arrow
     } else {
         fields(schema.fields(), path)
     }
+}
+
+/// Collect independent shared-option failures, preserving the same validators as
+/// `validate_options`. Compression entries and index requests are checked separately.
+pub fn check_options(
+    schema: &Schema,
+    options: &WriteOptions,
+    capability: SinkCapability,
+) -> Vec<crate::SchemaIssue> {
+    option_errors(schema, options, capability)
+        .into_iter()
+        .map(|(path, kind, error)| crate::SchemaIssue::new(path, kind, error.to_string()))
+        .collect()
+}
+
+fn option_errors(
+    schema: &Schema,
+    options: &WriteOptions,
+    capability: SinkCapability,
+) -> Vec<(Vec<String>, crate::SchemaIssueKind, Error)> {
+    use crate::SchemaIssueKind as Kind;
+    let mut issues = Vec::new();
+    let mut record = |path: Vec<String>, result: Result<()>| {
+        if let Err(error) = result {
+            let kind = if matches!(&error, Error::InvalidConfig(_)) && !path.is_empty() {
+                Kind::MissingColumn
+            } else {
+                Kind::InvalidOption
+            };
+            issues.push((path, kind, error));
+        }
+    };
+    record(
+        vec![],
+        validate_mode_options(options.mode, capability.supported_modes),
+    );
+    if options.blob_handle.is_some() && !capability.supports_blob_handle {
+        record(
+            vec![],
+            Err(Error::Unsupported("blob handle configuration".into())),
+        );
+    }
+    if (options.upload.part_size.is_some() || options.upload.concurrency.is_some())
+        && !capability.supports_upload_options
+    {
+        record(
+            vec![],
+            Err(Error::Unsupported("upload part size or concurrency".into())),
+        );
+    }
+    record(
+        vec![],
+        validate_storage_version_options(
+            options.storage_version.as_deref(),
+            capability.supports_storage_version,
+        ),
+    );
+    record(
+        vec![],
+        validate_partition_options(options.partition, &capability.supported_partitions),
+    );
+    record(
+        vec![],
+        validate_target_file_size_options(options.target_file_size),
+    );
+    record(
+        vec![],
+        validate_ordering_options(options.ordering, capability.ordering),
+    );
+    for index in &options.indexes {
+        record(
+            vec![index.column.clone()],
+            validate_index_options(std::slice::from_ref(index), capability.supported_indexes),
+        );
+    }
+    // Split scopes so one invalid codec cannot hide another column or encoding.
+    let compression = &options.compression;
+    for single in [
+        CompressionOptions {
+            global: compression.global,
+            ..Default::default()
+        },
+        CompressionOptions {
+            structural_encoding: compression.structural_encoding,
+            ..Default::default()
+        },
+    ] {
+        record(
+            vec![],
+            validate_compression_options(schema, &single, capability.compression),
+        );
+    }
+    for (column, codec) in &compression.columns {
+        let single = CompressionOptions {
+            columns: [(column.clone(), *codec)].into(),
+            ..Default::default()
+        };
+        record(
+            vec![column.clone()],
+            validate_compression_options(schema, &single, capability.compression),
+        );
+    }
+    for (column, encoding) in &compression.column_encodings {
+        let single = CompressionOptions {
+            column_encodings: [(column.clone(), *encoding)].into(),
+            ..Default::default()
+        };
+        record(
+            vec![column.clone()],
+            validate_compression_options(schema, &single, capability.compression),
+        );
+    }
+    for (path, codec) in &compression.nested_columns {
+        let single = CompressionOptions {
+            nested_columns: [(path.clone(), *codec)].into(),
+            ..Default::default()
+        };
+        record(
+            path.clone(),
+            validate_compression_options(schema, &single, capability.compression),
+        );
+    }
+    // Existence is independent of codec support, so always report it as well.
+    for column in compression
+        .columns
+        .keys()
+        .chain(compression.column_encodings.keys())
+    {
+        if unique_column_index(schema, column).is_none()
+            && !issues.iter().any(|(path, kind, _)| {
+                path == &vec![column.clone()] && *kind == Kind::MissingColumn
+            })
+        {
+            issues.push((
+                vec![column.clone()],
+                Kind::MissingColumn,
+                Error::InvalidConfig(format!(
+                    "compression/encoding column must identify one top-level field: {column}"
+                )),
+            ));
+        }
+    }
+    for path in compression.nested_columns.keys() {
+        if (path.len() < 2 || nested_field(schema, path).is_none())
+            && !issues
+                .iter()
+                .any(|(existing, kind, _)| existing == path && *kind == Kind::MissingColumn)
+        {
+            issues.push((
+                path.clone(),
+                Kind::MissingColumn,
+                Error::InvalidConfig(format!(
+                    "nested compression path must identify one field: {path:?}"
+                )),
+            ));
+        }
+    }
+    issues
 }

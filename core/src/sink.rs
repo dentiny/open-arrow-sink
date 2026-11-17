@@ -47,6 +47,18 @@ pub trait Sink: Send + Sync {
     /// still validates the requested options and schema against these capabilities.
     fn capability(&self) -> SinkCapability;
 
+    /// Check schema and options without destination I/O. The default checks shared
+    /// options; backends override this to add their schema and type constraints.
+    /// A successful preflight cannot predict destination state or data-dependent
+    /// failures (for example, index training or malformed blob URLs in rows).
+    fn check_schema(
+        &self,
+        schema: &arrow_schema::Schema,
+        options: &WriteOptions,
+    ) -> Vec<crate::SchemaIssue> {
+        crate::validation::check_options(schema, options, self.capability())
+    }
+
     /// Validate shared options and compression column names against the input schema
     /// with `validation::validate_options` before destination I/O.
     /// Sinks that support indexes also call `validation::validate_indexes` and validate

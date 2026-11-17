@@ -74,17 +74,88 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
         self.inner.capability()
     }
 
+    fn check_schema(
+        &self,
+        schema: &arrow_schema::Schema,
+        options: &WriteOptions,
+    ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+        use open_arrow_sink_core::{SchemaIssue, SchemaIssueKind as Kind};
+        let mut issues = Vec::new();
+        let mut selected = self.columns.iter().collect::<Vec<_>>();
+        selected.sort();
+        let mut valid = HashSet::new();
+        for name in selected {
+            match validation::unique_column_index(schema, name) {
+                None => issues.push(SchemaIssue::new(
+                    vec![name.clone()],
+                    Kind::MissingColumn,
+                    "blob URL column must exist and be unique",
+                )),
+                Some(index) => {
+                    if matches!(
+                        schema.field(index).data_type(),
+                        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+                    ) {
+                        valid.insert(name.clone());
+                    } else {
+                        issues.push(SchemaIssue::new(
+                            vec![name.clone()],
+                            Kind::BlobType,
+                            "blob URL column must be text",
+                        ));
+                    }
+                }
+            }
+        }
+        // Reuse the opening transformation for all valid selections, so downstream
+        // checks see the actual blob metadata and nullability.
+        let mut prepared_schema = Arc::new(schema.clone());
+        let mut prepared_options = options.clone();
+        match self.prepare_selected(&valid, &mut prepared_schema, &mut prepared_options) {
+            Ok(_) => issues.extend(self.inner.check_schema(&prepared_schema, &prepared_options)),
+            Err(error) => issues.push(SchemaIssue::new(
+                vec![],
+                Kind::InvalidOption,
+                error.to_string(),
+            )),
+        }
+        issues
+    }
+
     fn prepare(&self, schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<Plan> {
-        if !self.columns.is_empty() && !self.inner.capability().supports_blob_handle {
+        self.prepare_selected(&self.columns, schema, options)
+    }
+
+    fn wrap_writer(&self, plan: Plan, inner: Box<dyn Writer>) -> Box<dyn Writer> {
+        plan.wrap_writer(inner)
+    }
+
+    fn wrap_session<T: Send + 'static>(
+        &self,
+        plan: Plan,
+        session: WriteSession<T>,
+    ) -> WriteSession<T> {
+        plan.wrap_session(session)
+    }
+}
+
+impl<S: Sink> DownloadBlobSink<S> {
+    fn prepare_selected(
+        &self,
+        columns: &HashSet<String>,
+        schema: &mut SchemaRef,
+        options: &mut WriteOptions,
+    ) -> Result<Plan> {
+        if !columns.is_empty() && !self.inner.capability().supports_blob_handle {
             return Err(Error::Unsupported("blob URL inputs".into()));
         }
         options.download_recovery = Some(DownloadRecovery {
-            columns: self.columns.as_ref().clone(),
+            columns: columns.clone(),
             policy: self.failure_policy,
             metrics: self.metrics.clone(),
         });
-        let mut remaps = Vec::with_capacity(self.columns.len());
-        for name in self.columns.iter() {
+        let mut remaps = Vec::with_capacity(columns.len());
+        for name in columns.iter() {
             let index = validation::unique_column_index(schema, name).ok_or_else(|| {
                 Error::InvalidInput(format!("blob URL column must exist and be unique: {name}"))
             })?;
@@ -115,17 +186,5 @@ impl<S: Sink> Decorator for DownloadBlobSink<S> {
         // transform shares arrays, so it cannot reserve a payload twice.
         *schema = plan.target.clone();
         Ok(plan)
-    }
-
-    fn wrap_writer(&self, plan: Plan, inner: Box<dyn Writer>) -> Box<dyn Writer> {
-        plan.wrap_writer(inner)
-    }
-
-    fn wrap_session<T: Send + 'static>(
-        &self,
-        plan: Plan,
-        session: WriteSession<T>,
-    ) -> WriteSession<T> {
-        plan.wrap_session(session)
     }
 }

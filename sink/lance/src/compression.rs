@@ -52,7 +52,7 @@ pub(crate) fn validate_encoding(schema: &Schema, options: &CompressionOptions) -
 }
 
 /// Convert shared codec requests to native Lance parameters before schema conversion.
-fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
+pub(crate) fn native_compression(compression: CompressionSpec) -> Result<CompressionConfig> {
     let (scheme, level) = match compression {
         CompressionSpec::Uncompressed => (CompressionScheme::None, None),
         // Preserve Lance's native codec policy, including Fullzip's native fallback.

@@ -6,9 +6,7 @@ use open_arrow_sink_core::{
     SchemaRef, Sink, SinkCapability, WriteMode, WriteOptions, WriteSession, Writer, async_trait,
 };
 
-use crate::{
-    LanceFragments, destination::LanceDestination, validation::validate_options, write_options,
-};
+use crate::{LanceFragments, destination::LanceDestination, write_options};
 
 /// Creates, appends to, or version-overwrites a URL dataset using native Lance commits.
 /// Only unordered writes are supported; dataset scan order is not guaranteed.
@@ -38,6 +36,33 @@ impl Default for LanceDatasetSink {
     }
 }
 impl LanceDatasetSink {
+    /// Check field names, Arrow types and blob metadata before selecting options.
+    /// This performs no storage construction or I/O.
+    pub fn check_schema_only(
+        schema: &arrow_schema::Schema,
+    ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+        crate::schema_check::check(
+            schema,
+            &WriteOptions::default().with_ordering(Ordering::Unordered),
+            Self::default().capability(),
+        )
+    }
+
+    /// Whether a top-level column can supply blob URI text or native bytes.
+    /// Select it by marking the field with `open_arrow_sink_core::BLOB_METADATA_KEY`.
+    pub fn blob_source_eligible(data_type: &arrow_schema::DataType) -> bool {
+        use arrow_schema::DataType::*;
+        matches!(
+            data_type,
+            Utf8 | LargeUtf8 | Utf8View | Binary | LargeBinary | BinaryView
+        )
+    }
+
+    /// Whether the requested index can be built on this ordinary (non-blob) type.
+    pub fn index_eligible(index: IndexType, data_type: &arrow_schema::DataType) -> bool {
+        crate::validation::index_eligible(index, data_type)
+    }
+
     pub fn new(storage: Storage) -> Self {
         Self {
             storage: Some(storage),
@@ -155,6 +180,14 @@ impl Sink for LanceDatasetSink {
             ])
     }
 
+    fn check_schema(
+        &self,
+        schema: &arrow_schema::Schema,
+        options: &WriteOptions,
+    ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+        crate::schema_check::check(schema, options, self.capability())
+    }
+
     async fn open(
         &self,
         url: Url,
@@ -176,7 +209,18 @@ impl ParallelSink for LanceDatasetSink {
         options: WriteOptions,
         count: NonZeroUsize,
     ) -> Result<WriteSession<Self::Output>> {
-        let storage_version = validate_options(&schema, &options, self.capability())?;
+        let issues = self.check_schema(&schema, &options);
+        if !issues.is_empty() {
+            return Err(open_arrow_sink_core::Error::InvalidInput(
+                issues
+                    .iter()
+                    .map(|issue| format!("{:?}: {}", issue.path, issue.message))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        let storage_version =
+            crate::validation::parse_storage_version(options.storage_version.as_deref())?;
         let schemas = write_options::LanceSchemas::new(schema, &options)?;
         let params = write_options::write_params(&options, storage_version);
         let destination = self.destination_for(url, &options)?;

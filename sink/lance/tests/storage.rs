@@ -227,7 +227,7 @@ async fn explicit_storage_version() {
             write_options().with_storage_version("2.1".into())
         )
         .await,
-        Err(open_arrow_sink_core::Error::Unsupported(_))
+        Err(open_arrow_sink_core::Error::InvalidInput(message)) if message.contains("storage version")
     ));
 }
 

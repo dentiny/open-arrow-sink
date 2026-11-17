@@ -63,3 +63,34 @@ fn unsupported_guarantees_modes_and_zero_size_are_rejected() {
     validation::validate_target_file_size_options(None).unwrap();
     validation::validate_target_file_size_options(Some(1)).unwrap();
 }
+
+#[test]
+fn structured_options_collect_independent_failures() {
+    use open_arrow_sink_core::{CompressionSpec, SchemaIssueKind, SinkCapability, WriteOptions};
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
+    let mut options = WriteOptions::default();
+    options.target_file_size = Some(0);
+    options.storage_version = Some("2.2".into());
+    options
+        .compression
+        .columns
+        .insert("missing".into(), CompressionSpec::Snappy);
+    let capability = SinkCapability::default().with_supported_modes(&[WriteMode::Create]);
+    let issues = validation::check_options(&schema, &options, capability.clone());
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.message.contains("target_file_size"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.message.contains("storage version"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.path == ["missing"] && issue.kind == SchemaIssueKind::MissingColumn)
+    );
+    assert!(validation::validate_options(&schema, &options, capability).is_err());
+}

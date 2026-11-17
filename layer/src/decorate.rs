@@ -20,6 +20,24 @@ pub(crate) trait Decorator: Send + Sync {
         self.inner().capability()
     }
 
+    /// Preflight uses the same schema and option transformation as opening.
+    fn check_schema(
+        &self,
+        schema: &arrow_schema::Schema,
+        options: &WriteOptions,
+    ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+        let mut schema = std::sync::Arc::new(schema.clone());
+        let mut options = options.clone();
+        match self.prepare(&mut schema, &mut options) {
+            Ok(_) => self.inner().check_schema(&schema, &options),
+            Err(error) => vec![open_arrow_sink_core::SchemaIssue::new(
+                vec![],
+                open_arrow_sink_core::SchemaIssueKind::InvalidOption,
+                error.to_string(),
+            )],
+        }
+    }
+
     /// Runs before either backend open. The context lives across the await,
     /// including failure and cancellation, and is consumed after a successful open.
     fn prepare(&self, schema: &mut SchemaRef, options: &mut WriteOptions) -> Result<Self::Context>;
@@ -77,6 +95,14 @@ macro_rules! impl_sink {
 
             fn capability(&self) -> open_arrow_sink_core::SinkCapability {
                 crate::decorate::Decorator::capability(self)
+            }
+
+            fn check_schema(
+                &self,
+                schema: &arrow_schema::Schema,
+                options: &open_arrow_sink_core::WriteOptions,
+            ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+                crate::decorate::Decorator::check_schema(self, schema, options)
             }
 
             async fn open(

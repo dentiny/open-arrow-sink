@@ -49,6 +49,27 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
         self.inner.capability().with_ordering(Ordering::Unordered)
     }
 
+    fn check_schema(
+        &self,
+        schema: &arrow_schema::Schema,
+        options: &WriteOptions,
+    ) -> Vec<open_arrow_sink_core::SchemaIssue> {
+        let mut issues = self.inner.check_schema(schema, options);
+        if let Err(error) =
+            validation::validate_ordering_options(options.ordering, Ordering::Unordered)
+            && !issues
+                .iter()
+                .any(|issue| issue.message == error.to_string())
+        {
+            issues.push(open_arrow_sink_core::SchemaIssue::new(
+                vec![],
+                open_arrow_sink_core::SchemaIssueKind::InvalidOption,
+                error.to_string(),
+            ));
+        }
+        issues
+    }
+
     async fn open(
         &self,
         request: Self::Request,

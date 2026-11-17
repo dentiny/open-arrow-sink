@@ -53,20 +53,6 @@ pub(crate) fn blob_structural_encoding(column: &str) -> Error {
     Error::Unsupported(format!("structural encoding on blob column {column}"))
 }
 
-pub(crate) fn missing_index_column(column: &str) -> Error {
-    Error::InvalidConfig(format!("index column not found: {column}"))
-}
-
-pub(crate) fn unsupported_index(
-    index: &open_arrow_sink_core::IndexSpec,
-    data_type: &arrow_schema::DataType,
-) -> Error {
-    Error::Unsupported(format!(
-        "cannot create {:?} index on column {} with type {}",
-        index.index_type, index.column, data_type
-    ))
-}
-
 pub(crate) fn storage_version_mismatch(
     requested: impl std::fmt::Display,
     existing: impl std::fmt::Display,

@@ -161,3 +161,39 @@ progress.finish(summary.rows_committed, summary.rows_failed_blobs);
 Empty sessions report zero rows; errors
 return no summary and do not imply publication was rolled back. Custom writers,
 committers, and decorators must return or forward the summary.
+
+## Schema preflight
+
+`Sink::check_schema(&schema, &options)` returns structured `SchemaIssue` values
+without constructing destination storage or doing I/O. Each issue has a literal
+field path, a `SchemaIssueKind`, and a message; an empty path denotes a session-wide
+problem. The default implementation checks shared options. Lance adds recursive
+name/type checks, blob metadata, index types, encoding, and native SDK schema
+conversion. Lance's single and parallel opens use this same preflight and return
+`Error::InvalidInput` containing all diagnostics before destination I/O.
+
+```rust,ignore
+use open_arrow_sink::{IndexType, Ordering, Sink, WriteOptions, lance::LanceDatasetSink};
+
+// Before the user selects any blob or index options:
+let issues = LanceDatasetSink::check_schema_only(&schema);
+for field in schema.fields() {
+    let blob_eligible = LanceDatasetSink::blob_source_eligible(field.data_type());
+    let index_eligible: Vec<_> = [IndexType::Scalar, IndexType::Vector, IndexType::Text,
+        IndexType::BloomFilter].into_iter()
+        .filter(|index| LanceDatasetSink::index_eligible(*index, field.data_type()))
+        .collect();
+}
+// Mark selected blob fields with BLOB_METADATA_KEY = "true", or compose
+// DownloadBlobLayer to select URI text columns by name, then check that sink.
+let options = WriteOptions::default().with_ordering(Ordering::Unordered);
+let issues = LanceDatasetSink::default().check_schema(&schema, &options);
+```
+
+Blob candidates include `Utf8`, `LargeUtf8`, `Utf8View`, `Binary`, `LargeBinary`,
+and `BinaryView`. Marked inputs must be top-level. Type-only index eligibility
+assumes an ordinary, non-blob field; full preflight rejects indexes on selected
+blob fields. Decorators apply their schema/options transformations before checking
+the backend. DownloadBlobLayer reports all missing or non-text selected columns.
+A successful preflight does not check existing dataset state, row values, source
+URL availability, or data-dependent index training; these require opening/writing.

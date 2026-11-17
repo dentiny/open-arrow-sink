@@ -1,90 +1,11 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
-use open_arrow_sink_core::{
-    Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, is_blob_field, validation,
-};
+use open_arrow_sink_core::{Error, IndexSpec, IndexType, Result, WriteOptions, is_blob_field};
 
 use lance::index::DatasetIndexExt;
 use lance_file::version::LanceFileVersion;
 
 use crate::error;
-
-pub(crate) fn validate_options(
-    schema: &Schema,
-    options: &WriteOptions,
-    capability: SinkCapability,
-) -> Result<Option<LanceFileVersion>> {
-    validation::validate_options(schema, options, capability)?;
-    let storage_version = parse_storage_version(options.storage_version.as_deref())?;
-    crate::compression::validate_encoding(schema, &options.compression)?;
-    validate_indexes(schema, &options.indexes)?;
-    Ok(storage_version)
-}
-
-pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result<()> {
-    use DataType::*;
-    validation::validate_indexes(schema, indexes)?;
-    for index in indexes {
-        let field = schema
-            .field_with_name(&index.column)
-            .map_err(|_| error::missing_index_column(&index.column))?;
-        let supported = match index.index_type {
-            IndexType::Scalar => matches!(
-                field.data_type(),
-                Boolean
-                    | Int8
-                    | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float16
-                    | Float32
-                    | Float64
-                    | Decimal128(_, _)
-                    | Utf8
-                    | LargeUtf8
-                    | Utf8View
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-            // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
-            // Int8 is rejected even though the older reference allowed it.
-            IndexType::Vector => {
-                matches!(field.data_type(), FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
-            }
-            IndexType::Text => matches!(field.data_type(), Utf8 | LargeUtf8 | Utf8View),
-            IndexType::BloomFilter => matches!(
-                field.data_type(),
-                Int8 | Int16
-                    | Int32
-                    | Int64
-                    | UInt8
-                    | UInt16
-                    | UInt32
-                    | UInt64
-                    | Float32
-                    | Float64
-                    | Utf8
-                    | LargeUtf8
-                    | Date32
-                    | Date64
-                    | Time32(_)
-                    | Time64(_)
-                    | Timestamp(_, _)
-            ),
-        };
-        if !supported {
-            return Err(error::unsupported_index(index, field.data_type()));
-        }
-    }
-    Ok(())
-}
 
 pub(crate) async fn validate_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
@@ -120,15 +41,7 @@ pub(crate) async fn validate_existing_dataset(
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     fn check(field: &arrow_schema::Field, top_level: bool) -> Result<()> {
         if is_blob_field(field) {
-            if !top_level
-                || !matches!(
-                    field.data_type(),
-                    DataType::LargeBinary
-                        | DataType::Utf8
-                        | DataType::LargeUtf8
-                        | DataType::Utf8View
-                )
-            {
+            if !top_level || !crate::LanceDatasetSink::blob_source_eligible(field.data_type()) {
                 return Err(Error::InvalidInput(format!(
                     "blob-marked column must be top-level binary or URL text: {}",
                     field.name()
@@ -220,4 +133,60 @@ pub(crate) async fn validate_index_requests(
         validate_existing_indexes(dataset, &options.indexes).await?;
     }
     Ok(())
+}
+
+/// Whether this Lance backend can build the requested index for an Arrow type.
+pub(crate) fn index_eligible(index: IndexType, data_type: &DataType) -> bool {
+    use DataType::*;
+    match index {
+        IndexType::Scalar => matches!(
+            data_type,
+            Boolean
+                | Int8
+                | Int16
+                | Int32
+                | Int64
+                | UInt8
+                | UInt16
+                | UInt32
+                | UInt64
+                | Float16
+                | Float32
+                | Float64
+                | Decimal128(_, _)
+                | Utf8
+                | LargeUtf8
+                | Utf8View
+                | Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Timestamp(_, _)
+        ),
+        // Lance 14's IVF_FLAT L2 path supports floating-point vectors.
+        // Int8 is rejected even though the older reference allowed it.
+        IndexType::Vector => {
+            matches!(data_type, FixedSizeList(child, dimension) if *dimension > 0 && matches!(child.data_type(), Float16 | Float32 | Float64))
+        }
+        IndexType::Text => matches!(data_type, Utf8 | LargeUtf8 | Utf8View),
+        IndexType::BloomFilter => matches!(
+            data_type,
+            Int8 | Int16
+                | Int32
+                | Int64
+                | UInt8
+                | UInt16
+                | UInt32
+                | UInt64
+                | Float32
+                | Float64
+                | Utf8
+                | LargeUtf8
+                | Date32
+                | Date64
+                | Time32(_)
+                | Time64(_)
+                | Timestamp(_, _)
+        ),
+    }
 }

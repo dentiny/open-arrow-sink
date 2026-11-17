@@ -6,6 +6,7 @@ mod committer;
 mod compression;
 mod error;
 mod provider;
+mod schema_check;
 mod sink;
 mod validation;
 mod worker;
