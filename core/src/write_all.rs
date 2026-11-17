@@ -23,19 +23,17 @@ pub enum WriteAllError<E> {
     Sink(#[from] Error),
 }
 
-pub(crate) async fn write_all<T, S, E, F>(
+pub(crate) async fn write_all<T, S, E>(
     sink: &T,
     request: T::Request,
     schema: SchemaRef,
     options: WriteOptions,
     batches: S,
-    mut progress: F,
 ) -> Result<WriteSummary, WriteAllError<E>>
 where
     T: Sink,
     S: Stream<Item = Result<RecordBatch, E>> + Send,
     E: Send,
-    F: FnMut(usize) + Send,
 {
     let mut writer = sink.open(request, schema, options).await?;
     let mut summary = WriteSummary::default();
@@ -55,7 +53,6 @@ where
         }
         summary.batches += 1;
         summary.rows += rows as u64;
-        progress(rows);
     }
     writer.commit().await?;
     Ok(summary)

@@ -63,10 +63,8 @@ Open errors return before reading input. Commit errors return directly because
 commit consumes the writer and may have already published data. Cancelling the
 future or panicking drops the writer without async cleanup.
 
-Use `.write_all_with_progress(destination, schema, options, batches, |rows| { ... })`
-for a synchronous callback after each accepted batch, including empty batches.
 `summary.rows` and `summary.batches` count accepted input, before backend
-filtering or transformation; progress does not imply successful publication.
+filtering or transformation.
 See the [Parquet example](sink/parquet/examples/write_directory.rs) for a runnable
 use of `write_all`.
 

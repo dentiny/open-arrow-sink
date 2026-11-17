@@ -109,45 +109,29 @@ fn batch(rows: usize) -> RecordBatch {
 }
 
 #[tokio::test]
-async fn streams_sequentially_with_progress_after_acceptance_and_commits_once() {
+async fn streams_sequentially_and_commits_once() {
     let sink = sink(Faults::default());
     let events = &sink.events;
-    // Async streams need not be Unpin, callback state can be borrowed,
-    // and the next batch is not pulled ahead.
+    // Async streams need not be Unpin and can borrow state.
+    // The next batch is not pulled ahead.
     let batches = stream::iter([2, 0, 3]).then(|rows| async move {
         event(events, format!("read:{rows}"));
         Ok::<_, std::io::Error>(batch(rows))
     });
-    let mut progress = Vec::new();
     let summary = sink
-        .write_all_with_progress(
+        .write_all(
             "destination",
             batch(0).schema(),
             WriteOptions::default(),
             batches,
-            |rows| {
-                progress.push(rows);
-                event(events, format!("progress:{rows}"));
-            },
         )
         .await
         .unwrap();
     assert_eq!((summary.batches, summary.rows), (3, 5));
-    assert_eq!(progress, [2, 0, 3]);
     assert_eq!(
         *events.lock().unwrap(),
         [
-            "open",
-            "read:2",
-            "write:2",
-            "progress:2",
-            "read:0",
-            "write:0",
-            "progress:0",
-            "read:3",
-            "write:3",
-            "progress:3",
-            "commit",
+            "open", "read:2", "write:2", "read:0", "write:0", "read:3", "write:3", "commit",
         ]
     );
 }
@@ -182,14 +166,12 @@ async fn input_error_is_preserved_even_when_abort_fails_and_input_is_not_resumed
         let token = Arc::new(());
         let batches = stream::iter([Ok(batch(2)), Err(SourceError(token.clone()))])
             .chain(stream::poll_fn(|_| panic!("input resumed after error")));
-        let mut progress = Vec::new();
         let error = sink
-            .write_all_with_progress(
+            .write_all(
                 "destination",
                 batch(0).schema(),
                 WriteOptions::default(),
                 batches,
-                |rows| progress.push(rows),
             )
             .await
             .unwrap_err();
@@ -197,13 +179,12 @@ async fn input_error_is_preserved_even_when_abort_fails_and_input_is_not_resumed
             panic!("lost input error")
         };
         assert!(Arc::ptr_eq(&error.0, &token));
-        assert_eq!(progress, [2]);
         assert_eq!(*sink.events.lock().unwrap(), ["open", "write:2", "abort"]);
     }
 }
 
 #[tokio::test]
-async fn write_error_aborts_without_polling_again_or_reporting_progress() {
+async fn write_error_aborts_without_polling_again() {
     for abort in [false, true] {
         let sink = sink(Faults {
             write: true,
@@ -213,12 +194,11 @@ async fn write_error_aborts_without_polling_again_or_reporting_progress() {
         let batches = stream::once(async { Ok::<_, std::io::Error>(batch(2)) })
             .chain(stream::poll_fn(|_| panic!("polled after failed write")));
         let error = sink
-            .write_all_with_progress(
+            .write_all(
                 "destination",
                 batch(0).schema(),
                 WriteOptions::default(),
                 batches,
-                |_| panic!("failed write reported progress"),
             )
             .await
             .unwrap_err();

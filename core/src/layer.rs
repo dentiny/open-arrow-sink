@@ -40,28 +40,7 @@ pub trait SinkExt: Sink + Sized {
         S: Stream<Item = Result<RecordBatch, E>> + Send,
         E: Send,
     {
-        self.write_all_with_progress(request, schema, options, batches, |_| {})
-    }
-
-    /// Like [`Self::write_all`], invoking `progress(batch_rows)` once after each
-    /// successful `Writer::write`, including zero-row batches. This reports
-    /// accepted input, not committed output; a later write or commit can fail,
-    /// and backend policies may filter or transform accepted rows.
-    /// The callback is synchronous and infallible; a panic does not run abort.
-    fn write_all_with_progress<S, E, F>(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        options: WriteOptions,
-        batches: S,
-        progress: F,
-    ) -> impl Future<Output = Result<WriteSummary, WriteAllError<E>>> + Send
-    where
-        S: Stream<Item = Result<RecordBatch, E>> + Send,
-        E: Send,
-        F: FnMut(usize) + Send,
-    {
-        crate::write_all::write_all(self, request, schema, options, batches, progress)
+        crate::write_all::write_all(self, request, schema, options, batches)
     }
 
     /// The last installed layer is outermost: `sink.layer(a).layer(b)` sends
