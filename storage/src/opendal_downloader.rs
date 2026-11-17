@@ -84,9 +84,7 @@ impl Downloader for OpenDalDownloader {
             });
             let mut operator = self.http.clone();
             if let Some(observers) = context.unobserved_metrics(self.http_metrics.clone()) {
-                for metrics in observers.iter() {
-                    operator = operator.layer(crate::IoMetricsLayer(metrics.clone()));
-                }
+                operator = operator.layer(crate::io_metrics::IoObserversLayer(observers));
             }
             let ctx = operator.base_context().with_http_transport(transport);
             (operator.with_context(ctx), "blob".to_owned())

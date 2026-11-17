@@ -38,7 +38,7 @@ pub enum DirectoryState {
 pub struct Storage {
     operator: Operator,
     exported: Operator,
-    io_metrics: Vec<open_arrow_sink_core::IoMetrics>,
+    io_metrics: Option<open_arrow_sink_core::IoObservers>,
     http_limit: HttpConcurrencyLimitLayer,
     base_url: Url,
     // Validated once at construction; shared cheaply by storage clones.
@@ -60,7 +60,7 @@ impl Storage {
         let mut storage = Self {
             exported: operator.clone(),
             operator,
-            io_metrics: Vec::new(),
+            io_metrics: None,
             http_limit: HttpConcurrencyLimitLayer::default(),
             base_url,
             base_path,
@@ -201,16 +201,7 @@ impl Storage {
     }
 
     pub(crate) fn without_io_metrics(mut self) -> UnobservedStorage {
-        let metrics = std::mem::take(&mut self.io_metrics);
-        let observers = metrics.into_iter().fold(
-            None,
-            |all: Option<open_arrow_sink_core::IoObservers>, metrics| {
-                Some(match all {
-                    Some(all) => all.combine(metrics),
-                    None => metrics.into(),
-                })
-            },
-        );
+        let observers = self.io_metrics.take();
         self.rebuild_operator();
         UnobservedStorage {
             storage: self,
@@ -224,14 +215,9 @@ impl Storage {
         mut self,
         metrics: impl Into<open_arrow_sink_core::IoObservers>,
     ) -> Self {
-        let mut changed = false;
-        for metrics in metrics.into().iter() {
-            if !self.io_metrics.contains(metrics) {
-                self.io_metrics.push(metrics.clone());
-                changed = true;
-            }
-        }
-        if changed {
+        let observers = self.io_metrics.clone().unwrap_or_default().combine(metrics);
+        if !observers.is_empty() && self.io_metrics.as_ref() != Some(&observers) {
+            self.io_metrics = Some(observers);
             self.rebuild_operator();
         }
         self
@@ -275,8 +261,8 @@ impl Storage {
             .operator
             .clone()
             .with_context(context.with_http_transport(transport));
-        for metrics in &self.io_metrics {
-            operator = operator.layer(crate::IoMetricsLayer(metrics.clone()));
+        if let Some(observers) = &self.io_metrics {
+            operator = operator.layer(crate::io_metrics::IoObserversLayer(observers.clone()));
         }
         self.exported = operator;
     }

@@ -128,6 +128,15 @@ impl WriteOptions {
         self.io_metrics = Some(io_metrics.into());
         self
     }
+    /// Merge distinct I/O observers without replacing handles from outer layers.
+    pub fn add_io_metrics(&mut self, io_metrics: impl Into<crate::IoObservers>) {
+        self.io_metrics = Some(
+            self.io_metrics
+                .take()
+                .unwrap_or_default()
+                .combine(io_metrics),
+        );
+    }
     /// Set `blob_handle` while preserving all other options.
     pub fn with_blob_handle(mut self, blob_handle: crate::BlobHandleConfig) -> Self {
         self.blob_handle = Some(blob_handle);
