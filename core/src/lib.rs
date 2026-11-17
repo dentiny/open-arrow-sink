@@ -25,7 +25,7 @@ pub use compression::{
     CompressionCapability, CompressionCodec, CompressionOptions, CompressionSpec,
     StructuralEncoding, ZSTD_COMPRESSION_LEVEL_RANGE,
 };
-pub use error::{Error, IndexCommitError, Result, WriteAllError};
+pub use error::{Error, IndexCommitError, Result};
 pub use index::{ExistingIndexPolicy, IndexSpec, IndexType};
 pub use layer::{Layer, SinkExt};
 pub use request::{Ordering, PartitionOptions, UploadConfig, WriteMode, WriteOptions};

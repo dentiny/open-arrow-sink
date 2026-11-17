@@ -4,7 +4,7 @@ use arrow_array::{ArrayRef, Int64Array};
 use futures::{FutureExt, StreamExt, stream};
 use open_arrow_sink_core::{
     Error, IndexCommitError, RecordBatch, Result, SchemaRef, Sink, SinkCapability, SinkExt,
-    WriteAllError, WriteOptions, Writer, async_trait,
+    WriteOptions, Writer, async_trait,
 };
 
 type Events = Arc<Mutex<Vec<String>>>;
@@ -126,7 +126,7 @@ async fn streams_sequentially_and_commits_once() {
     // The next batch is not pulled ahead.
     let batches = stream::iter([2, 0, 3]).then(|rows| async move {
         event(events, format!("read:{rows}"));
-        Ok::<_, std::io::Error>(batch(rows))
+        Ok::<_, open_arrow_sink_core::Error>(batch(rows))
     });
     let summary = sink
         .write_all(
@@ -180,8 +180,11 @@ async fn input_error_is_preserved_even_when_abort_fails_and_input_is_not_resumed
             ..Default::default()
         });
         let token = Arc::new(());
-        let batches = stream::iter([Ok(batch(2)), Err(SourceError(token.clone()))])
-            .chain(stream::poll_fn(|_| panic!("input resumed after error")));
+        let batches = stream::iter([
+            Ok(batch(2)),
+            Err(Error::backend(SourceError(token.clone()))),
+        ])
+        .chain(stream::poll_fn(|_| panic!("input resumed after error")));
         let error = sink
             .write_all(
                 "destination",
@@ -191,10 +194,13 @@ async fn input_error_is_preserved_even_when_abort_fails_and_input_is_not_resumed
             )
             .await
             .unwrap_err();
-        let WriteAllError::Input(error) = error else {
+        let Error::Backend(error) = error else {
             panic!("lost input error")
         };
-        assert!(Arc::ptr_eq(&error.0, &token));
+        assert!(Arc::ptr_eq(
+            &error.downcast_ref::<SourceError>().unwrap().0,
+            &token
+        ));
         assert_eq!(*sink.events.lock().unwrap(), ["open", "write:2", "abort"]);
     }
 }
@@ -207,7 +213,7 @@ async fn write_error_aborts_without_polling_again() {
             abort,
             ..Default::default()
         });
-        let batches = stream::once(async { Ok::<_, std::io::Error>(batch(2)) })
+        let batches = stream::once(async { Ok::<_, open_arrow_sink_core::Error>(batch(2)) })
             .chain(stream::poll_fn(|_| panic!("polled after failed write")));
         let error = sink
             .write_all(
@@ -218,9 +224,7 @@ async fn write_error_aborts_without_polling_again() {
             )
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, WriteAllError::Sink(Error::InvalidInput(message)) if message == "write")
-        );
+        assert!(matches!(error, Error::InvalidInput(message) if message == "write"));
         assert_eq!(*sink.events.lock().unwrap(), ["open", "write:2", "abort"]);
     }
 }
@@ -241,9 +245,7 @@ async fn open_failure_does_not_poll_input_or_abort() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, WriteAllError::Sink(Error::InvalidInput(message)) if message == "open")
-    );
+    assert!(matches!(error, Error::InvalidInput(message) if message == "open"));
     assert_eq!(*sink.events.lock().unwrap(), ["open"]);
 }
 
@@ -258,20 +260,19 @@ async fn commit_failure_preserves_published_data_error_without_aborting() {
             "destination",
             batch(0).schema(),
             WriteOptions::default(),
-            stream::iter([Ok::<_, std::io::Error>(batch(2))]),
+            stream::iter([Ok::<_, open_arrow_sink_core::Error>(batch(2))]),
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, WriteAllError::Sink(Error::IndexCommit(error)) if error.message == "index")
-    );
+    assert!(matches!(error, Error::IndexCommit(error) if error.message == "index"));
     assert_eq!(*sink.events.lock().unwrap(), ["open", "write:2", "commit"]);
 }
 
 #[tokio::test]
 async fn cancelling_the_future_does_not_commit_or_run_async_abort() {
     let sink = sink(Faults::default());
-    let batches = stream::iter([Ok::<_, std::io::Error>(batch(2))]).chain(stream::pending());
+    let batches =
+        stream::iter([Ok::<_, open_arrow_sink_core::Error>(batch(2))]).chain(stream::pending());
     assert!(
         sink.write_all(
             "destination",

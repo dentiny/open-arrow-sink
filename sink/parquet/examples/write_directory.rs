@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             directory,
             batch.schema(),
             WriteOptions::default().with_ordering(Ordering::Unordered),
-            futures::stream::iter([Ok::<_, std::io::Error>(batch)]),
+            futures::stream::iter([Ok::<_, open_arrow_sink_core::Error>(batch)]),
         )
         .await?;
     println!("Committed {} rows", summary.rows_committed);

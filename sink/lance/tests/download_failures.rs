@@ -202,7 +202,7 @@ async fn write_all_returns_actual_blob_recovery_counts() {
             url,
             input.schema(),
             unordered_options(),
-            futures::stream::iter([Ok::<_, std::io::Error>(input)]),
+            futures::stream::iter([Ok::<_, open_arrow_sink_core::Error>(input)]),
         )
         .await
         .unwrap();

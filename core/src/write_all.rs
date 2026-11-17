@@ -1,18 +1,17 @@
 use futures::{Stream, StreamExt, pin_mut};
 
-use crate::{CommitSummary, RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions};
+use crate::{CommitSummary, RecordBatch, Result, SchemaRef, Sink, WriteOptions};
 
-pub(crate) async fn write_all<T, S, E>(
+pub(crate) async fn write_all<T, S>(
     sink: &T,
     request: T::Request,
     schema: SchemaRef,
     options: WriteOptions,
     stream: S,
-) -> Result<CommitSummary, WriteAllError<E>>
+) -> Result<CommitSummary>
 where
     T: Sink,
-    S: Stream<Item = Result<RecordBatch, E>> + Send,
-    E: Send,
+    S: Stream<Item = Result<RecordBatch>> + Send,
 {
     let mut writer = sink.open(request, schema, options).await?;
     pin_mut!(stream);
@@ -21,13 +20,13 @@ where
             Ok(batch) => batch,
             Err(error) => {
                 let _ = writer.abort().await;
-                return Err(WriteAllError::Input(error));
+                return Err(error);
             }
         };
         if let Err(error) = writer.write(batch).await {
             let _ = writer.abort().await;
-            return Err(WriteAllError::Sink(error));
+            return Err(error);
         }
     }
-    writer.commit().await.map_err(WriteAllError::Sink)
+    writer.commit().await
 }

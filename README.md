@@ -54,11 +54,13 @@ let summary = sink
     .await?;
 ```
 
-`stream` can be any `Send` stream of `Result<RecordBatch, E>`, including an
-unpinned async stream with its own error type. The helper opens once, writes
+`stream` can be any `Send` stream of `open_arrow_sink::Result<RecordBatch>`,
+including an unpinned async stream. Map errors from other libraries at the input
+boundary with `stream.map_err(open_arrow_sink::Error::backend)` (using
+`futures::TryStreamExt`); this preserves the native error and its source chain. The helper opens once, writes
 one batch at a time, and commits at EOF, even for empty input. Input or write
-errors trigger best-effort abort; `WriteAllError::Input(E)` or
-`WriteAllError::Sink(Error)` retains the original error if abort also fails.
+errors trigger best-effort abort and return the original `Error` even if abort
+also fails.
 Open errors return before reading input. Commit errors return directly because
 commit consumes the writer and may have already published data. Cancelling the
 future or panicking drops the writer without async cleanup.

@@ -74,7 +74,7 @@ async fn write_all_round_trips_the_input_stream() {
             expected.schema(),
             options(),
             futures::stream::iter([
-                Ok::<_, std::io::Error>(expected.slice(0, 1)),
+                Ok::<_, open_arrow_sink_core::Error>(expected.slice(0, 1)),
                 Ok(expected.slice(1, 2)),
             ]),
         )
