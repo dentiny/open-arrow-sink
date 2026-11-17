@@ -19,12 +19,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
         self: Box<Self>,
         outputs: Vec<LanceFragments>,
     ) -> Result<open_arrow_sink_core::CommitSummary> {
-        let mut summary = open_arrow_sink_core::CommitSummary::default();
-        for output in &outputs {
-            summary.rows_committed += output.summary.rows_committed;
-            summary.rows_skipped += output.summary.rows_skipped;
-            summary.rows_failed_blobs += output.summary.rows_failed_blobs;
-        }
+        let summary = outputs.iter().map(|output| output.summary).sum();
         let transaction = merge_transactions(outputs)?;
         // One manifest publication assigns fragment IDs across all workers.
         // Retain files on failure: publication may already have succeeded.
