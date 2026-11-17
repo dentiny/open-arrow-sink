@@ -1,6 +1,6 @@
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
-use open_arrow_sink_core::{Sink, WriteMode, WriteOptions};
+use open_arrow_sink_core::{Sink, SinkExt, WriteMode, WriteOptions};
 use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use open_arrow_sink_test_support::unordered_options as options;
@@ -57,6 +57,37 @@ async fn commit_round_trips_multiple_batches(#[case] target_file_size: Option<us
         offset += actual.num_rows();
     }
     assert_eq!(offset, expected.num_rows());
+}
+
+#[tokio::test]
+async fn write_all_round_trips_the_input_stream() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("output");
+    let expected = batch();
+    ParquetDirectorySink::default()
+        .write_all(
+            Url::from_directory_path(&directory).unwrap(),
+            expected.schema(),
+            options(),
+            futures::stream::iter([
+                Ok::<_, std::io::Error>(expected.slice(0, 1)),
+                Ok(expected.slice(1, 2)),
+            ]),
+        )
+        .await
+        .unwrap();
+    let file = tokio::fs::File::open(directory.join("part-0-00000.parquet"))
+        .await
+        .unwrap();
+    let batches: Vec<_> = ParquetRecordBatchStreamBuilder::new(file)
+        .await
+        .unwrap()
+        .build()
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(batches, [expected]);
 }
 
 struct ConformanceFixture {
