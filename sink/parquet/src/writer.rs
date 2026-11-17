@@ -34,18 +34,10 @@ impl DataWriter for ParquetDirectoryWriter {
             self.state.complete();
             return Ok(());
         }
-        if self
-            .writer
-            .as_ref()
-            .is_some_and(|writer| self.should_roll_file(writer))
+        if let Some(writer) = &self.writer
+            && should_roll_file(writer, self.target_file_size)
         {
-            self.writer
-                .as_mut()
-                .unwrap()
-                .finish()
-                .await
-                .map_err(Error::backend)?;
-            self.writer = None;
+            self.close_file().await?;
         }
         if self.writer.is_none() {
             let writer = self
@@ -85,10 +77,7 @@ impl DataWriter for ParquetDirectoryWriter {
 
     async fn finish(&mut self) -> Result<u64> {
         self.state.begin()?;
-        if let Some(writer) = self.writer.as_mut() {
-            writer.finish().await.map_err(Error::backend)?;
-            self.writer = None;
-        }
+        self.close_file().await?;
         Ok(self.rows_written)
     }
     async fn abort(mut self: Box<Self>) -> Result<()> {
@@ -121,10 +110,17 @@ impl ParquetDirectoryWriter {
         }
     }
 
-    fn should_roll_file(&self, writer: &AsyncArrowWriter<FileWriter>) -> bool {
-        !writer.flushed_row_groups().is_empty()
-            && self
-                .target_file_size
-                .is_some_and(|size| writer.bytes_written() >= size)
+    async fn close_file(&mut self) -> Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            // Keep a failed or cancelled upload available for explicit abort.
+            writer.finish().await.map_err(Error::backend)?;
+            self.writer = None;
+        }
+        Ok(())
     }
+}
+
+fn should_roll_file(writer: &AsyncArrowWriter<FileWriter>, target: Option<usize>) -> bool {
+    !writer.flushed_row_groups().is_empty()
+        && target.is_some_and(|size| writer.bytes_written() >= size)
 }
