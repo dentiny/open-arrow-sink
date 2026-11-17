@@ -183,8 +183,7 @@ impl Writer for EvolutionWriter {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        self.inner.write(self.output.apply(input)?).await?;
-        Ok(())
+        self.inner.write(self.output.apply(input)?).await
     }
     async fn commit(self: Box<Self>) -> Result<open_arrow_sink_core::CommitSummary> {
         self.inner.commit().await
@@ -205,8 +204,7 @@ impl<T: Send + 'static> DataWriter for EvolutionDataWriter<T> {
         &self.schema
     }
     async fn write(&mut self, input: RecordBatch) -> Result<()> {
-        self.inner.write(self.output.apply(input)?).await?;
-        Ok(())
+        self.inner.write(self.output.apply(input)?).await
     }
     async fn finish(&mut self) -> Result<T> {
         self.inner.finish().await
