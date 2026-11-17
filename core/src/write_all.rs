@@ -1,6 +1,6 @@
 use futures::{Stream, StreamExt, pin_mut};
 
-use crate::{Error, RecordBatch, SchemaRef, Sink, WriteOptions};
+use crate::{RecordBatch, SchemaRef, Sink, WriteAllError, WriteOptions};
 
 /// Input accepted by the writer, returned only after commit succeeds.
 /// Counts precede backend filtering or transformation; they are not a count of
@@ -10,17 +10,6 @@ use crate::{Error, RecordBatch, SchemaRef, Sink, WriteOptions};
 pub struct WriteSummary {
     pub batches: u64,
     pub rows: u64,
-}
-
-/// Retains the original input or sink error, even if abort also fails.
-/// No dependency on the input producer's library or error type is required.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum WriteAllError<E> {
-    #[error("input stream failed: {0}")]
-    Input(#[source] E),
-    #[error(transparent)]
-    Sink(#[from] Error),
 }
 
 pub(crate) async fn write_all<T, S, E>(
