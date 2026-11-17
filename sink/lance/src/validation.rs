@@ -118,19 +118,14 @@ pub(crate) async fn validate_existing_dataset(
 }
 
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
-    fn check(field: &arrow_schema::Field, top_level: bool) -> Result<()> {
+    fn check(field: &arrow_schema::Field) -> Result<()> {
         if is_blob_field(field) {
-            if !top_level
-                || !matches!(
-                    field.data_type(),
-                    DataType::LargeBinary
-                        | DataType::Utf8
-                        | DataType::LargeUtf8
-                        | DataType::Utf8View
-                )
-            {
+            if !matches!(
+                field.data_type(),
+                DataType::LargeBinary | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            ) {
                 return Err(Error::InvalidInput(format!(
-                    "blob-marked column must be top-level binary or URL text: {}",
+                    "blob-marked field must be binary or URL text: {}",
                     field.name()
                 )));
             }
@@ -160,19 +155,19 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
         match field.data_type() {
             DataType::Struct(fields) => {
                 for child in fields {
-                    check(child, false)?;
+                    check(child)?;
                 }
             }
             DataType::List(child)
             | DataType::LargeList(child)
             | DataType::FixedSizeList(child, _)
-            | DataType::Map(child, _) => check(child, false)?,
+            | DataType::Map(child, _) => check(child)?,
             _ => {}
         }
         Ok(())
     }
     for input in schema.fields() {
-        check(input, true)?;
+        check(input)?;
     }
     Ok(())
 }

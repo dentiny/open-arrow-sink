@@ -26,6 +26,7 @@ lance-io.workspace = true
 object_store.workspace = true
 open-arrow-sink-core.workspace = true
 arrow-array.workspace = true
+arrow-cast.workspace = true
 arrow-buffer.workspace = true
 arrow-schema.workspace = true
 lance-index.workspace = true

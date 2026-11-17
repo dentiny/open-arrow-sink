@@ -1,8 +1,8 @@
 //! Logical blob input conversion. Layout and object ownership belong to Lance.
-use arrow_array::{
-    ArrayRef, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray, StructArray,
-};
-use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef, is_blob_field};
+use arrow_array::{Array, ArrayRef, StructArray, new_null_array};
+use arrow_cast::cast;
+use arrow_schema::{DataType, Field, Fields};
+use open_arrow_sink_core::{Error, Result};
 use std::sync::Arc;
 
 const NATIVE_BLOB_EXTENSION: &str = "lance.blob.v2";
@@ -15,67 +15,80 @@ pub(crate) fn is_native_blob(field: &arrow_schema::Field) -> bool {
         == Some(NATIVE_BLOB_EXTENSION)
 }
 
-/// Logical input reuses the binary buffers, retaining download reservations until
-/// Lance consumes them. This is the same shape produced by BlobArrayBuilder's
-/// push_bytes, without another payload copy at the adapter boundary.
-pub(crate) fn logical_batch(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {
-    let columns = batch
-        .columns()
+/// Wrap selected bytes/URLs in Lance's logical `{data, uri}` representation.
+/// This performs no I/O. The materializer calls it after slicing list children,
+/// then uses ancestor visibility to decide which values to download or buffer.
+/// Native logical Blob inputs already have the struct shape; only metadata may differ.
+pub(crate) fn convert_blob_leaf(array: &ArrayRef, field: &Field) -> Result<ArrayRef> {
+    if matches!(array.data_type(), DataType::Struct(_)) {
+        return cast(array, field.data_type()).map_err(Error::backend);
+    }
+    let DataType::Struct(fields) = field.data_type() else {
+        unreachable!("logical blob field is a struct")
+    };
+    let (data, uris) = if array.data_type() == &DataType::LargeBinary {
+        (array.clone(), new_null_array(&DataType::Utf8, array.len()))
+    } else {
+        (
+            new_null_array(&DataType::LargeBinary, array.len()),
+            cast(&array, &DataType::Utf8).map_err(Error::backend)?,
+        )
+    };
+
+    Ok(Arc::new(StructArray::new(
+        fields.clone(),
+        vec![data, uris],
+        array.nulls().cloned(),
+    )))
+}
+
+/// Replace the payload columns while preserving nulls and optional reference fields.
+/// Once bytes have been materialized, position/size no longer describe a URI
+/// reference and must be cleared for those values.
+pub(crate) fn with_materialized_payloads(
+    values: &StructArray,
+    fields: &Fields,
+    data: ArrayRef,
+    uris: ArrayRef,
+    materialized: &[bool],
+) -> Result<ArrayRef> {
+    let columns = fields
         .iter()
-        .zip(batch.schema().fields())
-        .zip(schema.fields())
-        .map(|((array, source), target)| {
-            if !is_blob_field(source) {
-                return array.clone();
-            }
-            let arrow_schema::DataType::Struct(fields) = target.data_type() else {
-                unreachable!("logical blob field is a struct");
-            };
-            let (data, uris): (ArrayRef, ArrayRef) = match source.data_type() {
-                arrow_schema::DataType::LargeBinary => {
-                    (array.clone(), Arc::new(StringArray::new_null(array.len())))
+        .enumerate()
+        .map(|(index, field)| -> Result<ArrayRef> {
+            Ok(match field.name().as_str() {
+                "data" => data.clone(),
+                "uri" => uris.clone(),
+                // Range metadata applies only to preserved URI references.
+                _ => {
+                    let validity = arrow_buffer::NullBuffer::from(
+                        materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
+                    );
+                    let original = values.column(index).to_data();
+                    arrow_array::make_array(
+                        original
+                            .into_builder()
+                            .nulls(arrow_buffer::NullBuffer::union(
+                                values.column(index).nulls(),
+                                Some(&validity),
+                            ))
+                            .build()
+                            .map_err(Error::backend)?,
+                    )
                 }
-                arrow_schema::DataType::Utf8 => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    array.clone(),
-                ),
-                arrow_schema::DataType::LargeUtf8 => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    Arc::new(StringArray::from_iter(
-                        array
-                            .as_any()
-                            .downcast_ref::<LargeStringArray>()
-                            .unwrap()
-                            .iter(),
-                    )),
-                ),
-                arrow_schema::DataType::Utf8View => (
-                    Arc::new(LargeBinaryArray::new_null(array.len())),
-                    Arc::new(StringArray::from_iter(
-                        array
-                            .as_any()
-                            .downcast_ref::<StringViewArray>()
-                            .unwrap()
-                            .iter(),
-                    )),
-                ),
-                _ => unreachable!("validated blob input type"),
-            };
-            Arc::new(StructArray::new(
-                fields.clone(),
-                vec![data, uris],
-                array.nulls().cloned(),
-            )) as ArrayRef
+            })
         })
-        .collect();
-    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(Error::backend)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(
+        StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
+            .map_err(Error::backend)?,
+    ) as ArrayRef)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::Array;
+    use arrow_array::{Array, LargeStringArray, RecordBatch, StringArray, StringViewArray};
     use arrow_schema::{Field, Schema};
     use open_arrow_sink_core::{BLOB_METADATA_KEY, WriteOptions};
 
@@ -100,9 +113,10 @@ mod tests {
         let schemas =
             crate::write_options::LanceSchemas::new(schema, &WriteOptions::default()).unwrap();
         for row in 0..2 {
-            let logical = logical_batch(batch.slice(row, 1), &schemas.logical).unwrap();
-            for column in logical.columns() {
-                let blob = column.as_any().downcast_ref::<StructArray>().unwrap();
+            let batch = batch.slice(row, 1);
+            for (column, field) in batch.columns().iter().zip(schemas.logical.fields()) {
+                let logical = convert_blob_leaf(column, field).unwrap();
+                let blob = logical.as_any().downcast_ref::<StructArray>().unwrap();
                 assert_eq!(blob.is_null(0), row == 1);
                 let uris = blob
                     .column_by_name("uri")

@@ -2,9 +2,9 @@
 //! This module performs no destination I/O and owns the configuration conversion order.
 use std::sync::Arc;
 
-use arrow_schema::{Field, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use lance::{
-    blob::{BlobFieldOptions, blob_field, blob_field_with_options},
+    blob::{BlobFieldOptions, blob_field_with_options},
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
 use open_arrow_sink_core::{
@@ -33,31 +33,16 @@ impl LanceSchemas {
     pub fn new(input: SchemaRef, options: &WriteOptions) -> Result<Self> {
         crate::validation::validate_blob_schema(&input)?;
         let compressed = crate::compression::apply_compression(&input, &options.compression)?;
-        let mut has_blobs = false;
+        let mut has_marked_blobs = false;
         let fields = compressed
             .fields()
             .iter()
             .map(|field| {
-                let logical = if is_blob_field(field) {
-                    has_blobs = true;
-                    let native = blob_field(field.name(), field.is_nullable());
-                    let mut metadata = field.metadata().clone();
-                    metadata.extend(native.metadata().clone());
-                    Arc::new(
-                        field
-                            .as_ref()
-                            .clone()
-                            .with_data_type(native.data_type().clone())
-                            .with_metadata(metadata),
-                    )
-                } else {
-                    field.clone()
-                };
-                blob_field_options(&logical, options.blob_handle.as_ref())
+                convert_blob_field(field, options.blob_handle.as_ref(), &mut has_marked_blobs)
             })
             .collect::<Vec<_>>();
         let mut metadata = compressed.metadata().clone();
-        if has_blobs {
+        if has_marked_blobs {
             metadata.insert("lance.blob.managed".into(), "true".into());
         }
         Ok(Self {
@@ -92,26 +77,70 @@ pub(crate) fn write_params(
     }
 }
 
-/// Apply per-write layout options to top-level logical blob fields.
-/// Keep the input shape and metadata, overriding only explicitly configured thresholds.
-fn blob_field_options(field: &Arc<Field>, config: Option<&BlobHandleConfig>) -> Arc<Field> {
-    let Some(config) = config else {
-        return field.clone();
-    };
-    if (config.inline_size_threshold.is_none() && config.dedicated_size_threshold.is_none())
-        || !crate::blob::is_native_blob(field)
-    {
-        return field.clone();
+/// Recursively convert blob-marked binary/URL fields to Lance's logical Blob type.
+/// Apply only explicitly configured size thresholds to new and existing Blob fields,
+/// preserving other metadata and nullability. Ordinary fields keep their types.
+/// Set `has_marked_blobs` when a marked field is converted, without clearing its prior value;
+/// the caller uses it to enable managed blobs in the schema metadata.
+fn convert_blob_field(
+    field: &Arc<Field>,
+    config: Option<&BlobHandleConfig>,
+    has_marked_blobs: &mut bool,
+) -> Arc<Field> {
+    let marked = is_blob_field(field);
+    if marked || crate::blob::is_native_blob(field) {
+        *has_marked_blobs |= marked;
+        return logical_blob_field(field, config, marked);
     }
+    let ty = match field.data_type() {
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|child| convert_blob_field(child, config, has_marked_blobs))
+                .collect(),
+        ),
+        DataType::List(item) => DataType::List(convert_blob_field(item, config, has_marked_blobs)),
+        DataType::LargeList(item) => {
+            DataType::LargeList(convert_blob_field(item, config, has_marked_blobs))
+        }
+        DataType::FixedSizeList(item, size) => {
+            DataType::FixedSizeList(convert_blob_field(item, config, has_marked_blobs), *size)
+        }
+        DataType::Map(item, sorted) => {
+            DataType::Map(convert_blob_field(item, config, has_marked_blobs), *sorted)
+        }
+        _ => return field.clone(),
+    };
+    Arc::new(field.as_ref().clone().with_data_type(ty))
+}
+
+/// Marked bytes/URLs acquire Lance's logical struct type. Existing native Blob
+/// fields retain their shape (including optional range fields); both receive only
+/// explicitly requested threshold overrides, preserving other metadata.
+fn logical_blob_field(
+    field: &Field,
+    config: Option<&BlobHandleConfig>,
+    marked: bool,
+) -> Arc<Field> {
     let native = blob_field_with_options(
         field.name(),
         field.is_nullable(),
         BlobFieldOptions {
-            inline_size_threshold: config.inline_size_threshold,
-            dedicated_size_threshold: config.dedicated_size_threshold,
+            inline_size_threshold: config.and_then(|config| config.inline_size_threshold),
+            dedicated_size_threshold: config.and_then(|config| config.dedicated_size_threshold),
         },
     );
     let mut metadata = field.metadata().clone();
     metadata.extend(native.metadata().clone());
-    Arc::new(field.as_ref().clone().with_metadata(metadata))
+    let ty = if marked {
+        native.data_type()
+    } else {
+        field.data_type()
+    };
+    Arc::new(
+        field
+            .clone()
+            .with_data_type(ty.clone())
+            .with_metadata(metadata),
+    )
 }

@@ -1,4 +1,9 @@
 //! Materialize blob sources before the SDK makes layout decisions.
+//!
+//! The input plan describes the target schema, whose Blob leaves are logical
+//! structs. Source arrays can still contain marked bytes or URL strings:
+//! materialize_batch admits a bounded group, materialize rebuilds its containers,
+//! and materialize_blob handles visible payloads/URIs at each Blob leaf.
 use std::{collections::VecDeque, sync::Arc};
 
 use arrow_array::{
@@ -6,6 +11,7 @@ use arrow_array::{
     OffsetSizeTrait, RecordBatchOptions, StringArray, StructArray,
 };
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_cast::cast;
 use arrow_schema::DataType;
 use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
 use open_arrow_sink_core::{
@@ -23,14 +29,15 @@ pub(crate) struct BlobInputPlan {
 
 struct BlobField {
     field: arrow_schema::FieldRef,
-    native: bool,
+    /// The target field is a Lance Blob leaf, even if its source is bytes or text.
+    is_blob: bool,
     children: Vec<(usize, BlobField)>,
 }
 
 impl BlobField {
     fn new(field: &arrow_schema::FieldRef) -> Option<Self> {
-        let native = crate::blob::is_native_blob(field);
-        let children = if native {
+        let is_blob = crate::blob::is_native_blob(field);
+        let children = if is_blob {
             Vec::new()
         } else {
             match field.data_type() {
@@ -48,9 +55,9 @@ impl BlobField {
                 _ => Vec::new(),
             }
         };
-        (native || !children.is_empty()).then(|| Self {
+        (is_blob || !children.is_empty()).then(|| Self {
             field: field.clone(),
-            native,
+            is_blob,
             children,
         })
     }
@@ -88,7 +95,7 @@ fn known_row_bytes(
                 0
             } else if let Some(data) = array.as_any().downcast_ref::<LargeBinaryArray>() {
                 data.value(row).len()
-            } else if field.native && matches!(array.data_type(), DataType::Struct(_)) {
+            } else if field.is_blob && matches!(array.data_type(), DataType::Struct(_)) {
                 let blob = array.as_any().downcast_ref::<StructArray>()?;
                 let data = blob
                     .column_by_name("data")?
@@ -102,7 +109,7 @@ fn known_row_bytes(
                 } else {
                     0
                 }
-            } else if field.native && mode == ExternalBlobMode::Reference {
+            } else if field.is_blob && mode == ExternalBlobMode::Reference {
                 0
             } else {
                 return None;
@@ -162,6 +169,32 @@ fn child_nulls(
                 .flat_map(|(row, len)| std::iter::repeat_n(nulls.is_valid(row), len)),
         )
     })
+}
+
+/// Logical Blob references may address a byte range within the downloaded object.
+/// Validate it before narrowing the SDK's u64 positions to buffer indices.
+fn blob_source_range(
+    values: &StructArray,
+    row: usize,
+    source_len: usize,
+) -> Result<std::ops::Range<usize>> {
+    let number = |name: &str| {
+        values.column_by_name(name).and_then(|array| {
+            let array = array.as_any().downcast_ref::<arrow_array::UInt64Array>()?;
+            array.is_valid(row).then(|| array.value(row))
+        })
+    };
+    let start = number("position").unwrap_or(0);
+    let end = number("size")
+        .map(|size| start.checked_add(size))
+        .unwrap_or(Some(source_len as u64))
+        .filter(|&end| start <= end && end <= source_len as u64)
+        .ok_or_else(|| {
+            Error::backend(std::io::Error::other(
+                "blob range exceeds downloaded source",
+            ))
+        })?;
+    Ok(start as usize..end as usize)
 }
 
 /// Per-writer blob download policy shared by batch and recursive array conversion.
@@ -245,7 +278,7 @@ impl BlobMaterializer {
         plan: &BlobInputPlan,
     ) -> Result<RecordBatch> {
         let schema = &plan.schema;
-        let input = crate::blob::logical_batch(batch.slice(range.start, range.len()), schema)?;
+        let input = batch.slice(range.start, range.len());
         let mut group = self.downloader.begin().await?;
         let mut columns = input.columns().to_vec();
         let mut failed = false;
@@ -286,7 +319,9 @@ impl BlobMaterializer {
         RecordBatch::try_new_with_options(
             schema.clone(),
             columns,
-            &RecordBatchOptions::new().with_row_count(Some(range.len())),
+            &RecordBatchOptions::new()
+                .with_match_field_names(false)
+                .with_row_count(Some(range.len())),
         )
         .map_err(Error::backend)
     }
@@ -300,6 +335,13 @@ impl BlobMaterializer {
     ) -> BoxFuture<'a, Result<ArrayRef>> {
         Box::pin(async move {
             let field = &plan.field;
+            // Convert at the leaf, after list slicing has selected this group's
+            // child range. Container traversal also carries ancestor nulls down.
+            let array = if plan.is_blob {
+                crate::blob::convert_blob_leaf(array, field)?
+            } else {
+                array.clone()
+            };
             let nulls = NullBuffer::union(array.nulls(), parent_nulls.as_ref());
             // Lists can contain several logical blobs in one input row. Slice their
             // child range before materializing so a sliced batch cannot retain/read
@@ -378,20 +420,24 @@ impl BlobMaterializer {
                 return Ok(array.clone());
             };
             let values = array.as_any().downcast_ref::<StructArray>().unwrap();
-            if plan.native && values.null_count() == values.len() {
+            if plan.is_blob && values.null_count() == values.len() {
                 return Ok(array.clone());
             }
-            if plan.native && values.column_by_name("kind").is_none() {
+            if plan.is_blob && values.column_by_name("kind").is_none() {
                 return self
-                    .materialize_native_blob(values, field, group, nulls)
+                    .materialize_blob(values, field, group, nulls.as_ref())
                     .await;
             }
-
+            // Ordinary structs visit only Blob-bearing children. Cast the remaining
+            // children to align any nested compression metadata with the target.
             let mut columns = values.columns().to_vec();
             for (index, child) in &plan.children {
                 columns[*index] = self
                     .materialize(values.column(*index), child, group, nulls.clone())
                     .await?;
+            }
+            for (array, field) in columns.iter_mut().zip(fields) {
+                *array = cast(array, field.data_type()).map_err(Error::backend)?;
             }
             Ok(Arc::new(
                 StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
@@ -400,15 +446,18 @@ impl BlobMaterializer {
         })
     }
 
-    async fn materialize_native_blob(
+    /// Handle one logical Blob array after container traversal has established
+    /// visibility. Hidden values must never trigger downloads. Ingest replaces
+    /// URIs with reserved payload buffers; Reference mode keeps URI/range fields.
+    async fn materialize_blob(
         &self,
         values: &StructArray,
         field: &arrow_schema::Field,
         group: &mut BlobDownload,
-        nulls: Option<NullBuffer>,
+        nulls: Option<&NullBuffer>,
     ) -> Result<ArrayRef> {
         let DataType::Struct(fields) = field.data_type() else {
-            unreachable!("native blob is a struct");
+            unreachable!("logical Blob fields are structs");
         };
         let malformed = || {
             Error::backend(std::io::Error::other(format!(
@@ -431,7 +480,7 @@ impl BlobMaterializer {
         let mut materialized = Vec::with_capacity(values.len());
         for row in 0..values.len() {
             let mut uri = None;
-            let bytes = if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
+            let bytes = if nulls.is_some_and(|nulls| nulls.is_null(row)) {
                 None
             } else if data.is_valid(row) {
                 Some(group.buffer(data.value(row))?)
@@ -439,23 +488,7 @@ impl BlobMaterializer {
                 let bytes = group
                     .download(uris.value(row), self.metrics.as_ref())
                     .await?;
-                let number = |name: &str| {
-                    values.column_by_name(name).and_then(|array| {
-                        let array = array.as_any().downcast_ref::<arrow_array::UInt64Array>()?;
-                        array.is_valid(row).then(|| array.value(row))
-                    })
-                };
-                let start = number("position").unwrap_or(0);
-                let end = number("size")
-                    .map(|size| start.checked_add(size))
-                    .unwrap_or(Some(bytes.len() as u64))
-                    .filter(|&end| start <= end && end <= bytes.len() as u64)
-                    .ok_or_else(|| {
-                        Error::backend(std::io::Error::other(
-                            "blob range exceeds downloaded source",
-                        ))
-                    })?;
-                Some(bytes.slice(start as usize..end as usize))
+                Some(bytes.slice(blob_source_range(values, row, bytes.len())?))
             } else {
                 if uris.is_valid(row) {
                     uri = Some(uris.value(row).to_owned());
@@ -480,36 +513,6 @@ impl BlobMaterializer {
             Some(arrow_buffer::NullBuffer::from(data_validity)),
         ));
         let uris: ArrayRef = Arc::new(StringArray::from(output_uris));
-        let columns = fields
-            .iter()
-            .enumerate()
-            .map(|(index, field)| -> Result<ArrayRef> {
-                Ok(match field.name().as_str() {
-                    "data" => data.clone(),
-                    "uri" => uris.clone(),
-                    // Range metadata applies only to preserved URI references.
-                    _ => {
-                        let validity = arrow_buffer::NullBuffer::from(
-                            materialized.iter().map(|&done| !done).collect::<Vec<_>>(),
-                        );
-                        let original = values.column(index).to_data();
-                        arrow_array::make_array(
-                            original
-                                .into_builder()
-                                .nulls(arrow_buffer::NullBuffer::union(
-                                    values.column(index).nulls(),
-                                    Some(&validity),
-                                ))
-                                .build()
-                                .map_err(Error::backend)?,
-                        )
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(
-            StructArray::try_new(fields.clone(), columns, values.nulls().cloned())
-                .map_err(Error::backend)?,
-        ) as ArrayRef)
+        crate::blob::with_materialized_payloads(values, fields, data, uris, &materialized)
     }
 }
