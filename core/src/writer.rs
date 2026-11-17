@@ -9,8 +9,6 @@ pub struct CommitSummary {
     /// Input rows with at least one failed selected blob download. Includes
     /// skipped rows and rows retained by the Null policy; do not add to skipped.
     pub rows_failed_blobs: u64,
-    /// Published destination version when available (for example Lance).
-    pub version: Option<u64>,
 }
 
 use crate::{RecordBatch, Result, SchemaRef, async_trait};

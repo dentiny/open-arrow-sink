@@ -90,7 +90,6 @@ impl Writer for TestWriter {
             rows_committed: self.rows - skipped,
             rows_skipped: skipped,
             rows_failed_blobs: skipped,
-            version: Some(42),
         })
     }
 
@@ -140,7 +139,7 @@ async fn streams_sequentially_and_commits_once() {
     assert_eq!(summary.rows_committed, 4);
     assert_eq!(summary.rows_skipped, 1);
     assert_eq!(summary.rows_failed_blobs, 1);
-    assert_eq!(summary.version, Some(42));
+
     assert_eq!(
         *events.lock().unwrap(),
         [
@@ -164,7 +163,7 @@ async fn empty_stream_still_opens_and_commits() {
     assert_eq!(summary.rows_committed, 0);
     assert_eq!(summary.rows_skipped, 0);
     assert_eq!(summary.rows_failed_blobs, 0);
-    assert_eq!(summary.version, Some(42));
+
     assert_eq!(*sink.events.lock().unwrap(), ["open", "commit"]);
 }
 

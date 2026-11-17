@@ -80,7 +80,6 @@ impl SessionCommitter<u64> for Committer {
                 rows_committed: 7,
                 rows_skipped: 2,
                 rows_failed_blobs: 3,
-                version: Some(42),
             })
         }
     }
@@ -125,7 +124,7 @@ async fn success_finishes_before_exactly_one_publication() {
     assert_eq!(summary.rows_committed, 7);
     assert_eq!(summary.rows_skipped, 2);
     assert_eq!(summary.rows_failed_blobs, 3);
-    assert_eq!(summary.version, Some(42));
+
     assert_eq!(
         *events.lock().unwrap(),
         [Event::Write, Event::Finish, Event::Publish]

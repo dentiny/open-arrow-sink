@@ -140,8 +140,6 @@ let summary = writer.commit().await?;
 progress.finish(summary.rows_committed, summary.rows_failed_blobs);
 ```
 
-Lance returns the published dataset version in `version`. Parquet and Iceberg
-currently return `None` (Iceberg snapshot IDs are signed identifiers rather than
-this API's unsigned dataset version). Empty sessions report zero rows; errors
+Empty sessions report zero rows; errors
 return no summary and do not imply publication was rolled back. Custom writers,
 committers, and decorators must return or forward the summary.

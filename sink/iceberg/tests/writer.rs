@@ -274,7 +274,7 @@ async fn commits_round_trip_batches_and_preserve_existing_rows() {
     writer.write(batch.slice(1, 2)).await.unwrap();
     let summary = writer.commit().await.unwrap();
     assert_eq!(summary.rows_committed, 3);
-    assert_eq!(summary.version, None);
+
     let table = catalog.load_table(&identifier).await.unwrap();
     let data_prefix = format!(
         "{}/data/",

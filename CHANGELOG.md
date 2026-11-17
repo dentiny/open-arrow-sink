@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Return `CommitSummary` from writer/session commits and stream-writing helpers,
-  with actual committed rows, session-local blob recovery counts, and Lance version.
+  with actual committed rows and session-local blob recovery counts.
   This changes custom writer/committer implementations and replaces the stream
   helper's accepted-input `WriteSummary`.
 - Use the shared `Error` and `Result` for `write_all`, with input errors converted

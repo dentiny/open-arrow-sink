@@ -110,14 +110,14 @@ async fn source_failures_recover_with_bounded_backend_downloads(
             0
         }
     );
-    assert_eq!(summary.version, Some(1));
+
     let other_summary = other.commit().await.unwrap();
     assert_eq!(other_summary.rows_committed, 1);
     assert_eq!(other_summary.rows_failed_blobs, 0);
     assert_eq!(other_summary.rows_skipped, 0);
-    assert_eq!(other_summary.version, Some(1));
+
     assert_eq!(written.snapshot().rows_committed, expected + 1);
-    // A later empty append returns this session's count and the new version.
+    // A later empty append returns only this session's counts.
     let mut append = unordered_options();
     append.mode = open_arrow_sink_core::WriteMode::Append;
     let empty = sink
@@ -130,7 +130,7 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     assert_eq!(empty.rows_committed, 0);
     assert_eq!(empty.rows_failed_blobs, 0);
     assert_eq!(empty.rows_skipped, 0);
-    assert_eq!(empty.version, Some(2));
+
     assert_eq!(downloader.buffered_bytes(), 0);
     let observed = metrics.snapshot();
     assert_eq!(observed.blobs_failed, 3);
@@ -209,7 +209,6 @@ async fn write_all_returns_actual_blob_recovery_counts() {
     assert_eq!(summary.rows_committed, 1);
     assert_eq!(summary.rows_failed_blobs, 2);
     assert_eq!(summary.rows_skipped, 2);
-    assert_eq!(summary.version, Some(1));
 }
 
 #[rstest::rstest]

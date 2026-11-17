@@ -45,8 +45,7 @@ impl SessionCommitter<LanceFragments> for LanceCommitter {
                     indexes: self.indexes,
                 }));
         }
-        let dataset = builder.execute(transaction).await.map_err(Error::backend)?;
-        summary.version = Some(dataset.version().version);
+        builder.execute(transaction).await.map_err(Error::backend)?;
         Ok(summary)
     }
     async fn abort(self: Box<Self>) -> Result<()> {
