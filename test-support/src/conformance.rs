@@ -48,29 +48,55 @@ pub trait SinkFixture: Send + Sync + Sized {
     async fn assert_aborted(&self);
 }
 
-/// Independently runnable cases from the shared sink contract suite.
-#[derive(Clone, Copy, Debug)]
-pub enum Case {
-    RoundTrip,
-    Rolling,
-    UnsupportedModes,
-    EmptyCommit,
-    Abort,
-    SchemaMismatch,
-    AbortBeforeWrite,
-    PoisonedCommit,
+// Keep the enum, full suite, and individually reported backend tests in sync.
+// Passing `$` lets the outer macro define metavariables for the exported macro.
+macro_rules! define_cases {
+    ($d:tt; $($case:ident => $test:ident),+ $(,)?) => {
+        /// Independently runnable cases from the shared sink contract suite.
+        #[derive(Clone, Copy, Debug)]
+        pub enum Case {
+            $($case),+
+        }
+
+        impl Case {
+            pub const ALL: [Self; [$(stringify!($case)),+].len()] = [$(Self::$case),+];
+        }
+
+        /// Generate an independently reported Tokio test for every shared contract.
+        ///
+        /// Invoke once in a backend's integration test module with its fixture type:
+        /// `open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);`.
+        /// The caller must depend on Tokio with its `macros` and runtime features.
+        #[macro_export]
+        macro_rules! conformance_tests {
+            ($d fixture:ty) => {
+                mod shared_sink_contracts {
+                    use super::*;
+
+                    $(
+                        #[tokio::test]
+                        async fn $test() {
+                            $crate::conformance::assert_case::<$d fixture>(
+                                $crate::conformance::Case::$case,
+                            ).await;
+                        }
+                    )+
+                }
+            };
+        }
+    };
 }
-impl Case {
-    pub const ALL: [Self; 8] = [
-        Self::RoundTrip,
-        Self::Rolling,
-        Self::UnsupportedModes,
-        Self::EmptyCommit,
-        Self::Abort,
-        Self::SchemaMismatch,
-        Self::AbortBeforeWrite,
-        Self::PoisonedCommit,
-    ];
+
+define_cases! {
+    $;
+    RoundTrip => round_trip,
+    Rolling => rolling,
+    UnsupportedModes => unsupported_modes,
+    EmptyCommit => empty_commit,
+    Abort => abort,
+    SchemaMismatch => schema_mismatch,
+    AbortBeforeWrite => abort_before_write,
+    PoisonedCommit => poisoned_commit,
 }
 
 /// Run one named contract using isolated destinations from the fixture factory.

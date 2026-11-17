@@ -2,7 +2,6 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use open_arrow_sink_core::{Sink, SinkExt, WriteMode, WriteOptions};
 use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
-use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use open_arrow_sink_test_support::unordered_options as options;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use std::sync::Arc;
@@ -182,19 +181,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
     }
 }
 
-#[rstest::rstest]
-#[case::round_trip(Case::RoundTrip)]
-#[case::rolling(Case::Rolling)]
-#[case::unsupported_modes(Case::UnsupportedModes)]
-#[case::empty_commit(Case::EmptyCommit)]
-#[case::abort(Case::Abort)]
-#[case::schema_mismatch(Case::SchemaMismatch)]
-#[case::abort_before_write(Case::AbortBeforeWrite)]
-#[case::poisoned_commit(Case::PoisonedCommit)]
-#[tokio::test]
-async fn shared_sink_contracts(#[case] case: Case) {
-    assert_case::<ConformanceFixture>(case).await;
-}
+open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);
 
 #[tokio::test]
 async fn abort_preserves_output_and_sibling_files() {
