@@ -40,16 +40,7 @@ impl AsyncFileReader for Reader {
     }
 }
 pub(crate) async fn schema(storage: Storage, path: ObjectPath) -> Result<SchemaRef> {
-    let size = storage
-        .stat(&path)
-        .await?
-        .ok_or_else(|| {
-            Error::backend(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Parquet file does not exist: {}", path.as_str()),
-            ))
-        })?
-        .content_length();
+    let size = storage.metadata(&path).await?.content_length();
     let reader = Reader {
         storage,
         path,
@@ -60,4 +51,19 @@ pub(crate) async fn schema(storage: Storage, path: ObjectPath) -> Result<SchemaR
         .map_err(Error::backend)?
         .schema()
         .clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn absent_parquet_metadata_returns_not_found() {
+        let storage = open_arrow_sink_test_support::memory_storage("memory:///warehouse/");
+        let path = ObjectPath::parse("missing.parquet").unwrap();
+        assert!(matches!(
+            schema(storage, path).await,
+            Err(Error::NotFound(_))
+        ));
+    }
 }
