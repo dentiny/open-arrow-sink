@@ -83,15 +83,6 @@ impl DownloadContext {
 }
 
 /// An error opening or reading a source, distinct from local memory-budget errors.
-#[derive(Debug)]
-pub struct SourceDownloadError(pub(crate) open_arrow_sink_core::Error);
-impl std::fmt::Display for SourceDownloadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-impl std::error::Error for SourceDownloadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct SourceDownloadError(#[source] pub(crate) open_arrow_sink_core::Error);

@@ -17,25 +17,13 @@ pub(crate) fn map_error(operation: &'static str, path: &str, source: opendal::Er
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{operation} object {path:?}: {source}")]
 struct BackendError {
     operation: &'static str,
     path: String,
+    #[source]
     source: opendal::Error,
-}
-impl std::fmt::Display for BackendError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "{} object {:?}: {}",
-            self.operation, self.path, self.source
-        )
-    }
-}
-impl std::error::Error for BackendError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
 }
 
 pub(crate) fn delete_result(path: &str, result: opendal::Result<()>) -> Result<()> {
