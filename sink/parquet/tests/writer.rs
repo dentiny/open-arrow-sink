@@ -5,7 +5,7 @@ use open_arrow_sink_parquet::{ParquetDirectorySink, Url};
 use open_arrow_sink_test_support::conformance::{Case, assert_case};
 use open_arrow_sink_test_support::unordered_options as options;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 fn batch() -> RecordBatch {
     RecordBatch::try_from_iter([
@@ -126,13 +126,7 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
         options()
     }
     async fn read(&self) -> Vec<RecordBatch> {
-        let directory = Url::from_directory_path(&self.path).unwrap();
-        let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
-        let batches = open_arrow_sink_test_support::read_parquet_dir(
-            &storage,
-            &storage.path(&directory).unwrap(),
-        )
-        .await;
+        let batches = read_dir(&self.path).await;
         assert!(
             !batches.is_empty(),
             "even an empty commit must contain readable Parquet"
@@ -247,21 +241,17 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     }
     writer.write(expected.slice(0, 0)).await.unwrap();
     writer.commit().await.unwrap();
-    let directory = Url::from_directory_path(&directory).unwrap();
-    let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
+    let url = Url::from_directory_path(&directory).unwrap();
+    let storage = open_arrow_sink_storage::Storage::from_url(&url).unwrap();
     assert_eq!(
         storage
-            .list(&storage.path(&directory).unwrap())
+            .list(&storage.path(&url).unwrap())
             .await
             .unwrap()
             .len(),
         3
     );
-    let batches = open_arrow_sink_test_support::read_parquet_dir(
-        &storage,
-        &storage.path(&directory).unwrap(),
-    )
-    .await;
+    let batches = read_dir(&directory).await;
     let mut offset = 0;
     for actual in batches {
         assert_eq!(actual, expected.slice(offset, actual.num_rows()));
@@ -270,10 +260,15 @@ async fn target_file_size_rolls_files_without_losing_rows() {
     assert_eq!(offset, 9);
 }
 
-async fn row_count(directory: &std::path::Path) -> usize {
+async fn read_dir(directory: &Path) -> Vec<RecordBatch> {
     let directory = Url::from_directory_path(directory).unwrap();
     let storage = open_arrow_sink_storage::Storage::from_url(&directory).unwrap();
     open_arrow_sink_test_support::read_parquet_dir(&storage, &storage.path(&directory).unwrap())
+        .await
+}
+
+async fn row_count(directory: &Path) -> usize {
+    read_dir(directory)
         .await
         .iter()
         .map(RecordBatch::num_rows)
