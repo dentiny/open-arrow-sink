@@ -20,7 +20,7 @@ bytes.workspace = true
 futures.workspace = true
 http = "1"
 httpdate = "1"
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 open-arrow-sink-core.workspace = true
 opendal = { version = "0.59.5", default-features = false, features = [
   "auto-register-services",
