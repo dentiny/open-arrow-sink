@@ -63,6 +63,18 @@ impl DownloadContext {
     pub fn http_requests(&self) -> &HttpConcurrencyLimitLayer {
         &self.http_limit
     }
+    /// Bind storage for this source open without changing the enclosing downloader.
+    ///
+    /// Replaces destination/source namespaces for this context only. The default
+    /// OpenDAL downloader retains its HTTP dispatch, chunking, metrics and request
+    /// admission; custom credential resolvers need not duplicate those paths.
+    /// Construction performs no I/O and retains the current metrics/request budget.
+    pub fn with_source_storage(mut self, storage: Storage) -> Self {
+        self.primary = Some(storage.clone());
+        self.sources = Arc::new(StorageResolver::default().with_storage(storage));
+        self
+    }
+
     /// Resolve a registered source, preferring a backend's own namespace.
     pub fn resolve_source(&self, url: &Url) -> Result<ResolvedSource> {
         if let Some(storage) = &self.primary
