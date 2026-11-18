@@ -41,7 +41,10 @@ arrow-cast = "58.4"
 arrow-buffer = "58.4"
 arrow-ord = "58.4"
 arrow-select = "58.4"
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "tokio",
+] }
 arrow-schema = "58.4"
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
