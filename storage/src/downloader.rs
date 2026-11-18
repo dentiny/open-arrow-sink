@@ -57,7 +57,7 @@ impl BlobDownloader {
         self
     }
 
-    /// Register a source store for non-HTTP downloads, including custom S3 credentials.
+    /// Register a source store, including HTTP authentication and custom S3 credentials.
     pub fn with_source_storage(mut self, storage: crate::Storage) -> Self {
         self.sources = Arc::new(self.sources.as_ref().clone().with_storage(storage));
         self

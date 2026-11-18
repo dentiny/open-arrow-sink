@@ -17,6 +17,21 @@ license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
 [workspace.dependencies]
+data-url = "0.3"
+object_store_opendal = { version = "0.60.5", default-features = false }
+http = "1"
+httpdate = "1"
+percent-encoding = "2"
+url = "2"
+opendal = { version = "0.59.5", default-features = false, features = [
+  "auto-register-services",
+  "services-fs",
+  "services-http",
+  "http-transport-reqwest",
+  "executors-tokio",
+  "layers-retry",
+  "layers-timeout",
+] }
 hex = "0.4"
 lance = { version = "14.0.3", default-features = false }
 lance-encoding = { version = "14.0.3", default-features = false }

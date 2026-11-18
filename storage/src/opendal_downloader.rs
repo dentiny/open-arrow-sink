@@ -1,4 +1,4 @@
-//! Default download I/O, with no destination writes or payload accumulation.
+//! Default source dispatch and OpenDAL download I/O.
 use crate::{
     DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer, Storage, StorageConfig,
     error, validation,
@@ -66,24 +66,36 @@ impl OpenDalDownloader {
 #[async_trait]
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
+        if let Some(stream) = crate::inline_source::open(source, &context)? {
+            return Ok(stream);
+        }
         let mut url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
-            let transport = if self
+            // Resolve credentials from explicit source namespaces. Keep query strings
+            // on the request URI, but omit them when matching storage scopes.
+            let mut scope = url.clone();
+            scope.set_query(None);
+            scope.set_fragment(None);
+            let downloader = match context.sources.configured_storage_for(&scope) {
+                Some(storage) => self.clone().with_http_storage(storage)?,
+                None => self.clone(),
+            };
+            let transport = if downloader
                 .http_budget
                 .as_ref()
                 .is_some_and(|limit| limit.shares_budget(&context.http_limit))
             {
-                self.transport.clone()
+                downloader.transport.clone()
             } else {
-                context.http_limit.wrap(self.transport.clone())
+                context.http_limit.wrap(downloader.transport.clone())
             };
             let transport = HttpTransporter::new(UrlTransport {
                 uri,
                 inner: transport,
             });
-            let mut operator = self.http.clone();
-            if let Some(observers) = context.unobserved_metrics(self.http_metrics.clone()) {
+            let mut operator = downloader.http.clone();
+            if let Some(observers) = context.unobserved_metrics(downloader.http_metrics.clone()) {
                 for metrics in observers.iter() {
                     operator = operator.layer(crate::IoMetricsLayer(metrics.clone()));
                 }

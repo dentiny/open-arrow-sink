@@ -49,6 +49,10 @@ impl StorageResolver {
         );
         schemes.into_iter()
     }
+    pub(crate) fn configured_storage_for(&self, url: &Url) -> Option<Storage> {
+        matching_storage(&self.configured, url)
+    }
+
     /// Select explicit configuration first, then reuse or create URL-derived
     /// storage. URL-derived cloud storage requires the corresponding feature.
     pub fn storage_for(&self, url: &Url) -> Result<Storage> {
