@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-11-17
+
+- Remove blob download byte limits.
+- Honor HTTP `Retry-After` using released OpenDAL APIs, removing the Git dependency patches.
+- Release all seven public workspace crates at 0.4.0 with matching internal dependency requirements.
+
 ## 0.3.0 - 2026-11-17
 
 - Add `SinkExt::write_all` to consume complete batch streams, commit at EOF, and abort on input or write errors.

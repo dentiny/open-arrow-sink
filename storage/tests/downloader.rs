@@ -11,10 +11,6 @@ use std::{sync::Arc, time::Duration};
 
 const URL: &str = "https://download-fixture.invalid";
 const BODY: &[u8] = b"a payload larger than one download chunk";
-const CHUNK: usize = 8;
-fn reservation(payload: usize) -> usize {
-    3 * payload + CHUNK
-}
 
 struct Transport;
 impl HttpTransport for Transport {
@@ -42,17 +38,11 @@ impl HttpTransport for Transport {
             .unwrap())
     }
 }
-fn pool(concurrency: usize, groups: usize, payload: usize) -> BlobDownloader {
-    BlobDownloader::new(
-        concurrency.try_into().unwrap(),
-        (groups * reservation(payload)).try_into().unwrap(),
-    )
-    .unwrap()
-    .with_download_limits(payload.try_into().unwrap(), CHUNK.try_into().unwrap())
-    .unwrap()
+fn pool(concurrency: usize) -> BlobDownloader {
+    BlobDownloader::new(concurrency.try_into().unwrap()).unwrap()
 }
-fn default_pool(groups: usize) -> BlobDownloader {
-    pool(2, groups, BODY.len()).with_downloader(Arc::new(
+fn default_pool() -> BlobDownloader {
+    pool(2).with_downloader(Arc::new(
         OpenDalDownloader::new(StorageConfig::default())
             .unwrap()
             .with_http_transport(HttpTransporter::new(Transport)),
@@ -60,56 +50,16 @@ fn default_pool(groups: usize) -> BlobDownloader {
 }
 
 #[tokio::test]
-async fn payloads_and_clones_hold_shared_memory_until_consumed() {
-    within(async {
-        let first = default_pool(1);
-        let other = default_pool(1);
-        let bytes = first.download(URL).await.unwrap();
-        let retained = bytes.clone();
-        let mut waiting = Box::pin(first.download(URL));
-        assert!(poll!(&mut waiting).is_pending());
-        assert_eq!(other.download(URL).await.unwrap().as_ref(), BODY);
-        drop(bytes);
-        assert!(poll!(&mut waiting).is_pending());
-        assert_eq!(first.buffered_bytes(), reservation(BODY.len()));
-        drop(retained);
-        let resumed = waiting.await.unwrap();
-        assert_eq!(resumed.as_ref(), BODY);
-        drop(resumed);
-        assert_eq!(first.buffered_bytes(), 0);
-        assert_eq!(other.buffered_bytes(), 0);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn large_reservations_do_not_require_a_single_tokio_acquire() {
-    within(async {
-        // Large reservations don't allocate payloads and need not fit one Tokio acquire.
-        let capacity = u32::MAX as usize + 65;
-        let large = pool(1, 1, (capacity - CHUNK) / 3);
-        let held = large.begin().await.unwrap();
-        assert!(large.buffered_bytes() > u32::MAX as usize);
-        drop(held);
-        assert_eq!(large.buffered_bytes(), 0);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn failures_release_budgets_and_oversized_payloads_are_rejected() {
-    let downloads = default_pool(1);
+async fn failures_release_slots() {
+    let downloads = default_pool();
     for url in [
         "not a URL",
         "unsupported:///tmp/blob",
         &format!("{URL}/missing"),
     ] {
         assert!(downloads.download(url).await.is_err());
-        assert_eq!(downloads.buffered_bytes(), 0);
     }
     assert_eq!(downloads.download(URL).await.unwrap().as_ref(), BODY);
-    assert!(downloads.download_all(&[URL, URL], None).await.is_err());
-    assert_eq!(downloads.buffered_bytes(), 0);
 }
 
 #[tokio::test]
@@ -137,23 +87,22 @@ async fn retry_policy_applies_to_the_provider_transport() {
     })
     .unwrap()
     .with_http_transport(HttpTransporter::new(Transient(attempts.clone())));
-    let downloads = pool(2, 1, BODY.len()).with_downloader(Arc::new(source));
+    let downloads = pool(2).with_downloader(Arc::new(source));
     assert_eq!(downloads.download(URL).await.unwrap().as_ref(), BODY);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn filesystem_download_uses_the_same_payload_budget() {
+async fn filesystem_download_round_trips() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("source.bin");
     tokio::fs::write(&file, BODY).await.unwrap();
     let url = open_arrow_sink_storage::Url::from_file_path(file).unwrap();
-    let downloads = pool(1, 1, BODY.len());
+    let downloads = pool(1);
     assert_eq!(
         downloads.download(url.as_str()).await.unwrap().as_ref(),
         BODY
     );
-    assert_eq!(downloads.buffered_bytes(), 0);
 }
 
 #[tokio::test]
@@ -179,7 +128,7 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
                 .unwrap()
                 .with_http_concurrency_limit(budget.clone())
                 .with_http_transport(HttpTransporter::new(Held));
-            pool(2, 1, BODY.len() + 1)
+            pool(2)
                 .with_http_concurrency_limit(budget.clone())
                 .with_downloader(Arc::new(
                     OpenDalDownloader::new(StorageConfig::default())
@@ -201,17 +150,16 @@ async fn shared_http_permits_cover_bodies_and_return_on_cancellation() {
         assert!(poll!(&mut waiting).is_pending());
         assert_eq!(b.snapshot().bytes_read, 0);
         drop(held);
-        assert_eq!(first.buffered_bytes(), 0);
+
         assert!(poll!(&mut waiting).is_pending());
         assert_eq!(b.snapshot().bytes_read, BODY.len() as u64);
         drop(waiting);
-        assert_eq!(second.buffered_bytes(), 0);
     })
     .await;
 }
 
 #[tokio::test]
-async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
+async fn custom_downloader_keeps_chunk_contract_and_releases_http_at_eof() {
     struct Custom;
     #[async_trait]
     impl Downloader for Custom {
@@ -228,18 +176,18 @@ async fn custom_downloader_keeps_framework_caps_and_releases_http_at_eof() {
         }
     }
     within(async {
-        let downloads = pool(2, 2, CHUNK)
+        let downloads = pool(2)
             .with_downloader(Arc::new(Custom))
             .with_http_concurrency_limit(HttpConcurrencyLimitLayer::new(1).unwrap());
         let a = downloads.download("custom://a").await.unwrap();
-        // Holding a payload retains memory, but must not retain an HTTP permit.
+        // Holding a payload must not retain an HTTP permit.
         let b = downloads.download("custom://b").await.unwrap();
         assert_eq!(a.as_ref(), b"custom");
         assert_eq!(b.as_ref(), b"custom");
-        assert_eq!(downloads.buffered_bytes(), 2 * reservation(CHUNK));
+
         drop((a, b));
         assert!(downloads.download("custom://too-large").await.is_err());
-        assert_eq!(downloads.buffered_bytes(), 0);
+
         assert_eq!(
             downloads
                 .download("custom://after-error")
@@ -270,11 +218,11 @@ async fn shared_source_observers_count_each_download_once() {
     let downloads = [
         (
             url.as_str(),
-            pool(1, 1, BODY.len()).with_source_storage(memory.with_io_metrics(observers)),
+            pool(1).with_source_storage(memory.with_io_metrics(observers)),
         ),
         (
             URL,
-            pool(1, 1, BODY.len()).with_downloader(Arc::new(
+            pool(1).with_downloader(Arc::new(
                 OpenDalDownloader::new(StorageConfig::default())
                     .unwrap()
                     .with_http_storage(http)

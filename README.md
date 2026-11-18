@@ -120,6 +120,12 @@ prefix, use `Storage::new(operator, base_url)` with the corresponding explicit
 base. The helper also works for custom blob sources registered through
 `StorageResolver::with_storage`; registrations remain scoped to each namespace.
 
+Blob downloads limit concurrent groups and HTTP requests, with no configured
+maximum for blob size, combined group size, or buffered payload bytes. Complete
+payloads are buffered in memory. `BlobDownloader::new(concurrency)` configures
+the group concurrency; the default is 64. Read chunks remain 2 MiB regardless of
+payload size.
+
 For S3 blob downloads, a single `md5=<32 hexadecimal digits>` query (as in PMC
 content URLs) is stripped before resolving source storage. The payload checksum
 is not verified. Other storage queries remain unsupported; HTTP(S) queries are
@@ -131,8 +137,10 @@ Storage retry and timeout policies are opt-in through `StorageConfig`. With
 or HTTP-date form. The wait is the larger of the server delay and exponential
 backoff; missing or invalid headers use normal backoff. A server delay above
 `max_delay` returns the error immediately instead of retrying before the server
-allows it. `max_retries` still limits retries after the initial attempt.
-`TimeoutConfig` applies to each attempt and body read, excluding backoff.
+allows it. A server delay pauses every new attempt through the same operator.
+`max_retries` still limits retries after the initial attempt.
+`TimeoutConfig` applies to each attempt and body read, excluding backoff and
+server delays.
 Cancelled operations stop waiting and issue no further requests.
 
 ## Commit results
@@ -161,12 +169,23 @@ batch transformation. Read [Extending](docs/extending.md) for the contracts and
 runnable examples. Extensions can live in separate crates without registration.
 
 Use a Rust toolchain supporting edition 2024. Lance dependencies also need
-`protoc`. Run the workspace checks from the repository root:
+`protoc`. Install the formatting and lint tools:
 
 ```sh
-cargo fmt --all --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+rustup component add rustfmt clippy
+cargo install taplo-cli --locked
 ```
+
+Run the workspace checks from the repository root:
+
+```sh
+make lint
+cargo test --workspace --locked
+```
+
+`make lint` checks Rust and TOML formatting, validates TOML and workspace metadata,
+and runs Clippy for all targets and features with warnings treated as errors.
+Use `make fmt` to format Rust and TOML files, or `make lint-rust` and
+`make lint-toml` to run the individual lint checks.
 
 MIT licensed.

@@ -15,16 +15,7 @@ mod testutil;
 #[tokio::test]
 async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     let server = server().await;
-    let downloader = BlobDownloader::new(
-        NonZeroUsize::new(2).unwrap(),
-        NonZeroUsize::new(128 * 1024 * 1024).unwrap(),
-    )
-    .unwrap()
-    .with_download_limits(
-        NonZeroUsize::new(40 * 1024 * 1024).unwrap(),
-        NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
-    )
-    .unwrap();
+    let downloader = BlobDownloader::new(NonZeroUsize::new(2).unwrap()).unwrap();
     let io = IoMetrics::default();
     let large = format!("{}/large", server.url);
     let empty = format!("{}/empty", server.url);
@@ -125,7 +116,6 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     assert_eq!(writer.schema(), &schema);
     writer.write(input).await.unwrap();
     writer.commit().await.unwrap();
-    assert_eq!(downloader.buffered_bytes(), 0);
     assert_eq!(io.snapshot().bytes_read, 34 * 1024 * 1024);
     assert!(io.snapshot().bytes_written > 34 * 1024 * 1024);
     drop(server);

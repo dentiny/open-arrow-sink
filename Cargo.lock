@@ -494,12 +494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asyncband"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e53c31fb18f42e765610b2146531390e56966f601d8ffca530d292a34fe4218"
-
-[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4174,7 +4168,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bd9da6291f93eb19b7987dac17617de0131760a6ba97a4cd8d6b1a07fa89783"
 dependencies = [
  "async-trait",
- "asyncband 0.7.4",
+ "asyncband",
  "bytes",
  "chrono",
  "futures",
@@ -4198,7 +4192,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "open-arrow-sink"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-iceberg",
@@ -4210,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4223,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-iceberg"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "bytes",
@@ -4243,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-lance"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4274,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-layer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -4289,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-parquet"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "bytes",
@@ -4307,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-stream",
  "bytes",
@@ -4330,7 +4324,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-test-support"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -4366,10 +4360,11 @@ dependencies = [
 [[package]]
 name = "opendal-core"
 version = "0.59.5"
-source = "git+https://github.com/dentiny/opendal.git?rev=2bf4c9cd289f8881289910afcdc239a4192c4421#2bf4c9cd289f8881289910afcdc239a4192c4421"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33d5a635dfea36a7a0c3bbb2ca34c97af17f98dd69b0cdf31a1d436a346e0a12"
 dependencies = [
  "anyhow",
- "asyncband 0.8.0",
+ "asyncband",
  "base64 0.23.1",
  "bytes",
  "futures",
@@ -4405,7 +4400,8 @@ dependencies = [
 [[package]]
 name = "opendal-layer-retry"
 version = "0.59.5"
-source = "git+https://github.com/dentiny/opendal.git?rev=2bf4c9cd289f8881289910afcdc239a4192c4421#2bf4c9cd289f8881289910afcdc239a4192c4421"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a02c59479b047878f4a0f269f23c847f24d67d1ff19f2b20fdd5a3bceefd451"
 dependencies = [
  "backon",
  "log",
@@ -5289,7 +5285,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7260e6c1d89422ba62d624a32c491b561386fb364ac4bf0959c740e34b251a2e"
 dependencies = [
  "anyhow",
- "asyncband 0.7.4",
+ "asyncband",
  "base64 0.23.1",
  "bytes",
  "form_urlencoded",
@@ -5311,7 +5307,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85fed85c436b6b920e4b36310f699a77771a91e38ae483df48447bd7d162671c"
 dependencies = [
  "anyhow",
- "asyncband 0.7.4",
+ "asyncband",
  "base64 0.23.1",
  "bytes",
  "hex",

@@ -56,9 +56,6 @@ pub(crate) fn abort_result(path: &str, result: opendal::Result<()>) -> Result<()
     }
 }
 
-pub(crate) fn download_limit() -> Error {
-    Error::InvalidConfig("download limits exceed semaphore capacity".into())
-}
 pub(crate) fn invalid_download_url() -> Error {
     Error::InvalidInput("invalid blob URL".into())
 }
@@ -81,13 +78,4 @@ pub(crate) fn download_response(
         parts,
         opendal::HttpBody::new(futures::stream::empty(), Some(0)),
     )
-}
-
-pub(crate) fn download_payload_limit() -> Error {
-    Error::InvalidConfig("download payload and chunk limits must fit the shared byte budget".into())
-}
-pub(crate) fn download_too_large(limit: usize) -> Error {
-    Error::InvalidInput(format!(
-        "download group exceeds its {limit}-byte payload limit"
-    ))
 }

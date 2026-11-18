@@ -1,8 +1,8 @@
-//! Select URL leaves for the backend's bounded blob downloader.
+//! Select URL leaves for the backend's concurrency-limited blob downloader.
 //!
 //! Opening a writer resolves selections, marks only their text leaves, and adapts
 //! nested array metadata. Values remain URLs here; the backend converts the marked
-//! leaves to logical Blobs and owns all downloading and payload reservations.
+//! leaves to logical Blobs and owns all downloading and concurrency control.
 use std::{collections::HashSet, sync::Arc};
 
 use arrow_cast::cast;
