@@ -120,6 +120,12 @@ prefix, use `Storage::new(operator, base_url)` with the corresponding explicit
 base. The helper also works for custom blob sources registered through
 `StorageResolver::with_storage`; registrations remain scoped to each namespace.
 
+Blob downloads limit concurrent groups and HTTP requests, with no configured
+maximum for blob size, combined group size, or buffered payload bytes. Complete
+payloads are buffered in memory. `BlobDownloader::new(concurrency)` configures
+the group concurrency; the default is 64. Read chunks remain 2 MiB regardless of
+payload size.
+
 For S3 blob downloads, a single `md5=<32 hexadecimal digits>` query (as in PMC
 content URLs) is stripped before resolving source storage. The payload checksum
 is not verified. Other storage queries remain unsupported; HTTP(S) queries are

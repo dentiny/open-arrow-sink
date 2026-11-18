@@ -1,4 +1,4 @@
-//! Pluggable download I/O; scheduling and payload budgets belong to BlobDownloader.
+//! Pluggable download I/O; concurrency control belongs to BlobDownloader.
 use crate::{HttpConcurrencyLimitLayer, ObjectPath, Storage, StorageResolver, Url};
 use bytes::Bytes;
 use futures::stream::BoxStream;
@@ -17,7 +17,7 @@ pub type DownloadStream = BoxStream<'static, Result<Bytes>>;
 /// Download I/O for custom protocols, authentication, or clients.
 /// Return chunks no larger than context.chunk_bytes(). Keep HTTP permits until
 /// response EOF/drop; dropping the stream must cancel its pending I/O.
-/// BlobDownloader applies admission, payload limits, and accounting to every impl.
+/// BlobDownloader applies admission and accounting to every impl.
 #[async_trait]
 pub trait Downloader: Send + Sync {
     /// Open `source` and return a stream of payload chunks in source order.
@@ -82,7 +82,7 @@ impl DownloadContext {
     }
 }
 
-/// An error opening or reading a source, distinct from local memory-budget errors.
+/// An error opening or reading a source, distinct from local buffering errors.
 #[derive(Debug)]
 pub struct SourceDownloadError(pub(crate) open_arrow_sink_core::Error);
 impl std::fmt::Display for SourceDownloadError {

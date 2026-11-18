@@ -27,11 +27,9 @@ impl Downloader for Source {
     }
 }
 
-fn downloader(limit: usize) -> Arc<BlobDownloader> {
+fn downloader() -> Arc<BlobDownloader> {
     Arc::new(
-        BlobDownloader::new(2.try_into().unwrap(), 128.try_into().unwrap())
-            .unwrap()
-            .with_download_limits(limit.try_into().unwrap(), 2.try_into().unwrap())
+        BlobDownloader::new(2.try_into().unwrap())
             .unwrap()
             .with_downloader(Arc::new(Source)),
     )
@@ -64,7 +62,7 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     .unwrap();
     let storage = memory_warehouse();
     let url = fixture_url(&storage, "recovered/");
-    let downloader = downloader(4);
+    let downloader = downloader();
     let backend = LanceDatasetSink::new(storage).with_blob_downloader(downloader.clone());
     let layer =
         DownloadBlobLayer::new(["left".into(), "right".into()].into()).with_failure_policy(policy);
@@ -128,7 +126,6 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     assert_eq!(empty.rows_failed_blobs, 0);
     assert_eq!(empty.rows_skipped, 0);
 
-    assert_eq!(downloader.buffered_bytes(), 0);
     let observed = metrics.snapshot();
     assert_eq!(observed.blobs_failed, 3);
     assert_eq!(observed.rows_failed_blobs, 2);
@@ -186,7 +183,7 @@ async fn write_all_returns_actual_blob_recovery_counts() {
     let storage = memory_warehouse();
     let url = fixture_url(&storage, "write-all/");
     let sink = LanceDatasetSink::new(storage)
-        .with_blob_downloader(downloader(4))
+        .with_blob_downloader(downloader())
         .layer(
             DownloadBlobLayer::new(["url".into()].into())
                 .with_failure_policy(DownloadFailurePolicy::SkipRow),
@@ -206,15 +203,10 @@ async fn write_all_returns_actual_blob_recovery_counts() {
     assert_eq!(summary.rows_skipped, 2);
 }
 
-#[rstest::rstest]
-#[case::source(DownloadFailurePolicy::Fail, 4, "bad")]
-#[case::budget(DownloadFailurePolicy::Null, 1, "good")]
 #[tokio::test]
-async fn terminal_errors_remain_terminal(
-    #[case] policy: DownloadFailurePolicy,
-    #[case] limit: usize,
-    #[case] source: &str,
-) {
+async fn terminal_errors_remain_terminal() {
+    let policy = DownloadFailurePolicy::Fail;
+    let source = "bad";
     let input = RecordBatch::try_from_iter([(
         "url",
         Arc::new(StringArray::from(vec![source])) as ArrayRef,
@@ -224,7 +216,7 @@ async fn terminal_errors_remain_terminal(
     let url = fixture_url(&storage, "failed/");
     let layer = DownloadBlobLayer::new(["url".into()].into()).with_failure_policy(policy);
     let metrics = layer.metrics();
-    let downloader = downloader(limit);
+    let downloader = downloader();
     let sink = LanceDatasetSink::new(storage)
         .with_blob_downloader(downloader.clone())
         .layer(layer);
@@ -236,5 +228,4 @@ async fn terminal_errors_remain_terminal(
     assert!(writer.write(input).await.is_err());
     assert!(writer.commit().await.is_err());
     assert_eq!(metrics.snapshot().blobs_failed, u64::from(source == "bad"));
-    assert_eq!(downloader.buffered_bytes(), 0);
 }

@@ -2,7 +2,7 @@
 //!
 //! The input plan describes the target schema, whose Blob leaves are logical
 //! structs. Source arrays can still contain marked bytes or URL strings:
-//! materialize_batch admits a bounded group, materialize rebuilds its containers,
+//! materialize_batch admits a concurrent group, materialize rebuilds its containers,
 //! and materialize_blob handles visible payloads/URIs at each Blob leaf.
 use std::{collections::VecDeque, sync::Arc};
 
@@ -79,43 +79,34 @@ impl BlobInputPlan {
     }
 }
 
-// Batch only known top-level payloads. Unknown URI sizes and nested blobs keep
-// row admission, so combining rows cannot reject an otherwise admissible row.
-fn known_row_bytes(
+// Batch known top-level payloads. URI and nested blob inputs keep row admission
+// so download recovery can handle each input row independently.
+fn can_batch_row(
     batch: &RecordBatch,
     plan: &BlobInputPlan,
     row: usize,
     mode: ExternalBlobMode,
-) -> Option<usize> {
-    plan.columns
-        .iter()
-        .try_fold(0_usize, |total, (index, field)| {
-            let array = batch.column(*index);
-            let bytes = if array.is_null(row) {
-                0
-            } else if let Some(data) = array.as_any().downcast_ref::<LargeBinaryArray>() {
-                data.value(row).len()
-            } else if field.is_blob && matches!(array.data_type(), DataType::Struct(_)) {
-                let blob = array.as_any().downcast_ref::<StructArray>()?;
-                let data = blob
-                    .column_by_name("data")?
-                    .as_any()
-                    .downcast_ref::<LargeBinaryArray>()?;
-                let uris = blob.column_by_name("uri")?;
-                if data.is_valid(row) {
-                    data.value(row).len()
-                } else if uris.is_valid(row) && mode == ExternalBlobMode::Ingest {
-                    return None;
-                } else {
-                    0
-                }
-            } else if field.is_blob && mode == ExternalBlobMode::Reference {
-                0
-            } else {
-                return None;
+) -> bool {
+    plan.columns.iter().all(|(index, field)| {
+        let array = batch.column(*index);
+        if array.is_null(row) || array.as_any().is::<LargeBinaryArray>() {
+            true
+        } else if field.is_blob && matches!(array.data_type(), DataType::Struct(_)) {
+            let blob = array.as_any().downcast_ref::<StructArray>().unwrap();
+            let Some(data) = blob
+                .column_by_name("data")
+                .and_then(|array| array.as_any().downcast_ref::<LargeBinaryArray>())
+            else {
+                return false;
             };
-            total.checked_add(bytes)
-        })
+            let Some(uris) = blob.column_by_name("uri") else {
+                return false;
+            };
+            data.is_valid(row) || uris.is_null(row) || mode == ExternalBlobMode::Reference
+        } else {
+            field.is_blob && mode == ExternalBlobMode::Reference
+        }
+    })
 }
 
 fn next_range(
@@ -123,20 +114,12 @@ fn next_range(
     plan: &BlobInputPlan,
     start: usize,
     mode: ExternalBlobMode,
-    limit: usize,
 ) -> std::ops::Range<usize> {
     let mut end = start;
-    let mut bytes = 0_usize;
     while end < batch.num_rows() && end - start < 1024 {
-        let Some(next) =
-            known_row_bytes(batch, plan, end, mode).and_then(|size| bytes.checked_add(size))
-        else {
-            break;
-        };
-        if next > limit {
+        if !can_batch_row(batch, plan, end, mode) {
             break;
         }
-        bytes = next;
         end += 1;
     }
     start..end.max(start + 1)
@@ -239,13 +222,7 @@ impl BlobMaterializer {
                 if next == batch.num_rows() {
                     break;
                 }
-                let range = next_range(
-                    batch,
-                    plan,
-                    next,
-                    self.mode,
-                    self.downloader.max_download_bytes(),
-                );
+                let range = next_range(batch, plan, next, self.mode);
                 next = range.end;
                 active.push_back(self.materialize_batch(batch, range, plan));
             }
@@ -269,8 +246,7 @@ impl BlobMaterializer {
         }
     }
 
-    /// Each batch fits one payload reservation; URI batches contain one input row.
-    /// Reservations remain attached to the arrays queued at Lance.
+    /// URI batches contain one input row for independent download recovery.
     async fn materialize_batch(
         &self,
         batch: &RecordBatch,
@@ -345,7 +321,7 @@ impl BlobMaterializer {
             let nulls = NullBuffer::union(array.nulls(), parent_nulls.as_ref());
             // Lists can contain several logical blobs in one input row. Slice their
             // child range before materializing so a sliced batch cannot retain/read
-            // unrelated list elements outside this row's reservation.
+            // unrelated list elements outside this row's child span.
             macro_rules! list {
                 ($ty:ty, $child:expr) => {{
                     let values = array.as_any().downcast_ref::<$ty>().unwrap();
@@ -448,7 +424,7 @@ impl BlobMaterializer {
 
     /// Handle one logical Blob array after container traversal has established
     /// visibility. Hidden values must never trigger downloads. Ingest replaces
-    /// URIs with reserved payload buffers; Reference mode keeps URI/range fields.
+    /// URIs with payload buffers; Reference mode keeps URI/range fields.
     async fn materialize_blob(
         &self,
         values: &StructArray,
