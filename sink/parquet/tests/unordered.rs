@@ -1,6 +1,6 @@
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use open_arrow_sink_core::{Sink, SinkExt};
-use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_layer::ParallelIngestionLayer;
 use open_arrow_sink_parquet::ParquetDirectorySink;
 use open_arrow_sink_test_support::url as fixture_url;
 use open_arrow_sink_test_support::write_batches;
@@ -24,7 +24,7 @@ async fn unordered_commit_preserves_all_rows() {
         .unwrap()
     };
     let sink = ParquetDirectorySink::new(storage.clone())
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()));
+        .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(3).unwrap()));
     let expected: Vec<_> = (0..8).map(make_batch).collect();
     write_batches(
         &sink,

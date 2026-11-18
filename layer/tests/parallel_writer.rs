@@ -1,6 +1,6 @@
 use futures::FutureExt;
 use open_arrow_sink_core::{Error, Ordering, RecordBatch, Sink, SinkExt, WriteOptions};
-use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_layer::ParallelIngestionLayer;
 use open_arrow_sink_test_support::parallel_sink::{
     Config, Event, Failure, SessionDefect, SharedState, State, TestSink, release,
 };
@@ -11,7 +11,7 @@ fn batch() -> RecordBatch {
     int64_batch("id", vec![Some(1), Some(2), Some(3)])
 }
 fn sink(state: &SharedState) -> impl Sink<Request = ()> {
-    TestSink(state.clone()).layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+    TestSink(state.clone()).layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(2).unwrap()))
 }
 
 async fn open(state: &SharedState) -> Box<dyn open_arrow_sink_core::Writer> {

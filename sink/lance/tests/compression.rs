@@ -59,7 +59,7 @@ async fn structural_encoding_changes_physical_pages_and_survives_rolling(#[case]
     let compression = LanceDatasetSink::default().layer(CompressionLayer::new(policy()));
     let sink: Box<dyn Sink<Request = Url>> = if parallel {
         Box::new(
-            compression.layer(open_arrow_sink_layer::UnorderedWriteLayer::new(
+            compression.layer(open_arrow_sink_layer::ParallelIngestionLayer::fixed(
                 std::num::NonZeroUsize::new(2).unwrap(),
             )),
         )

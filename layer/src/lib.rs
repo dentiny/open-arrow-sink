@@ -10,8 +10,7 @@ pub use parallel_ingestion::{
     IngestionPlan, InputSizeHint, ParallelIngestionLayer, ParallelIngestionSink,
 };
 
-mod unordered;
-pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};
+mod parallel_writer;
 
 mod compression;
 pub use compression::{CompressionLayer, CompressionSink};

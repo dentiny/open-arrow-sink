@@ -1,6 +1,6 @@
 use futures::FutureExt;
 use open_arrow_sink_core::{Error, ParallelSink, RecordBatch, Sink, SinkExt};
-use open_arrow_sink_layer::{MetricsLayer, UnorderedWriteLayer};
+use open_arrow_sink_layer::{MetricsLayer, ParallelIngestionLayer};
 use open_arrow_sink_test_support::parallel_sink::{Config, Failure, State, TestSink};
 use open_arrow_sink_test_support::{int64_batch, unordered_options as options};
 use std::num::NonZeroUsize;
@@ -36,7 +36,7 @@ enum Placement {
 async fn measures_one_commit_per_session_without_double_counting(#[case] placement: Placement) {
     let layer = MetricsLayer::default();
     let metrics = layer.metrics();
-    let unordered = UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap());
+    let unordered = ParallelIngestionLayer::fixed(NonZeroUsize::new(3).unwrap());
     let sink: Box<dyn Sink<Request = ()>> = match placement {
         Placement::Single => Box::new(sink(config()).layer(layer)),
         Placement::InsideParallel => Box::new(sink(config()).layer(layer).layer(unordered)),

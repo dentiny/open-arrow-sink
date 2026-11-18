@@ -198,3 +198,39 @@ async fn write_all_does_not_read_to_eof_before_starting_parallel_writes() {
     assert_eq!(pulled.load(AtomicOrdering::SeqCst), 20);
     assert_eq!(state.lock().unwrap().count(Event::CommitAttempt), 1);
 }
+
+#[rstest::rstest]
+#[case(None)]
+#[case(Some(123))]
+#[tokio::test]
+async fn fixed_mode_preserves_caller_target_and_explicit_concurrency(
+    #[case] target: Option<usize>,
+) {
+    use open_arrow_sink_layer::OptionsLayer;
+    use std::sync::Mutex;
+
+    let state = State::shared(Config {
+        gated: false,
+        ..Default::default()
+    });
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let observed = captured.clone();
+    let sink = TestSink(state.clone())
+        .layer(OptionsLayer::new(move |options| {
+            observed.lock().unwrap().push(options.target_file_size);
+        }))
+        .layer(ParallelIngestionLayer::fixed(nz(3)));
+    let plan = sink.plan();
+    assert_eq!(plan.writers.get(), 3);
+    assert_eq!(plan.target_file_size, None);
+    assert_eq!(plan.estimated_files, None);
+    let mut options = unordered_options();
+    options.target_file_size = target;
+    let batch = int64_batch("id", vec![Some(1)]);
+    let mut writer = sink.open((), batch.schema(), options).await.unwrap();
+    assert_eq!(*captured.lock().unwrap(), vec![target]);
+    assert_eq!(state.lock().unwrap().count(Event::Open), 3);
+    writer.write(batch).await.unwrap();
+    assert_eq!(writer.commit().await.unwrap().rows_committed, 1);
+    assert_eq!(state.lock().unwrap().count(Event::CommitAttempt), 1);
+}

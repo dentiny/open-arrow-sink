@@ -72,7 +72,7 @@ use of `write_all`.
 
 `Layer<S>` wraps a sink while preserving its request type.
 `sink.layer(a).layer(b)` runs through `b → a → sink`.
-`UnorderedWriteLayer` uses `ParallelSink` to create several data writers with one
+`ParallelIngestionLayer` uses `ParallelSink` to create several data writers with one
 committer. Arrow layers control writes; OpenDAL layers control byte I/O.
 
 ## Backends and examples
@@ -227,6 +227,13 @@ plan. The default maximum is eight writers. This bounds in-flight batches, not
 process memory or active files for partitioned backends. Source read-ahead,
 encoding state, and upload buffers require separate budgets. In particular, an
 upstream reader with unbounded prefetch is not made memory-bounded by this layer.
-Like `UnorderedWriteLayer`, this overlaps I/O without promising parallel CPU
-encoding. Use unordered write options only when the COPY operation permits it.
+This overlaps I/O without promising parallel CPU encoding. Use unordered write options only when the COPY operation permits it.
 EOF finishes all writers and publishes once through the existing committer.
+
+For an explicit writer count, use
+`ParallelIngestionLayer::fixed(NonZeroUsize::new(4).unwrap())`. This preserves
+`WriteOptions.target_file_size` (including backend defaults when unset) and uses
+the same dispatcher, ordering checks, and single session commit. Without an
+automatic target, size hints do not estimate file counts; the fallback and maximum
+writer settings determine concurrency. There is one public parallel write layer
+for both automatic planning and explicit concurrency.

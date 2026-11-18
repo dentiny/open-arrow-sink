@@ -91,7 +91,7 @@ async fn compression_survives_rolling_and_round_trips(
 
 #[tokio::test]
 async fn option_layers_compose_before_backend_validation() {
-    use open_arrow_sink_layer::{OrderingLayer, UnorderedWriteLayer};
+    use open_arrow_sink_layer::{OrderingLayer, ParallelIngestionLayer};
     use std::num::NonZeroUsize;
 
     // The compression layer replaces an invalid caller policy. Ordering is
@@ -101,7 +101,7 @@ async fn option_layers_compose_before_backend_validation() {
         ..Default::default()
     });
     let ordering = OrderingLayer::new(Ordering::Unordered);
-    let unordered = UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap());
+    let unordered = ParallelIngestionLayer::fixed(NonZeroUsize::new(2).unwrap());
     let sinks: Vec<Box<dyn Sink<Request = Url>>> = vec![
         Box::new(
             ParquetDirectorySink::default()

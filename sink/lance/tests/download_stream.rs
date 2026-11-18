@@ -4,7 +4,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::{Dataset, datatypes::BlobHandling};
 use open_arrow_sink_core::{BLOB_METADATA_KEY, BlobHandleConfig, IoMetrics, Sink, SinkExt};
 use open_arrow_sink_lance::{LanceDatasetSink, Url};
-use open_arrow_sink_layer::{DownloadBlobLayer, UnorderedWriteLayer};
+use open_arrow_sink_layer::{DownloadBlobLayer, ParallelIngestionLayer};
 use open_arrow_sink_storage::BlobDownloader;
 use open_arrow_sink_test_support::unordered_options as options;
 use std::{num::NonZeroUsize, sync::Arc};
@@ -82,7 +82,7 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     );
     let sink = sink
         .layer(DownloadBlobLayer::new(["blob".to_owned()].into()))
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()));
+        .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(2).unwrap()));
     for selected in ["missing", "id"] {
         let invalid =
             LanceDatasetSink::default().layer(DownloadBlobLayer::new([selected.to_owned()].into()));
