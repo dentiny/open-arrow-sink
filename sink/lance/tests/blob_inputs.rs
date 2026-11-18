@@ -35,11 +35,7 @@ fn input() -> RecordBatch {
 async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
     let storage = storage();
     let url = fixture_url(&storage, "existing/");
-    let downloader =
-        open_arrow_sink_storage::BlobDownloader::new(1.try_into().unwrap(), 25.try_into().unwrap())
-            .unwrap()
-            .with_download_limits(8.try_into().unwrap(), 1.try_into().unwrap())
-            .unwrap();
+    let downloader = open_arrow_sink_storage::BlobDownloader::new(1.try_into().unwrap()).unwrap();
     let sink = LanceDatasetSink::new(storage).with_blob_downloader(Arc::new(downloader));
     if mode == WriteMode::Append {
         sink.open(url.clone(), input().schema(), options())
@@ -53,7 +49,7 @@ async fn writes_to_a_blob_dataset(#[case] mode: WriteMode) {
         .open(url.clone(), input().schema(), options().with_mode(mode))
         .await
         .unwrap();
-    // The combined payload is larger than one reservation; batch admission must split it.
+    // Multiple inline payloads can be materialized together without a byte budget.
     within(async {
         writer.write(input()).await.unwrap();
         writer.commit().await.unwrap();

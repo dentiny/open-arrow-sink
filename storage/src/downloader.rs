@@ -6,64 +6,47 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer, OpenDalDownloader,
-    Storage, StorageConfig, error, validation,
+    Storage, StorageConfig, validation,
 };
 
 // Default maximum number of active download streams in one pool.
 const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
-// Default shared transfer-buffer budget: 8 GiB, including consumer-held chunks.
-// Excludes OpenDAL/HTTP/TLS buffers and destination writer buffers.
-const DEFAULT_BUFFERED_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024 * 1024).unwrap();
-// Maximum buffer allocated for each read: 2 MiB, capped by the pool budget.
+// Application read chunk size; this does not limit complete payloads.
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
-/// Blob materialization with shared download, chunk, and application-memory caps.
-/// Clones share admission and byte budgets. Full payloads keep reservations through
-/// their last owner, including Arrow buffers queued for SDK consumption.
-/// OpenDAL/HTTP/TLS and native encoding/output caches have separate limits.
+/// Blob materialization with shared download concurrency control.
+/// Clones share admission slots. Complete payloads have no configured byte limit
+/// and are buffered in memory before being passed to the destination SDK.
 #[derive(Clone)]
 pub struct BlobDownloader {
     backend: Arc<dyn Downloader>,
     http_limit: HttpConcurrencyLimitLayer,
     sources: Arc<crate::StorageResolver>,
     primary: Option<Storage>,
-    // Bound lazy streams, including non-HTTP sources, until cancellation or EOF.
+    // Bound active groups, including non-HTTP sources, until the group is dropped.
     stream_slots: Arc<Semaphore>,
     concurrency: NonZeroUsize,
-    buffers: Arc<Semaphore>,
-    admission: Arc<tokio::sync::Mutex<()>>,
-    max_buffered_bytes: NonZeroUsize,
-    download_bytes: usize,
     chunk_bytes: usize,
 }
 
 impl BlobDownloader {
-    /// Create independent stream and transfer-buffer budgets. Every call honors
-    /// `concurrency`; no process-wide state or environment configuration is used.
+    /// Create an independent download pool with the given concurrency.
     /// The default OpenDAL provider uses the shared HTTP request budget.
     /// Replace download I/O with `with_downloader`.
-    pub fn new(concurrency: NonZeroUsize, max_buffered_bytes: NonZeroUsize) -> Result<Self> {
+    pub fn new(concurrency: NonZeroUsize) -> Result<Self> {
         validation::validate_http_concurrency(concurrency.get())?;
-        validation::validate_download_limit(max_buffered_bytes)?;
-        let reservation = max_buffered_bytes.get() / concurrency.get();
-        let chunk_bytes = CHUNK_BYTES.min(reservation / 3).max(1);
-        let download_bytes = reservation.saturating_sub(chunk_bytes) / 3;
         Ok(Self {
-            download_bytes,
-            chunk_bytes,
+            chunk_bytes: CHUNK_BYTES,
             backend: Arc::new(OpenDalDownloader::new(StorageConfig::default())?),
             http_limit: HttpConcurrencyLimitLayer::new(concurrency.get())?,
             sources: Arc::default(),
             primary: None,
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
-            buffers: Arc::new(Semaphore::new(max_buffered_bytes.get())),
-            admission: Arc::default(),
-            max_buffered_bytes,
         })
     }
 
-    /// Replace download I/O without replacing scheduling or memory accounting.
+    /// Replace download I/O without replacing concurrency control.
     pub fn with_downloader(mut self, backend: Arc<dyn Downloader>) -> Self {
         self.backend = backend;
         self
@@ -86,7 +69,7 @@ impl BlobDownloader {
     }
 
     /// Replace source namespaces and share their URL-derived cache while retaining
-    /// this downloader's transfer budgets.
+    /// this downloader's concurrency limits.
     pub fn with_source_resolver(mut self, sources: Arc<crate::StorageResolver>) -> Self {
         self.sources = sources;
         self
@@ -102,67 +85,30 @@ impl BlobDownloader {
     pub fn concurrency(&self) -> usize {
         self.concurrency.get()
     }
-    /// Bound queued and active groups as well as payload allocations.
+    /// Bound queued and active groups.
     pub fn in_flight_limit(&self) -> usize {
         self.concurrency()
-            .min(self.max_buffered_bytes() / (3 * self.download_bytes + self.chunk_bytes))
-            .max(1)
-    }
-    pub fn max_buffered_bytes(&self) -> usize {
-        self.max_buffered_bytes.get()
-    }
-    pub fn buffered_bytes(&self) -> usize {
-        self.max_buffered_bytes.get() - self.buffers.available_permits()
     }
 
-    /// Create an independent pool with 64 stream slots and an 8 GiB
-    /// transfer-buffer budget. Share it explicitly with `Arc` when needed.
+    /// Create an independent pool with 64 stream slots.
+    /// Share it explicitly with `Arc` when needed.
     pub fn with_defaults() -> Result<Self> {
-        Self::new(DEFAULT_CONCURRENCY, DEFAULT_BUFFERED_BYTES)
+        Self::new(DEFAULT_CONCURRENCY)
     }
 
-    /// Maximum combined payload bytes returned by one `download_all` call.
-    pub fn max_download_bytes(&self) -> usize {
-        self.download_bytes
-    }
-
-    /// Maximum application copy chunk used by full-blob downloads.
+    /// Application read chunk size, independent of complete payload size.
     pub fn chunk_bytes(&self) -> usize {
         self.chunk_bytes
     }
 
-    /// Configure full-download payload and chunk caps. Each download group
-    /// atomically reserves `3 * payload_bytes + chunk_bytes` from the shared
-    /// budget before reading: payloads, assembly/SDK copy headroom, and scratch.
-    /// A group's selected blobs must fit together; limits do not grow with data.
-    pub fn with_download_limits(
-        mut self,
-        payload_bytes: NonZeroUsize,
-        chunk_bytes: NonZeroUsize,
-    ) -> Result<Self> {
-        let reservation = payload_bytes
-            .get()
-            .checked_mul(3)
-            .and_then(|bytes| bytes.checked_add(chunk_bytes.get()));
-        if reservation.is_none_or(|bytes| bytes > self.max_buffered_bytes.get()) {
-            return Err(error::download_payload_limit());
-        }
-        self.download_bytes = payload_bytes.get();
-        self.chunk_bytes = chunk_bytes.get();
-        Ok(self)
-    }
-
-    /// Download one complete blob. Its returned bytes retain the memory budget
-    /// until the last clone or Arrow buffer sharing them is dropped.
+    /// Download one complete blob without a configured payload byte limit.
     pub async fn download(&self, source: &str) -> Result<bytes::Bytes> {
         Ok(self.download_all(&[source], None).await?.remove(0))
     }
 
-    /// Download a group of complete blobs under one atomic memory reservation.
-    /// Returned Bytes retain that reservation through clones and Arrow buffers,
-    /// including while queued at the sink. Oversized groups fail, without staging
-    /// or publishing partial blobs. Sources in a group are read sequentially;
-    /// callers can run independent groups concurrently up to `concurrency()`.
+    /// Download a group of complete blobs without a configured payload byte limit.
+    /// Sources in a group are read sequentially; independent groups can run
+    /// concurrently up to `concurrency()`.
     pub async fn download_all(
         &self,
         sources: &[&str],
@@ -179,31 +125,18 @@ impl BlobDownloader {
         Ok(blobs)
     }
 
-    /// Reserve a bounded group for downloading or buffering existing blob data.
-    /// Group admission is atomic; returned payloads retain its memory reservation.
+    /// Admit a group for downloading or buffering existing blob data.
+    /// The slot is released when the group is dropped, regardless of payload owners.
     pub async fn begin(&self) -> Result<BlobDownload> {
-        if self.download_bytes == 0 {
-            return Err(error::download_payload_limit());
-        }
         let slot = self
             .stream_slots
             .clone()
             .acquire_owned()
             .await
             .expect("pool is never closed");
-        let reservation = Arc::new(
-            acquire_bytes(
-                self.buffers.clone(),
-                self.admission.clone(),
-                self.download_bytes * 3 + self.chunk_bytes,
-            )
-            .await,
-        );
         Ok(BlobDownload {
             downloader: self.clone(),
             _slot: slot,
-            reservation,
-            total: 0,
         })
     }
 
@@ -232,84 +165,27 @@ impl BlobDownloader {
     }
 }
 
-// Serialize full reservations so groups larger than u32::MAX can acquire and
-// merge Tokio permits without two groups each holding an incomplete allocation.
-// No payload I/O starts until the complete reservation has been acquired.
-async fn acquire_bytes(
-    buffers: Arc<Semaphore>,
-    admission: Arc<tokio::sync::Mutex<()>>,
-    bytes: usize,
-) -> OwnedSemaphorePermit {
-    let _admission = admission.lock().await;
-    let first = bytes.min(u32::MAX as usize);
-    let mut reservation = buffers
-        .clone()
-        .acquire_many_owned(first as u32)
-        .await
-        .expect("pool is never closed");
-    let mut remaining = bytes - first;
-    while remaining > 0 {
-        let next = remaining.min(u32::MAX as usize);
-        reservation.merge(
-            buffers
-                .clone()
-                .acquire_many_owned(next as u32)
-                .await
-                .expect("pool is never closed"),
-        );
-        remaining -= next;
-    }
-    reservation
-}
-
-struct DownloadedBytes {
-    data: Vec<u8>,
-    _reservation: Arc<OwnedSemaphorePermit>,
-}
-impl AsRef<[u8]> for DownloadedBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.data
-    }
-}
-
-/// One admitted group of complete blob payloads. Dropping it cancels downloads;
-/// bytes already returned retain the memory reservation independently.
+/// One admitted group of complete blob payloads. Dropping it cancels downloads
+/// and releases its concurrency slot; returned bytes remain independently owned.
 pub struct BlobDownload {
     downloader: BlobDownloader,
     _slot: OwnedSemaphorePermit,
-    reservation: Arc<OwnedSemaphorePermit>,
-    total: usize,
 }
 impl BlobDownload {
-    fn append(&mut self, data: &mut Vec<u8>, chunk: &[u8]) -> Result<()> {
-        if chunk.len() > self.downloader.download_bytes - self.total {
-            return Err(error::download_too_large(self.downloader.download_bytes));
-        }
-        data.try_reserve_exact(chunk.len())
-            .map_err(Error::backend)?;
+    fn append(data: &mut Vec<u8>, chunk: &[u8]) -> Result<()> {
+        data.try_reserve(chunk.len()).map_err(Error::backend)?;
         data.extend_from_slice(chunk);
-        self.total += chunk.len();
         Ok(())
     }
-    fn finish(&self, data: Vec<u8>) -> bytes::Bytes {
-        bytes::Bytes::from_owner(DownloadedBytes {
-            data,
-            _reservation: self.reservation.clone(),
-        })
-    }
-    /// Copy existing blob bytes under the same admission and memory limits.
+    /// Copy existing blob bytes without a configured payload byte limit.
     pub fn buffer(&mut self, source: &[u8]) -> Result<bytes::Bytes> {
         let mut data = Vec::new();
-        self.append(&mut data, source)?;
-        Ok(self.finish(data))
+        Self::append(&mut data, source)?;
+        Ok(data.into())
     }
-    /// Retain this group's reservation on a buffer assembled from its payloads.
-    /// Drop the intermediate payloads while assembling to stay within copy headroom.
+    /// Return an assembled payload buffer.
     pub fn finish_buffer(&self, data: Vec<u8>) -> Result<bytes::Bytes> {
-        if data.len() > self.total {
-            return Err(error::download_too_large(self.total));
-        }
-        Ok(self.finish(data))
+        Ok(data.into())
     }
 
     pub async fn download(
@@ -323,14 +199,12 @@ impl BlobDownload {
             .open(source, self.downloader.chunk_bytes, metrics)
             .await
             .map_err(source_error)?;
-        let initial_total = self.total;
         let mut data = Vec::new();
         loop {
             let chunk = match reader.try_next().await {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
                 Err(error) => {
-                    self.total = initial_total;
                     return Err(source_error(error));
                 }
             };
@@ -338,9 +212,9 @@ impl BlobDownload {
             if let Some(metrics) = metrics {
                 metrics.record_read(chunk.len() as u64);
             }
-            self.append(&mut data, &chunk)?;
+            Self::append(&mut data, &chunk)?;
         }
-        Ok(self.finish(data))
+        Ok(data.into())
     }
 }
 
@@ -357,8 +231,6 @@ impl std::fmt::Debug for BlobDownloader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlobDownloader")
             .field("concurrency", &self.concurrency)
-            .field("max_buffered_bytes", &self.max_buffered_bytes)
-            .field("max_download_bytes", &self.download_bytes)
             .field("chunk_bytes", &self.chunk_bytes)
             .finish_non_exhaustive()
     }
