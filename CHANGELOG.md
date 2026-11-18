@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-11-18
+
+- Handle media sources and inline data URLs in the default storage downloader.
+- Add DownloadContext::with_source_storage so credential adapters can reuse the default downloader's HTTP dispatch, chunking, metrics, and request budget.
+- Add workspace Rust and TOML lint targets.
+- Release all seven public workspace crates at 0.5.0 with matching internal dependency requirements.
+
 ## 0.4.0 - 2026-11-17
 
 - Remove blob download byte limits.
