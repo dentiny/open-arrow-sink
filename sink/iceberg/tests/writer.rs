@@ -653,13 +653,13 @@ async fn compression_survives_rolling_and_round_trips(
 #[tokio::test]
 async fn unordered_commit_preserves_all_rows() {
     use open_arrow_sink_core::SinkExt;
-    use open_arrow_sink_layer::UnorderedWriteLayer;
+    use open_arrow_sink_layer::ParallelIngestionLayer;
     use std::num::NonZeroUsize;
 
     let table = TestTable::new(TableSpec::default()).await;
     let mut writer = table
         .sink()
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(3).unwrap()))
         .open(table.identifier.clone(), table.schema.clone(), options())
         .await
         .unwrap();

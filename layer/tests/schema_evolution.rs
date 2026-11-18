@@ -1,7 +1,7 @@
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field};
 use open_arrow_sink_core::{Sink, SinkExt};
-use open_arrow_sink_layer::{FieldRemap, SchemaEvolutionLayer, UnorderedWriteLayer};
+use open_arrow_sink_layer::{FieldRemap, ParallelIngestionLayer, SchemaEvolutionLayer};
 use open_arrow_sink_test_support::parallel_sink::{Config, State, TestSink};
 use open_arrow_sink_test_support::unordered_options as options;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ async fn single_and_parallel_sessions_keep_input_schema_and_commit(#[case] paral
     });
     let sink = TestSink(state.clone()).layer(layer());
     let sink: Box<dyn Sink<Request = ()>> = if parallel {
-        Box::new(sink.layer(UnorderedWriteLayer::new(
+        Box::new(sink.layer(ParallelIngestionLayer::fixed(
             std::num::NonZeroUsize::new(2).unwrap(),
         )))
     } else {

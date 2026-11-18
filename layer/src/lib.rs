@@ -5,8 +5,12 @@ pub use options::{OptionsLayer, OptionsSink};
 mod ordering;
 pub use ordering::{OrderingLayer, OrderingSink};
 
-mod unordered;
-pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};
+mod parallel_ingestion;
+pub use parallel_ingestion::{
+    IngestionPlan, InputSizeHint, ParallelIngestionLayer, ParallelIngestionSink,
+};
+
+mod parallel_writer;
 
 mod compression;
 pub use compression::{CompressionLayer, CompressionSink};

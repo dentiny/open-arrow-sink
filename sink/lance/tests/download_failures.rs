@@ -6,7 +6,7 @@ use lance::datatypes::BlobHandling;
 use open_arrow_sink_core::{Error, Result, Sink, SinkExt, async_trait};
 use open_arrow_sink_lance::LanceDatasetSink;
 use open_arrow_sink_layer::{
-    DownloadBlobLayer, DownloadFailurePolicy, MetricsLayer, UnorderedWriteLayer,
+    DownloadBlobLayer, DownloadFailurePolicy, MetricsLayer, ParallelIngestionLayer,
 };
 use open_arrow_sink_storage::{BlobDownloader, DownloadContext, DownloadStream, Downloader};
 use open_arrow_sink_test_support::{memory_warehouse, unordered_options};
@@ -72,7 +72,7 @@ async fn source_failures_recover_with_bounded_backend_downloads(
     let sink = backend.clone().layer(layer).layer(write_metrics);
     // Exercise both the single-writer adapter and unordered worker aggregation.
     let sink: Box<dyn Sink<Request = open_arrow_sink_lance::Url>> = if parallel {
-        Box::new(sink.layer(UnorderedWriteLayer::new(2.try_into().unwrap())))
+        Box::new(sink.layer(ParallelIngestionLayer::fixed(2.try_into().unwrap())))
     } else {
         Box::new(sink)
     };
@@ -188,7 +188,7 @@ async fn write_all_returns_actual_blob_recovery_counts() {
             DownloadBlobLayer::new(["url".into()].into())
                 .with_failure_policy(DownloadFailurePolicy::SkipRow),
         )
-        .layer(UnorderedWriteLayer::new(2.try_into().unwrap()));
+        .layer(ParallelIngestionLayer::fixed(2.try_into().unwrap()));
     let summary = sink
         .write_all(
             url,

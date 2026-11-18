@@ -1,6 +1,6 @@
 use arrow_array::RecordBatch;
 use open_arrow_sink_core::{Sink, SinkExt, UploadConfig, WriteMode, WriteOptions};
-use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_layer::ParallelIngestionLayer;
 use open_arrow_sink_parquet::{ParquetDirectorySink, Storage};
 use open_arrow_sink_test_support::memory_warehouse as storage;
 use open_arrow_sink_test_support::url as fixture_url;
@@ -115,7 +115,7 @@ async fn overwrite_is_unsupported_on_every_backend(#[case] filesystem: bool) {
             .contains(&WriteMode::Overwrite)
     );
     let result = sink
-        .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap()))
+        .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(3).unwrap()))
         .open(
             directory.clone(),
             batch().schema(),

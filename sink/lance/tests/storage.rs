@@ -9,7 +9,7 @@ use open_arrow_sink_core::{
     BlobHandleConfig, IndexSpec, IndexType, ParallelSink, Sink, SinkExt, UploadConfig, WriteOptions,
 };
 use open_arrow_sink_lance::LanceDatasetSink;
-use open_arrow_sink_layer::UnorderedWriteLayer;
+use open_arrow_sink_layer::ParallelIngestionLayer;
 use open_arrow_sink_storage::ObjectPath;
 use open_arrow_sink_test_support::memory_warehouse as storage;
 use open_arrow_sink_test_support::url as fixture_url;
@@ -62,7 +62,7 @@ async fn shared_operator_unordered_commit_preserves_rows() {
     write_batches(
         &sink
             .clone()
-            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(3).unwrap())),
+            .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(3).unwrap())),
         url.clone(),
         &vec![batch(); 4],
         write_options(),
@@ -256,7 +256,7 @@ async fn ingests_blob_with_configured_layout(
     let url = fixture_url(&storage, "ingested/");
     let mut writer = if parallel {
         sink.clone()
-            .layer(UnorderedWriteLayer::new(NonZeroUsize::new(2).unwrap()))
+            .layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(2).unwrap()))
             .open(url.clone(), batch.schema(), options)
             .await
     } else {

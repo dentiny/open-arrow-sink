@@ -1,75 +1,20 @@
-use std::num::NonZeroUsize;
-
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    DataWriter, GuardedWriter, Layer, Ordering, ParallelSink, RecordBatch, Result, SchemaRef,
-    SessionCommitter, Sink, SinkCapability, WriteOptions, Writer, async_trait, validation,
+    DataWriter, GuardedWriter, RecordBatch, Result, SchemaRef, SessionCommitter, Writer,
+    async_trait, validation,
 };
 
-/// Pre-open independent writers and dispatch batches to available writers.
-/// At most one batch per writer is in flight. Work progresses while write or
-/// commit is polled; this layer does not spawn background tasks.
-/// Parquet and Iceberg encoding/compression therefore runs in the caller's task:
-/// multiple writers overlap I/O, but do not provide CPU parallelism. Backends
-/// such as Lance may schedule their own workers. See the layer guide for
-/// application-managed task scheduling and its shutdown responsibilities.
-#[derive(Debug, Clone, Copy)]
-pub struct UnorderedWriteLayer {
-    writers: NonZeroUsize,
-}
-
-impl UnorderedWriteLayer {
-    pub fn new(writers: NonZeroUsize) -> Self {
-        Self { writers }
-    }
-}
-
-pub struct UnorderedWriteSink<S> {
-    inner: S,
-    writers: NonZeroUsize,
-}
-
-impl<S: ParallelSink> Layer<S> for UnorderedWriteLayer {
-    type Layered = UnorderedWriteSink<S>;
-
-    fn layer(&self, inner: S) -> Self::Layered {
-        UnorderedWriteSink {
-            inner,
-            writers: self.writers,
-        }
-    }
-}
-
-#[async_trait]
-impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
-    type Request = S::Request;
-
-    fn capability(&self) -> SinkCapability {
-        // DataWriter has no native-blob interface to forward.
-        self.inner.capability().with_ordering(Ordering::Unordered)
-    }
-
-    async fn open(
-        &self,
-        request: Self::Request,
-        schema: SchemaRef,
-        options: WriteOptions,
-    ) -> Result<Box<dyn Writer>> {
-        // Reordering must be explicitly permitted, including with one writer.
-        validation::validate_ordering_options(options.ordering, Ordering::Unordered)?;
-        // The backend validates other options after inner layers apply overrides.
-        let session = self
-            .inner
-            .open_writers(request, schema.clone(), options, self.writers)
-            .await?
-            .expect(self.writers.get(), &schema)?;
-        Ok(Box::new(GuardedWriter::new(Box::new(UnorderedWriter {
-            schema,
-            idle: session.writers,
-            committer: Some(session.committer),
-            pending: FuturesUnordered::new(),
-        }))))
-    }
+/// Bounded dispatcher and lifecycle for parallel ingestion.
+pub(crate) fn parallel_writer<T: Send + 'static>(
+    schema: SchemaRef,
+    session: open_arrow_sink_core::WriteSession<T>,
+) -> Box<dyn Writer> {
+    Box::new(GuardedWriter::new(Box::new(ParallelWriter {
+        schema,
+        idle: session.writers,
+        committer: Some(session.committer),
+        pending: FuturesUnordered::new(),
+    })))
 }
 
 struct WriteCompletion<T> {
@@ -79,14 +24,14 @@ struct WriteCompletion<T> {
 
 type PendingWrite<T> = BoxFuture<'static, WriteCompletion<T>>;
 
-struct UnorderedWriter<T: Send + 'static> {
+struct ParallelWriter<T: Send + 'static> {
     schema: SchemaRef,
     idle: Vec<Box<dyn DataWriter<Output = T>>>,
     committer: Option<Box<dyn SessionCommitter<T>>>,
     pending: FuturesUnordered<PendingWrite<T>>,
 }
 
-impl<T: Send + 'static> UnorderedWriter<T> {
+impl<T: Send + 'static> ParallelWriter<T> {
     fn complete(&mut self, WriteCompletion { writer, result }: WriteCompletion<T>) -> Result<()> {
         // Retain ownership even on error so explicit abort can stop the failed writer.
         self.idle.push(writer);
@@ -128,7 +73,7 @@ impl<T: Send + 'static> UnorderedWriter<T> {
 }
 
 #[async_trait]
-impl<T: Send + 'static> Writer for UnorderedWriter<T> {
+impl<T: Send + 'static> Writer for ParallelWriter<T> {
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
