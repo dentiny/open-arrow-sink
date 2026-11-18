@@ -247,8 +247,8 @@ async fn shared_source_observers_count_each_download_once() {
 }
 
 #[tokio::test]
-async fn data_uris_decode_and_release_budgets_on_errors() {
-    let downloads = pool(1, 1, CHUNK);
+async fn data_uris_decode_and_reject_invalid_inputs() {
+    let downloads = pool(1);
     for uri in [
         "data:application/octet-stream;base64,AP8%3D",
         "DaTa:application/octet-stream;base64,AP8%3D",
@@ -258,7 +258,6 @@ async fn data_uris_decode_and_release_budgets_on_errors() {
     }
     for uri in ["data:missing-comma", "data:;base64,????"] {
         assert!(downloads.download(uri).await.is_err(), "{uri}");
-        assert_eq!(downloads.buffered_bytes(), 0);
     }
     assert_eq!(downloads.download("data:,").await.unwrap().as_ref(), b"");
 }
@@ -292,7 +291,7 @@ async fn registered_http_sources_apply_scoped_credentials_and_preserve_queries()
     )
     .unwrap()
     .with_http_transport(HttpTransporter::new(ScopedTransport(true)));
-    let downloads = pool(1, 1, BODY.len())
+    let downloads = pool(1)
         .with_downloader(Arc::new(
             OpenDalDownloader::new(StorageConfig::default())
                 .unwrap()
@@ -313,7 +312,7 @@ async fn registered_http_sources_apply_scoped_credentials_and_preserve_queries()
 
 #[tokio::test]
 async fn data_urls_follow_standard_decoding_rules() {
-    let downloads = pool(1, 1, 64);
+    let downloads = pool(1);
     for (source, expected) in [
         ("data:,hello#ignored", &b"hello"[..]),
         ("data:;base64,aGk=#ignored", &b"hi"[..]),
@@ -336,44 +335,5 @@ async fn data_urls_follow_standard_decoding_rules() {
         "data:;base64,a===",
     ] {
         assert!(downloads.download(source).await.is_err(), "{source}");
-        assert_eq!(downloads.buffered_bytes(), 0);
     }
-}
-
-#[tokio::test]
-async fn inline_sources_obey_remaining_group_capacity() {
-    let downloads = pool(1, 1, BODY.len());
-    // Both encodings span several output chunks and fill the exact payload cap.
-    let plain = format!("data:,{}", "%61".repeat(BODY.len()));
-    let base64 = format!("data:;base64,{}", "YWFh".repeat(BODY.len() / 3));
-    for (source, expected_len) in [(&plain, BODY.len()), (&base64, BODY.len() / 3 * 3)] {
-        let mut group = downloads.begin().await.unwrap();
-        let payload = group.download(source, None).await.unwrap();
-        assert_eq!(payload.as_ref(), vec![b'a'; expected_len]);
-        let remaining = BODY.len() - payload.len();
-        if remaining > 0 {
-            group.buffer(&vec![0; remaining]).unwrap();
-        }
-        // No payload capacity remains, but an empty inline source still fits.
-        assert!(group.download("data:,", None).await.unwrap().is_empty());
-        assert!(group.download("data:,x", None).await.is_err());
-        drop((payload, group));
-        assert_eq!(downloads.buffered_bytes(), 0);
-    }
-    for source in [
-        format!("data:,{}", "%61".repeat(1024 * 1024)),
-        format!("data:;base64,{}", "YWFh".repeat(1024 * 1024)),
-    ] {
-        let error = downloads.download(&source).await.unwrap_err();
-        assert!(error.to_string().contains("payload limit"), "{error}");
-        assert_eq!(downloads.buffered_bytes(), 0);
-    }
-    assert_eq!(
-        downloads
-            .download("data:,after-error")
-            .await
-            .unwrap()
-            .as_ref(),
-        b"after-error"
-    );
 }

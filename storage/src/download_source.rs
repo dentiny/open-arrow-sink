@@ -31,7 +31,6 @@ pub trait Downloader: Send + Sync {
 #[derive(Clone)]
 pub struct DownloadContext {
     pub(crate) chunk_bytes: usize,
-    pub(crate) payload_bytes: usize,
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,
@@ -58,11 +57,6 @@ impl DownloadContext {
     }
     pub fn chunk_bytes(&self) -> usize {
         self.chunk_bytes
-    }
-    /// Remaining payload capacity in the current download group. Providers that
-    /// materialize data before returning a stream must stay within this bound.
-    pub fn remaining_payload_bytes(&self) -> usize {
-        self.payload_bytes
     }
     /// Custom HTTP clients acquire once per request and keep the guard through
     /// the response body. OpenDAL transports can use wrap() instead.
