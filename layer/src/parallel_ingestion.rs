@@ -5,6 +5,8 @@ use open_arrow_sink_core::{
     Writer, async_trait, validation,
 };
 
+const DEFAULT_MAX_WRITERS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
 /// A pre-consumption size hint. Every known size is only a planning estimate.
 /// This deliberately has no dependency on the source library's statistics types.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -61,7 +63,7 @@ impl ParallelIngestionLayer {
         Self {
             target_file_size: Some(target_file_size),
             input_size: InputSizeHint::Unknown,
-            max_writers: NonZeroUsize::new(8).unwrap(),
+            max_writers: DEFAULT_MAX_WRITERS,
             fallback_writers: NonZeroUsize::MIN,
         }
     }
