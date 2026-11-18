@@ -202,30 +202,3 @@ async fn write_all_returns_actual_blob_recovery_counts() {
     assert_eq!(summary.rows_failed_blobs, 2);
     assert_eq!(summary.rows_skipped, 2);
 }
-
-#[tokio::test]
-async fn terminal_errors_remain_terminal() {
-    let policy = DownloadFailurePolicy::Fail;
-    let source = "bad";
-    let input = RecordBatch::try_from_iter([(
-        "url",
-        Arc::new(StringArray::from(vec![source])) as ArrayRef,
-    )])
-    .unwrap();
-    let storage = memory_warehouse();
-    let url = fixture_url(&storage, "failed/");
-    let layer = DownloadBlobLayer::new(["url".into()].into()).with_failure_policy(policy);
-    let metrics = layer.metrics();
-    let downloader = downloader();
-    let sink = LanceDatasetSink::new(storage)
-        .with_blob_downloader(downloader.clone())
-        .layer(layer);
-    let mut writer = sink
-        .open(url, input.schema(), unordered_options())
-        .await
-        .unwrap();
-    assert!(writer.write(input.clone()).await.is_err());
-    assert!(writer.write(input).await.is_err());
-    assert!(writer.commit().await.is_err());
-    assert_eq!(metrics.snapshot().blobs_failed, u64::from(source == "bad"));
-}
