@@ -63,13 +63,21 @@ impl<S: ParallelSink> Sink for UnorderedWriteSink<S> {
             .open_writers(request, schema.clone(), options, self.writers)
             .await?
             .expect(self.writers.get(), &schema)?;
-        Ok(Box::new(GuardedWriter::new(Box::new(UnorderedWriter {
-            schema,
-            idle: session.writers,
-            committer: Some(session.committer),
-            pending: FuturesUnordered::new(),
-        }))))
+        Ok(unordered_writer(schema, session))
     }
+}
+
+/// Share the bounded dispatcher and lifecycle between fixed and automatic policies.
+pub(crate) fn unordered_writer<T: Send + 'static>(
+    schema: SchemaRef,
+    session: open_arrow_sink_core::WriteSession<T>,
+) -> Box<dyn Writer> {
+    Box::new(GuardedWriter::new(Box::new(UnorderedWriter {
+        schema,
+        idle: session.writers,
+        committer: Some(session.committer),
+        pending: FuturesUnordered::new(),
+    })))
 }
 
 struct WriteCompletion<T> {

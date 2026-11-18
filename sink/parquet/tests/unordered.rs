@@ -86,3 +86,43 @@ async fn duplicate_create_preserves_existing_rows() {
     .await;
     assert_eq!(actual, vec![batch]);
 }
+
+#[tokio::test]
+async fn automatic_ingestion_streams_and_rotates_using_its_target() {
+    use futures::stream;
+    use open_arrow_sink_layer::{InputSizeHint, ParallelIngestionLayer};
+
+    let storage = open_arrow_sink_test_support::memory_warehouse();
+    let directory = fixture_url(&storage, "automatic/");
+    let policy = ParallelIngestionLayer::new(NonZeroUsize::MIN)
+        .with_input_size(InputSizeHint::SourceBytes(100))
+        .with_max_writers(NonZeroUsize::new(2).unwrap());
+    let sink = ParquetDirectorySink::new(storage.clone()).layer(policy);
+    assert_eq!(sink.plan().writers.get(), 2);
+    let batches: Vec<_> = (0..6)
+        .map(|id| open_arrow_sink_test_support::int64_batch("id", vec![Some(id)]))
+        .collect();
+    // No target in WriteOptions: the layer forwards its target to file rotation.
+    let summary = sink
+        .write_all(
+            directory.clone(),
+            batches[0].schema(),
+            open_arrow_sink_test_support::unordered_options(),
+            stream::iter(batches.iter().cloned().map(Ok)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.rows_committed, 6);
+    let path = storage.path(&directory).unwrap();
+    let files = open_arrow_sink_test_support::sorted_list(&storage, &path).await;
+    // A one-byte soft target rotates each batch into a new file, independently
+    // of the two-writer concurrency limit.
+    assert_eq!(files.len(), 6);
+    let actual = open_arrow_sink_test_support::read_parquet_dir(&storage, &path).await;
+    assert_eq!(
+        open_arrow_sink_test_support::concat_sorted(&batches[0].schema(), &actual, &["id"])
+            .unwrap(),
+        open_arrow_sink_test_support::concat_sorted(&batches[0].schema(), &batches, &["id"])
+            .unwrap(),
+    );
+}

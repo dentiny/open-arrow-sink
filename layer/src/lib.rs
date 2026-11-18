@@ -5,6 +5,11 @@ pub use options::{OptionsLayer, OptionsSink};
 mod ordering;
 pub use ordering::{OrderingLayer, OrderingSink};
 
+mod parallel_ingestion;
+pub use parallel_ingestion::{
+    IngestionPlan, InputSizeHint, ParallelIngestionLayer, ParallelIngestionSink,
+};
+
 mod unordered;
 pub use unordered::{UnorderedWriteLayer, UnorderedWriteSink};
 

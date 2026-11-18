@@ -189,3 +189,44 @@ Use `make fmt` to format Rust and TOML files, or `make lint-rust` and
 `make lint-toml` to run the individual lint checks.
 
 MIT licensed.
+
+### Plan parallel ingestion from source metadata
+
+`layer::ParallelIngestionLayer` chooses an initial writer count before consuming
+input. It reuses the unordered dispatcher's one-batch-per-writer backpressure and
+one shared session commit; no whole-input buffering or background executor is
+introduced.
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use open_arrow_sink::{SinkExt, WriteOptions};
+use open_arrow_sink::layer::{InputSizeHint, ParallelIngestionLayer};
+
+// Obtained from source metadata before polling records, not from final metrics.
+let hint = InputSizeHint::SourceBytes(40 * 1024 * 1024 * 1024);
+let policy = ParallelIngestionLayer::new(NonZeroUsize::new(512 * 1024 * 1024).unwrap())
+    .with_input_size(hint)
+    .with_max_writers(NonZeroUsize::new(8).unwrap());
+let plan = policy.plan(); // ~80 files by source-byte proxy; at most 8 writers
+let sink = sink.layer(policy);
+let summary = sink.write_all(destination, schema, WriteOptions::default(), stream).await?;
+```
+
+`SourceBytes` explicitly uses a coarse 1:1 byte proxy, not a compression prediction.
+Use `OutputBytes` when the application has a better estimate after projection,
+filtering, encoding, or blob materialization. `Unknown` defaults to one writer;
+`with_fallback_writers` configures it, still capped by `with_max_writers`.
+Both exact and estimated source sizes are only layout hints. Even zero consumes
+all incoming records; estimates never limit rows or signal EOF.
+
+The layer forwards its target to backend file rotation and rejects a conflicting
+caller target. Option-changing layers belong outside the ingestion layer; inner
+layers must preserve its target. File size is a soft target. Writers may produce
+several files, and partition/tail files can make actual counts differ from the
+plan. The default maximum is eight writers. This bounds in-flight batches, not
+process memory or active files for partitioned backends. Source read-ahead,
+encoding state, and upload buffers require separate budgets. In particular, an
+upstream reader with unbounded prefetch is not made memory-bounded by this layer.
+Like `UnorderedWriteLayer`, this overlaps I/O without promising parallel CPU
+encoding. Use unordered write options only when the COPY operation permits it.
+EOF finishes all writers and publishes once through the existing committer.
