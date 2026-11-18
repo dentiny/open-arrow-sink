@@ -169,12 +169,23 @@ batch transformation. Read [Extending](docs/extending.md) for the contracts and
 runnable examples. Extensions can live in separate crates without registration.
 
 Use a Rust toolchain supporting edition 2024. Lance dependencies also need
-`protoc`. Run the workspace checks from the repository root:
+`protoc`. Install the formatting and lint tools:
 
 ```sh
-cargo fmt --all --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+rustup component add rustfmt clippy
+cargo install taplo-cli --locked
 ```
+
+Run the workspace checks from the repository root:
+
+```sh
+make lint
+cargo test --workspace --locked
+```
+
+`make lint` checks Rust and TOML formatting, validates TOML and workspace metadata,
+and runs Clippy for all targets and features with warnings treated as errors.
+Use `make fmt` to format Rust and TOML files, or `make lint-rust` and
+`make lint-toml` to run the individual lint checks.
 
 MIT licensed.
