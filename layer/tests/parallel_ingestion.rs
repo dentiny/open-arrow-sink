@@ -1,3 +1,5 @@
+// Policy-specific coverage lives here; parallel_writer.rs owns the shared
+// dispatch, ordering, cancellation, and finalization contracts.
 use std::{
     num::NonZeroUsize,
     sync::{
@@ -16,6 +18,8 @@ fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
 }
 
+// Exercise rounding, zero vs unknown, fallback capping, and overflow-safe
+// ceiling division without opening a destination or inspecting record data.
 #[rstest::rstest]
 #[case(InputSizeHint::OutputBytes(201), 2, 3, Some(3))]
 #[case(InputSizeHint::SourceBytes(0), 2, 1, Some(0))]
@@ -44,6 +48,7 @@ async fn conflicting_target_is_rejected_before_opening_or_pulling() {
     let state = State::shared(Config::default());
     let sink = TestSink(state.clone()).layer(ParallelIngestionLayer::new(nz(100)));
     let batch = int64_batch("id", vec![Some(1)]);
+    // Conflicting targets must fail before source consumption or destination I/O.
     let input = stream::poll_fn(|_| panic!("input polled before validating target"));
     assert!(
         sink.write_all(
@@ -58,6 +63,8 @@ async fn conflicting_target_is_rejected_before_opening_or_pulling() {
     assert_eq!(state.lock().unwrap().count(Event::Open), 0);
 }
 
+// The zero hint must still drain real input. Blocking every writer also makes
+// this test catch eager input collection before EOF and missing backpressure.
 #[rstest::rstest]
 #[case(InputSizeHint::SourceBytes(201), 2)]
 #[case(InputSizeHint::SourceBytes(0), 1)]
@@ -109,6 +116,8 @@ async fn fixed_mode_preserves_caller_target_and_explicit_concurrency(
     });
     let captured = Arc::new(Mutex::new(Vec::new()));
     let observed = captured.clone();
+    // Observe options downstream of ingestion: fixed mode must preserve both
+    // an explicit target and None, which delegates to the backend default.
     let sink = TestSink(state.clone())
         .layer(OptionsLayer::new(move |options| {
             observed.lock().unwrap().push(options.target_file_size);
