@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-11-18
+
+- Replace UnorderedWriteLayer with ParallelIngestionLayer for fixed or metadata-driven writer concurrency.
+- Expose input size hints and ingestion plans, coordinating automatic writer counts with target file sizes.
+- Release all 7 public workspace crates at 0.5.1 with matching internal dependency requirements.
+
 ## 0.5.0 - 2026-11-18
 
 - Handle media sources and inline data URLs in the default storage downloader.
