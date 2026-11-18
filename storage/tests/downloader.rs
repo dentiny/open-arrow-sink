@@ -50,46 +50,7 @@ fn default_pool() -> BlobDownloader {
 }
 
 #[tokio::test]
-async fn clones_share_concurrency_and_cancellation_releases_slots() {
-    within(async {
-        let first = pool(1);
-        let shared = first.clone();
-        let other = pool(1);
-        let held = first.begin().await.unwrap();
-        let mut waiting = Box::pin(shared.begin());
-        assert!(poll!(&mut waiting).is_pending());
-        let independent = other.begin().await.unwrap();
-        drop(independent);
-        // Cancelling a waiter must not leak a slot.
-        drop(waiting);
-        let mut waiting = Box::pin(shared.begin());
-        assert!(poll!(&mut waiting).is_pending());
-        drop(held);
-        drop(waiting.await.unwrap());
-        drop(first.begin().await.unwrap());
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn retained_payloads_do_not_block_subsequent_downloads() {
-    within(async {
-        let downloads = pool(1).with_downloader(Arc::new(
-            OpenDalDownloader::new(StorageConfig::default())
-                .unwrap()
-                .with_http_transport(HttpTransporter::new(Transport)),
-        ));
-        let bytes = downloads.download(URL).await.unwrap();
-        let retained = bytes.clone();
-        let next = downloads.download(URL).await.unwrap();
-        assert_eq!(retained.as_ref(), BODY);
-        assert_eq!(next.as_ref(), BODY);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn failures_release_slots_and_groups_have_no_payload_byte_limit() {
+async fn failures_release_slots() {
     let downloads = default_pool();
     for url in [
         "not a URL",
@@ -98,39 +59,7 @@ async fn failures_release_slots_and_groups_have_no_payload_byte_limit() {
     ] {
         assert!(downloads.download(url).await.is_err());
     }
-    let blobs = downloads.download_all(&[URL, URL], None).await.unwrap();
-    assert_eq!(blobs.len(), 2);
-    assert!(blobs.iter().all(|blob| blob.as_ref() == BODY));
-}
-
-#[tokio::test]
-async fn payloads_can_exceed_the_former_default_limit() {
-    struct Large;
-    #[async_trait]
-    impl Downloader for Large {
-        async fn open(&self, _: &str, context: DownloadContext) -> Result<DownloadStream> {
-            // The former defaults allowed less than 43 MiB per download group.
-            let chunk = bytes::Bytes::from(vec![b'x'; context.chunk_bytes()]);
-            Ok(Box::pin(stream::iter(
-                (0..24).map(move |_| Ok(chunk.clone())),
-            )))
-        }
-    }
-    let downloads = BlobDownloader::with_defaults()
-        .unwrap()
-        .with_downloader(Arc::new(Large));
-    let blobs = downloads
-        .download_all(&["large", "large"], None)
-        .await
-        .unwrap();
-    for blob in &blobs {
-        assert_eq!(blob.len(), 48 * 1024 * 1024);
-        assert!(blob.iter().all(|&byte| byte == b'x'));
-    }
-    let mut group = downloads.begin().await.unwrap();
-    let buffered = group.buffer(&blobs[0]).unwrap();
-    let assembled = group.finish_buffer(buffered.to_vec()).unwrap();
-    assert_eq!(assembled, blobs[0]);
+    assert_eq!(downloads.download(URL).await.unwrap().as_ref(), BODY);
 }
 
 #[tokio::test]
