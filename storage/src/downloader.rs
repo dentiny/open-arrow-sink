@@ -210,10 +210,12 @@ impl BlobDownloader {
     fn context(
         &self,
         chunk_bytes: usize,
+        payload_bytes: usize,
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> DownloadContext {
         DownloadContext {
             chunk_bytes,
+            payload_bytes,
             http_limit: self.http_limit.clone(),
             sources: self.sources.clone(),
             primary: self.primary.clone(),
@@ -224,10 +226,11 @@ impl BlobDownloader {
         &self,
         source: &str,
         chunk_bytes: usize,
+        payload_bytes: usize,
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<DownloadStream> {
         self.backend
-            .open(source, self.context(chunk_bytes, metrics))
+            .open(source, self.context(chunk_bytes, payload_bytes, metrics))
             .await
     }
 }
@@ -320,7 +323,12 @@ impl BlobDownload {
         let source_error = |error| Error::backend(crate::SourceDownloadError(error));
         let mut reader = self
             .downloader
-            .open(source, self.downloader.chunk_bytes, metrics)
+            .open(
+                source,
+                self.downloader.chunk_bytes,
+                self.downloader.download_bytes - self.total,
+                metrics,
+            )
             .await
             .map_err(source_error)?;
         let initial_total = self.total;

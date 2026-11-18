@@ -14,26 +14,18 @@ azure = ["opendal/services-azblob"]
 
 [dependencies]
 async-stream.workspace = true
-base64 = "0.22"
+data-url.workspace = true
 object_store.workspace = true
-object_store_opendal = { version = "0.60.5", default-features = false }
+object_store_opendal.workspace = true
 bytes.workspace = true
 futures.workspace = true
-http = "1"
-httpdate = "1"
+http.workspace = true
+httpdate.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 open-arrow-sink-core.workspace = true
-opendal = { version = "0.59.5", default-features = false, features = [
-  "auto-register-services",
-  "services-fs",
-  "services-http",
-  "http-transport-reqwest",
-  "executors-tokio",
-  "layers-retry",
-  "layers-timeout",
-] }
-percent-encoding = "2"
-url = "2"
+opendal.workspace = true
+percent-encoding.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 more-asserts.workspace = true

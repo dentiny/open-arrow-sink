@@ -1,9 +1,8 @@
-//! Default download I/O, with no destination writes or payload accumulation.
+//! Default source dispatch and OpenDAL download I/O.
 use crate::{
     DownloadContext, DownloadStream, Downloader, HttpConcurrencyLimitLayer, Storage, StorageConfig,
     error, validation,
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
 use futures::TryStreamExt;
 use http::{Request, Response, Uri};
 use open_arrow_sink_core::{Error, Result, async_trait};
@@ -67,22 +66,10 @@ impl OpenDalDownloader {
 #[async_trait]
 impl Downloader for OpenDalDownloader {
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream> {
-        let mut url = crate::Url::parse(source).map_err(Error::backend)?;
-        if url.scheme() == "data" {
-            let bytes = decode_data_uri(source)?;
-            let chunk_bytes = context.chunk_bytes();
-            return Ok(Box::pin(futures::stream::unfold(
-                (bytes, 0),
-                move |(bytes, offset)| async move {
-                    if offset == bytes.len() {
-                        return None;
-                    }
-                    let end = offset.saturating_add(chunk_bytes).min(bytes.len());
-                    let chunk = bytes::Bytes::copy_from_slice(&bytes[offset..end]);
-                    Some((Ok(chunk), (bytes, end)))
-                },
-            )));
+        if let Some(stream) = crate::inline_source::open(source, &context)? {
+            return Ok(stream);
         }
+        let mut url = crate::Url::parse(source).map_err(Error::backend)?;
         let (operator, path) = if matches!(url.scheme(), "http" | "https") {
             let uri = validation::validate_download_url(source)?;
             // Resolve credentials from explicit source namespaces. Keep query strings
@@ -157,18 +144,5 @@ impl HttpTransport for UrlTransport {
     async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
         *request.uri_mut() = self.uri.clone();
         Ok(error::download_response(self.inner.fetch(request).await?))
-    }
-}
-
-fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
-    let (header, encoded) = uri
-        .split_once(',')
-        .ok_or_else(|| Error::InvalidInput("invalid media data URI".into()))?;
-    let bytes = percent_encoding::percent_decode_str(encoded).collect::<Vec<_>>();
-    let is_base64 = header.ends_with(";base64");
-    if is_base64 {
-        STANDARD.decode(bytes).map_err(Error::backend)
-    } else {
-        Ok(bytes)
     }
 }

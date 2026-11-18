@@ -35,6 +35,7 @@ impl Storage {
 }
 
 mod downloader;
+mod inline_source;
 pub use downloader::{BlobDownload, BlobDownloader};
 
 mod download_source;
