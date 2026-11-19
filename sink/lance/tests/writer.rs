@@ -82,6 +82,75 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
 open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);
 
 #[rstest::rstest]
+#[case::empty(false)]
+#[case::uncommitted_files(true)]
+#[tokio::test]
+async fn overwrite_destination_without_manifest(#[case] uncommitted_files: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    std::fs::create_dir(&path).unwrap();
+    if uncommitted_files {
+        for directory in ["data", "_blobs"] {
+            std::fs::create_dir(path.join(directory)).unwrap();
+            std::fs::write(path.join(directory).join("orphan"), b"uncommitted").unwrap();
+        }
+    }
+    let url = Url::from_directory_path(&path).unwrap();
+    let batch = batch();
+    let sink = LanceDatasetSink::default();
+    // Create still rejects an occupied destination; append still needs a dataset.
+    for mode in [WriteMode::Create, WriteMode::Append] {
+        assert!(
+            sink.open(url.clone(), batch.schema(), options().with_mode(mode))
+                .await
+                .is_err()
+        );
+    }
+    let mut writer = sink
+        .open(
+            url,
+            batch.schema(),
+            options().with_mode(WriteMode::Overwrite),
+        )
+        .await
+        .unwrap();
+    writer.write(batch.clone()).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = Dataset::open(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(dataset.version_id(), 1);
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap(), batch);
+    if uncommitted_files {
+        for directory in ["data", "_blobs"] {
+            assert_eq!(
+                std::fs::read(path.join(directory).join("orphan")).unwrap(),
+                b"uncommitted"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn overwrite_rejects_corrupt_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    std::fs::create_dir_all(path.join("_versions")).unwrap();
+    let manifest = path.join("_versions/1.manifest");
+    let corrupt = [0; 128];
+    std::fs::write(&manifest, corrupt).unwrap();
+    assert!(
+        LanceDatasetSink::default()
+            .open(
+                Url::from_directory_path(&path).unwrap(),
+                batch().schema(),
+                options().with_mode(WriteMode::Overwrite),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(manifest).unwrap(), corrupt);
+}
+
+#[rstest::rstest]
 #[case::append(WriteMode::Append, 5)]
 #[case::overwrite(WriteMode::Overwrite, 4)]
 #[tokio::test]

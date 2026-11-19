@@ -89,6 +89,11 @@ and Unordered; Iceberg requires explicit Append. Bundled sinks reject
 PreserveInput. Check `Sink::capability()` and backend validation for supported
 options.
 
+Lance Overwrite can create a dataset at a destination containing files from an
+uncommitted write. Retained files are left in place and are not included in the
+new manifest. Create still rejects an occupied destination, and Append requires
+an existing dataset.
+
 Run the Parquet example with a new destination directory:
 
 ```sh
