@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 - 2026-11-19
+
+- Support skipping missing Lance source blobs with explicit failure reporting and download metrics.
+- Release all 7 public workspace crates at 0.6.1 with matching internal dependency requirements.
+
 ## 0.6.0 - 2026-11-18
 
 - Configure a global per-read `io_request_size` for blob network reads.
