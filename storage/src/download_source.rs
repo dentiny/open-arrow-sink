@@ -2,7 +2,7 @@
 use crate::{HttpConcurrencyLimitLayer, ObjectPath, Storage, StorageResolver, Url};
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use open_arrow_sink_core::{Result, async_trait};
+use open_arrow_sink_core::{Error, Result, async_trait};
 use std::sync::Arc;
 
 /// A source namespace and the object path resolved within it.
@@ -25,6 +25,7 @@ pub trait Downloader: Send + Sync {
     /// must not exceed [`DownloadContext::chunk_bytes`]. Keep request permits
     /// until EOF or stream drop, and cancel pending I/O when the stream is dropped.
     /// Return opening failures here and subsequent read failures through the stream.
+    /// Wrap errors in [`SourceDownloadError`] to override their recovery scope.
     async fn open(&self, source: &str, context: DownloadContext) -> Result<DownloadStream>;
 }
 
@@ -94,16 +95,91 @@ impl DownloadContext {
     }
 }
 
+/// Whether a failed source download can be recovered independently of other rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DownloadFailureScope {
+    /// A known failure specific to a blob, eligible for SkipRow or Null.
+    Object,
+    /// Invalid input/configuration or storage authentication; never recover per row.
+    Configuration,
+    /// The failure could affect every object. Recovery must not hide it.
+    Unknown,
+}
+
 /// An error opening or reading a source, distinct from local buffering errors.
 #[derive(Debug)]
-pub struct SourceDownloadError(pub(crate) open_arrow_sink_core::Error);
+pub struct SourceDownloadError {
+    scope: DownloadFailureScope,
+    source: Error,
+}
+impl SourceDownloadError {
+    /// Explicitly classify custom downloader errors; the download pool preserves
+    /// this classification through wrappers and mid-stream failures.
+    pub fn new(scope: DownloadFailureScope, source: Error) -> Self {
+        Self { scope, source }
+    }
+
+    pub fn scope(&self) -> DownloadFailureScope {
+        self.scope
+    }
+
+    /// Find the download error without making callers inspect backend error chains.
+    pub fn find<'a>(mut error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Self> {
+        loop {
+            if let Some(download) = error.downcast_ref::<Self>() {
+                return Some(download);
+            }
+            error = error.source()?;
+        }
+    }
+
+    pub(crate) fn wrap(source: &str, error: Error) -> Error {
+        if Self::find(&error).is_some() {
+            return error;
+        }
+        let scope = classify(source, &error);
+        Error::backend(Self::new(scope, error))
+    }
+}
 impl std::fmt::Display for SourceDownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.source.fmt(f)
     }
 }
 impl std::error::Error for SourceDownloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
+        Some(&self.source)
+    }
+}
+
+fn classify(source: &str, mut error: &(dyn std::error::Error + 'static)) -> DownloadFailureScope {
+    use DownloadFailureScope::{Configuration, Object, Unknown};
+    let http = Url::parse(source).is_ok_and(|url| matches!(url.scheme(), "http" | "https"));
+    loop {
+        if error.is::<::url::ParseError>() {
+            return Configuration;
+        }
+        if let Some(error) = error.downcast_ref::<opendal::Error>() {
+            return match error.kind() {
+                opendal::ErrorKind::NotFound => Object,
+                opendal::ErrorKind::PermissionDenied if http => Object,
+                opendal::ErrorKind::ConfigInvalid
+                | opendal::ErrorKind::Unsupported
+                | opendal::ErrorKind::PermissionDenied => Configuration,
+                _ => Unknown,
+            };
+        }
+        match error.downcast_ref::<Error>() {
+            Some(Error::NotFound(_)) => return Object,
+            Some(Error::InvalidConfig(_) | Error::InvalidInput(_) | Error::Unsupported(_)) => {
+                return Configuration;
+            }
+            _ => {}
+        }
+        let Some(source) = error.source() else {
+            return Unknown;
+        };
+        error = source;
     }
 }

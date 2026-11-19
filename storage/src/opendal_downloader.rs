@@ -143,6 +143,6 @@ struct UrlTransport {
 impl HttpTransport for UrlTransport {
     async fn fetch(&self, mut request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
         *request.uri_mut() = self.uri.clone();
-        Ok(error::download_response(self.inner.fetch(request).await?))
+        error::download_response(self.inner.fetch(request).await?)
     }
 }

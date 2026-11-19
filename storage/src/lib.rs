@@ -41,6 +41,7 @@ pub use downloader::{BlobDownload, BlobDownloader};
 mod download_source;
 mod opendal_downloader;
 pub use download_source::{
-    DownloadContext, DownloadStream, Downloader, ResolvedSource, SourceDownloadError,
+    DownloadContext, DownloadFailureScope, DownloadStream, Downloader, ResolvedSource,
+    SourceDownloadError,
 };
 pub use opendal_downloader::OpenDalDownloader;

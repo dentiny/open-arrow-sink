@@ -15,13 +15,17 @@ const BODY: &[u8] = b"a payload larger than one download chunk";
 struct Transport;
 impl HttpTransport for Transport {
     async fn fetch(&self, request: Request<Buffer>) -> opendal::Result<Response<HttpBody>> {
-        let missing = request.uri().path() == "/missing";
+        let status = match request.uri().path() {
+            "/missing" => StatusCode::NOT_FOUND,
+            "/forbidden" => StatusCode::FORBIDDEN,
+            "/unauthorized" => StatusCode::UNAUTHORIZED,
+            "/proxy" => StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            "/unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::OK,
+        };
+        let missing = !status.is_success();
         Ok(Response::builder()
-            .status(if missing {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::OK
-            })
+            .status(status)
             .header(
                 "content-length",
                 if missing { 999999999 } else { BODY.len() },
@@ -335,5 +339,64 @@ async fn data_urls_follow_standard_decoding_rules() {
         "data:;base64,a===",
     ] {
         assert!(downloads.download(source).await.is_err(), "{source}");
+    }
+}
+
+#[tokio::test]
+async fn download_errors_expose_scope_and_preserve_custom_overrides() {
+    use open_arrow_sink_core::Error;
+    use open_arrow_sink_storage::{DownloadFailureScope as Scope, SourceDownloadError};
+    let downloads = default_pool();
+    for (source, expected) in [
+        (format!("{URL}/missing"), Scope::Object),
+        (format!("{URL}/forbidden"), Scope::Object),
+        (format!("{URL}/unauthorized"), Scope::Configuration),
+        (format!("{URL}/proxy"), Scope::Configuration),
+        (format!("{URL}/unavailable"), Scope::Unknown),
+        ("not a URL".into(), Scope::Configuration),
+        ("unsupported:///blob".into(), Scope::Configuration),
+    ] {
+        let error = downloads.download(&source).await.unwrap_err();
+        assert_eq!(
+            SourceDownloadError::find(&error).unwrap().scope(),
+            expected,
+            "{source}: {error}"
+        );
+    }
+    struct Failure(opendal::ErrorKind, Option<Scope>);
+    #[async_trait]
+    impl Downloader for Failure {
+        async fn open(&self, _: &str, _: DownloadContext) -> Result<DownloadStream> {
+            let error = Error::backend(opendal::Error::new(self.0, "source failed"));
+            Err(match self.1 {
+                Some(scope) => Error::backend(SourceDownloadError::new(scope, error)),
+                None => error,
+            })
+        }
+    }
+    for (kind, override_scope, expected) in [
+        (opendal::ErrorKind::NotFound, None, Scope::Object),
+        (
+            opendal::ErrorKind::PermissionDenied,
+            None,
+            Scope::Configuration,
+        ),
+        (
+            opendal::ErrorKind::ConfigInvalid,
+            None,
+            Scope::Configuration,
+        ),
+        (opendal::ErrorKind::Unexpected, None, Scope::Unknown),
+        (
+            opendal::ErrorKind::PermissionDenied,
+            Some(Scope::Object),
+            Scope::Object,
+        ),
+    ] {
+        let downloads = pool(1).with_downloader(Arc::new(Failure(kind, override_scope)));
+        let error = downloads.download("s3://bucket/blob").await.unwrap_err();
+        let download = SourceDownloadError::find(&error).unwrap();
+        assert_eq!(download.scope(), expected);
+        assert!(std::error::Error::source(download).is_some());
     }
 }

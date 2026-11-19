@@ -45,7 +45,9 @@ impl PartialEq for DownloadMetrics {
 }
 impl Eq for DownloadMetrics {}
 
-/// Treatment of selected source URLs that cannot be downloaded.
+/// Treatment of selected source URLs with object-level download failures.
+/// Configuration and unknown-scope failures always propagate, even under SkipRow
+/// or Null. Custom downloaders can classify errors with SourceDownloadError.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DownloadFailurePolicy {

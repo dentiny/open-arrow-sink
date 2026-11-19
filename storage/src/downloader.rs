@@ -193,7 +193,7 @@ impl BlobDownload {
         source: &str,
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<bytes::Bytes> {
-        let source_error = |error| Error::backend(crate::SourceDownloadError(error));
+        let source_error = |error| crate::SourceDownloadError::wrap(source, error);
         let mut reader = self
             .downloader
             .open(source, self.downloader.chunk_bytes, metrics)

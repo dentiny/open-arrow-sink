@@ -270,12 +270,15 @@ impl BlobMaterializer {
                         .recovery
                         .as_ref()
                         .filter(|config| config.columns.contains(field.name()));
-                    let source_error = matches!(&error, Error::Backend(source) if source.is::<open_arrow_sink_storage::SourceDownloadError>());
-                    if let Some(config) = recover.filter(|_| source_error) {
+                    let source_error = open_arrow_sink_storage::SourceDownloadError::find(&error);
+                    if let Some((config, source_error)) = recover.zip(source_error) {
                         config.metrics.failure(!failed);
                         self.downloads.failure(!failed);
                         failed = true;
-                        if config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail {
+                        if source_error.scope()
+                            == open_arrow_sink_storage::DownloadFailureScope::Object
+                            && config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail
+                        {
                             columns[*index] =
                                 arrow_array::new_null_array(field.data_type(), range.len());
                             continue;
