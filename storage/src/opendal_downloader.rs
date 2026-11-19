@@ -133,7 +133,7 @@ impl Downloader for OpenDalDownloader {
             while let Some(mut buffer) = reader.try_next().await.map_err(|error| error::map_error("read", &path, error))? {
                 while !buffer.is_empty() {
                     let size = context.chunk_bytes().min(buffer.len());
-                    yield bytes::Bytes::from(buffer.split_to(size).to_vec());
+                    yield buffer.split_to(size).to_bytes();
                 }
             }
         }))
