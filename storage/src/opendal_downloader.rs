@@ -120,8 +120,8 @@ impl Downloader for OpenDalDownloader {
             (operator, path.as_str().to_owned())
         };
         let mut builder = operator.reader_with(&path);
-        if let Some(request_size) = context.request_size() {
-            builder = builder.chunk(request_size.get());
+        if let Some(io_request_size) = context.io_request_size() {
+            builder = builder.chunk(io_request_size.get());
         }
         let mut reader = builder
             .await

@@ -124,7 +124,7 @@ Blob downloads limit concurrent groups and HTTP requests, with no configured
 maximum for blob size, combined group size, or buffered payload bytes. Complete
 payloads are buffered in memory. `BlobDownloader::new(concurrency)` configures
 the group concurrency; the default is 64. Yielded application chunks remain
-2 MiB regardless of payload size. `with_request_size(NonZeroUsize)` separately
+2 MiB regardless of payload size. `with_io_request_size(NonZeroUsize)` separately
 configures the default OpenDAL downloader's storage read chunk target (for
 example, 64 MiB). It applies to HTTP and object-storage downloads, including
 custom source namespaces. Small objects and the final range can be smaller.

@@ -31,7 +31,7 @@ pub trait Downloader: Send + Sync {
 #[derive(Clone)]
 pub struct DownloadContext {
     pub(crate) chunk_bytes: usize,
-    pub(crate) request_size: Option<NonZeroUsize>,
+    pub(crate) io_request_size: Option<NonZeroUsize>,
     pub(crate) http_limit: HttpConcurrencyLimitLayer,
     pub(crate) sources: Arc<StorageResolver>,
     pub(crate) primary: Option<Storage>,
@@ -61,8 +61,8 @@ impl DownloadContext {
     }
     /// Optional storage I/O chunk target; independent of yielded chunk sizes.
     /// Custom downloaders should apply this to their range requests when supported.
-    pub fn request_size(&self) -> Option<NonZeroUsize> {
-        self.request_size
+    pub fn io_request_size(&self) -> Option<NonZeroUsize> {
+        self.io_request_size
     }
     /// Custom HTTP clients acquire once per request and keep the guard through
     /// the response body. OpenDAL transports can use wrap() instead.
