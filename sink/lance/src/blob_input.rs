@@ -275,8 +275,7 @@ impl BlobMaterializer {
                         config.metrics.failure(!failed);
                         self.downloads.failure(!failed);
                         failed = true;
-                        if source_error.scope()
-                            == open_arrow_sink_storage::DownloadFailureScope::Object
+                        if source_error.recoverable
                             && config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail
                         {
                             columns[*index] =

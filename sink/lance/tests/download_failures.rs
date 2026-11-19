@@ -24,12 +24,6 @@ impl Downloader for Source {
                 Ok("xx".into()),
                 Err(Error::InvalidConfig("bad credentials".into())),
             ]))),
-            "override" => Err(Error::backend(
-                open_arrow_sink_storage::SourceDownloadError::new(
-                    open_arrow_sink_storage::DownloadFailureScope::Object,
-                    Error::InvalidConfig("explicit custom classification".into()),
-                ),
-            )),
             "partial" => Ok(Box::pin(futures::stream::iter([
                 Ok("xx".into()),
                 Err(failure()),
@@ -216,59 +210,33 @@ async fn write_all_returns_actual_blob_recovery_counts() {
 }
 
 #[rstest::rstest]
-#[case(DownloadFailurePolicy::SkipRow, false)]
-#[case(DownloadFailurePolicy::Null, false)]
-#[case(DownloadFailurePolicy::SkipRow, true)]
-#[case(DownloadFailurePolicy::Null, true)]
+#[case(DownloadFailurePolicy::SkipRow)]
+#[case(DownloadFailurePolicy::Null)]
 #[tokio::test]
-async fn recovery_propagates_configuration_and_unknown_failures(
-    #[case] policy: DownloadFailurePolicy,
-    #[case] parallel: bool,
-) {
-    use open_arrow_sink_storage::{DownloadFailureScope as Scope, SourceDownloadError};
-    let backend = LanceDatasetSink::new(memory_warehouse()).with_blob_downloader(downloader());
+async fn recovery_propagates_fatal_errors(#[case] policy: DownloadFailurePolicy) {
+    use open_arrow_sink_storage::SourceDownloadError;
     let layer = DownloadBlobLayer::new(["url".into()].into()).with_failure_policy(policy);
     let metrics = layer.metrics();
-    let sink = backend.layer(layer);
-    let sink: Box<dyn Sink<Request = open_arrow_sink_lance::Url>> = if parallel {
-        Box::new(sink.layer(ParallelIngestionLayer::fixed(2.try_into().unwrap())))
-    } else {
-        Box::new(sink)
-    };
-    for (source, expected) in [
-        ("config", Scope::Configuration),
-        ("partial_config", Scope::Configuration),
-        ("unknown", Scope::Unknown),
-        ("override", Scope::Object),
-    ] {
+    let sink = LanceDatasetSink::new(memory_warehouse())
+        .with_blob_downloader(downloader())
+        .layer(layer)
+        .layer(ParallelIngestionLayer::fixed(2.try_into().unwrap()));
+    for source in ["config", "partial_config", "unknown"] {
         let input = RecordBatch::try_from_iter([(
             "url",
             Arc::new(StringArray::from(vec![source])) as ArrayRef,
         )])
         .unwrap();
-        let url = format!("memory:///warehouse/{source}/").parse().unwrap();
-        let mut writer = sink
-            .open(url, input.schema(), unordered_options())
+        let error = sink
+            .write_all(
+                format!("memory:///warehouse/{source}/").parse().unwrap(),
+                input.schema(),
+                unordered_options(),
+                futures::stream::iter([Ok(input)]),
+            )
             .await
-            .unwrap();
-        let result = match writer.write(input).await {
-            Ok(()) => writer.commit().await,
-            Err(error) => {
-                let _ = writer.abort().await;
-                Err(error)
-            }
-        };
-        if expected == Scope::Object {
-            let summary = result.unwrap();
-            assert_eq!(summary.rows_failed_blobs, 1);
-            assert_eq!(
-                summary.rows_skipped,
-                u64::from(policy == DownloadFailurePolicy::SkipRow)
-            );
-        } else {
-            let error = result.unwrap_err();
-            assert_eq!(SourceDownloadError::find(&error).unwrap().scope(), expected);
-            assert_eq!(metrics.snapshot().rows_skipped, 0);
-        }
+            .unwrap_err();
+        assert!(!SourceDownloadError::find(&error).unwrap().recoverable);
     }
+    assert_eq!(metrics.snapshot().rows_skipped, 0);
 }

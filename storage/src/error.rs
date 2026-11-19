@@ -71,13 +71,9 @@ pub(crate) fn download_response(
 ) -> opendal::Result<http::Response<opendal::HttpBody>> {
     if matches!(response.status().as_u16(), 401 | 407) {
         return Err(opendal::Error::new(
-            ErrorKind::PermissionDenied,
-            "source authentication failed",
-        )
-        .set_source(crate::SourceDownloadError::new(
-            crate::DownloadFailureScope::Configuration,
-            Error::InvalidConfig(format!("HTTP source returned {}", response.status())),
-        )));
+            ErrorKind::ConfigInvalid,
+            format!("HTTP source authentication failed: {}", response.status()),
+        ));
     }
     if response.status().is_success() {
         return Ok(response);

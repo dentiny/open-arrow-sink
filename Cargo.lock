@@ -4318,6 +4318,7 @@ dependencies = [
  "percent-encoding",
  "rstest",
  "tempfile",
+ "thiserror",
  "tokio",
  "url",
 ]

@@ -162,14 +162,10 @@ Empty sessions report zero rows; errors
 return no summary and do not imply publication was rolled back. Custom writers,
 committers, and decorators must return or forward the summary.
 
-`DownloadFailurePolicy::SkipRow` and `Null` recover only object-level failures.
-Missing blobs and HTTP 403s are object-level; malformed URLs, unsupported storage,
-HTTP 401/407, and file/object-store permission errors fail the write. Unclassified
-failures (including exhausted transient retries) also propagate. Errors retain their sources;
-use `storage::SourceDownloadError::find(&error).map(|e| e.scope())` for the scope.
-Custom downloaders can override classification by returning
-`Error::backend(SourceDownloadError::new(scope, error))`, including in their streams.
-Classification uses the actual download result, with no separate probe request.
+`SkipRow` and `Null` recover missing blobs and HTTP 403s; configuration and unknown
+errors propagate by default. Inspect `SourceDownloadError::find(&error)`, or return
+`Error::backend(SourceDownloadError { recoverable: true, source: error })` from a
+custom downloader to opt into row recovery. This uses actual downloads, without probes.
 
 ## Extending and developing
 

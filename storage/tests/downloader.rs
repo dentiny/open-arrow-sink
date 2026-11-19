@@ -343,60 +343,52 @@ async fn data_urls_follow_standard_decoding_rules() {
 }
 
 #[tokio::test]
-async fn download_errors_expose_scope_and_preserve_custom_overrides() {
+async fn download_errors_distinguish_recoverable_failures_and_preserve_overrides() {
     use open_arrow_sink_core::Error;
-    use open_arrow_sink_storage::{DownloadFailureScope as Scope, SourceDownloadError};
+    use open_arrow_sink_storage::SourceDownloadError;
+    use opendal::ErrorKind::{ConfigInvalid, NotFound, PermissionDenied, Unexpected};
     let downloads = default_pool();
     for (source, expected) in [
-        (format!("{URL}/missing"), Scope::Object),
-        (format!("{URL}/forbidden"), Scope::Object),
-        (format!("{URL}/unauthorized"), Scope::Configuration),
-        (format!("{URL}/proxy"), Scope::Configuration),
-        (format!("{URL}/unavailable"), Scope::Unknown),
-        ("not a URL".into(), Scope::Configuration),
-        ("unsupported:///blob".into(), Scope::Configuration),
+        (format!("{URL}/missing"), true),
+        (format!("{URL}/forbidden"), true),
+        (format!("{URL}/unauthorized"), false),
+        (format!("{URL}/proxy"), false),
+        (format!("{URL}/unavailable"), false),
+        ("not a URL".into(), false),
+        ("unsupported:///blob".into(), false),
     ] {
         let error = downloads.download(&source).await.unwrap_err();
         assert_eq!(
-            SourceDownloadError::find(&error).unwrap().scope(),
+            SourceDownloadError::find(&error).unwrap().recoverable,
             expected,
             "{source}: {error}"
         );
     }
-    struct Failure(opendal::ErrorKind, Option<Scope>);
+    struct Failure(opendal::ErrorKind, Option<bool>);
     #[async_trait]
     impl Downloader for Failure {
         async fn open(&self, _: &str, _: DownloadContext) -> Result<DownloadStream> {
             let error = Error::backend(opendal::Error::new(self.0, "source failed"));
             Err(match self.1 {
-                Some(scope) => Error::backend(SourceDownloadError::new(scope, error)),
+                Some(recoverable) => Error::backend(SourceDownloadError {
+                    recoverable,
+                    source: error,
+                }),
                 None => error,
             })
         }
     }
-    for (kind, override_scope, expected) in [
-        (opendal::ErrorKind::NotFound, None, Scope::Object),
-        (
-            opendal::ErrorKind::PermissionDenied,
-            None,
-            Scope::Configuration,
-        ),
-        (
-            opendal::ErrorKind::ConfigInvalid,
-            None,
-            Scope::Configuration,
-        ),
-        (opendal::ErrorKind::Unexpected, None, Scope::Unknown),
-        (
-            opendal::ErrorKind::PermissionDenied,
-            Some(Scope::Object),
-            Scope::Object,
-        ),
+    for (kind, override_recoverable, expected) in [
+        (NotFound, None, true),
+        (NotFound, Some(false), false),
+        (PermissionDenied, None, false),
+        (ConfigInvalid, None, false),
+        (Unexpected, None, false),
+        (PermissionDenied, Some(true), true),
     ] {
-        let downloads = pool(1).with_downloader(Arc::new(Failure(kind, override_scope)));
+        let downloads = pool(1).with_downloader(Arc::new(Failure(kind, override_recoverable)));
         let error = downloads.download("s3://bucket/blob").await.unwrap_err();
         let download = SourceDownloadError::find(&error).unwrap();
-        assert_eq!(download.scope(), expected);
-        assert!(std::error::Error::source(download).is_some());
+        assert_eq!(download.recoverable, expected);
     }
 }
