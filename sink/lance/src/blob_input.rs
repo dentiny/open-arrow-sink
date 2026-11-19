@@ -213,6 +213,14 @@ impl BlobMaterializer {
         plan: &BlobInputPlan,
         worker: &mut crate::worker::FragmentTask,
     ) -> Result<()> {
+        if self.recovery.as_ref().is_some_and(|config| {
+            config.policy == open_arrow_sink_core::DownloadFailurePolicy::SkipNotFound
+        }) && !self.downloader.has_error_reporter()
+        {
+            return Err(Error::InvalidConfig(
+                "SkipNotFound requires a BlobDownloader error reporter".into(),
+            ));
+        }
         let mut next = 0;
         let mut skipped = 0;
         let mut active = FuturesUnordered::new();
@@ -270,12 +278,25 @@ impl BlobMaterializer {
                         .recovery
                         .as_ref()
                         .filter(|config| config.columns.contains(field.name()));
-                    let source_error = matches!(&error, Error::Backend(source) if source.is::<open_arrow_sink_storage::SourceDownloadError>());
-                    if let Some(config) = recover.filter(|_| source_error) {
+                    let source_error = match &error {
+                        Error::Backend(source) => {
+                            source.downcast_ref::<open_arrow_sink_storage::SourceDownloadError>()
+                        }
+                        _ => None,
+                    };
+                    if let Some(config) = recover.filter(|_| source_error.is_some()) {
                         config.metrics.failure(!failed);
                         self.downloads.failure(!failed);
                         failed = true;
-                        if config.policy != open_arrow_sink_core::DownloadFailurePolicy::Fail {
+                        let recoverable = match config.policy {
+                            open_arrow_sink_core::DownloadFailurePolicy::SkipNotFound => {
+                                source_error.is_some_and(|error| error.is_not_found())
+                            }
+                            open_arrow_sink_core::DownloadFailurePolicy::SkipRow
+                            | open_arrow_sink_core::DownloadFailurePolicy::Null => true,
+                            _ => false,
+                        };
+                        if recoverable {
                             columns[*index] =
                                 arrow_array::new_null_array(field.data_type(), range.len());
                             continue;
@@ -287,7 +308,11 @@ impl BlobMaterializer {
         }
         if failed
             && self.recovery.as_ref().is_some_and(|config| {
-                config.policy == open_arrow_sink_core::DownloadFailurePolicy::SkipRow
+                matches!(
+                    config.policy,
+                    open_arrow_sink_core::DownloadFailurePolicy::SkipRow
+                        | open_arrow_sink_core::DownloadFailurePolicy::SkipNotFound
+                )
             })
         {
             return Ok(RecordBatch::new_empty(schema.clone()));

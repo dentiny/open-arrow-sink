@@ -244,3 +244,31 @@ the same dispatcher, ordering checks, and single session commit. Without an
 automatic target, size hints do not estimate file counts; the fallback and maximum
 writer settings determine concurrency. There is one public parallel write layer
 for both automatic planning and explicit concurrency.
+
+## Missing source objects
+
+Downloads fail by default (`DownloadFailurePolicy::Fail`). For a conversion that
+may reference deleted objects, select `SkipNotFound` explicitly and install a
+fallible reporter on the shared downloader:
+
+```rust,ignore
+let downloader = BlobDownloader::with_defaults()?.with_error_reporter(|failure| {
+    record_failure(failure.url(), &failure.error().to_string())?;
+    Ok(())
+});
+let blobs = DownloadBlobLayer::new(columns)
+    .with_failure_policy(DownloadFailurePolicy::SkipNotFound);
+// Install this downloader and layer on LanceDatasetSink.
+```
+
+Only typed source `NotFound` errors are recoverable (the default OpenDAL HTTP/S3
+adapters use this for 404; filesystem missing objects use the same category).
+403, timeouts, decoding/buffering errors and destination failures remain fatal.
+A missing selected Blob drops its entire input row, including nested Blob fields;
+surviving rows keep the existing session ordering policy. Existing failed-Blob and
+skipped-row counters still apply. A reporter is required for this policy, receives
+the original URL/error before recovery, and must succeed before the row is skipped.
+It may run concurrently and should not block. Reporter errors fail the conversion.
+The library does not store an unbounded list of failures. Custom downloaders must
+return `Error::NotFound` for missing objects; error-message strings are not parsed.
+The older broad `SkipRow`/`Null` policies retain their existing behavior.

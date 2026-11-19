@@ -14,6 +14,8 @@ const DEFAULT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 // Application read chunk size; this does not limit complete payloads.
 const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
+type ErrorReporter = dyn Fn(&crate::SourceDownloadError) -> Result<()> + Send + Sync;
+
 /// Blob materialization with shared download concurrency control.
 /// Clones share admission slots. Complete payloads have no configured byte limit
 /// and are buffered in memory before being passed to the destination SDK.
@@ -28,9 +30,25 @@ pub struct BlobDownloader {
     concurrency: NonZeroUsize,
     chunk_bytes: usize,
     io_request_size: Option<NonZeroUsize>,
+    error_reporter: Option<Arc<ErrorReporter>>,
 }
 
 impl BlobDownloader {
+    /// Record source URL and error before recovery. Called for opening/read errors,
+    /// concurrently across downloads. Reporter failures fail the write; callbacks
+    /// should not block. Required by DownloadFailurePolicy::SkipNotFound.
+    pub fn with_error_reporter(
+        mut self,
+        report: impl Fn(&crate::SourceDownloadError) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.error_reporter = Some(Arc::new(report));
+        self
+    }
+
+    pub fn has_error_reporter(&self) -> bool {
+        self.error_reporter.is_some()
+    }
+
     /// Create an independent download pool with the given concurrency.
     /// The default OpenDAL provider uses the shared HTTP request budget.
     /// Replace download I/O with `with_downloader`.
@@ -39,6 +57,7 @@ impl BlobDownloader {
         Ok(Self {
             chunk_bytes: CHUNK_BYTES,
             io_request_size: None,
+            error_reporter: None,
             backend: Arc::new(OpenDalDownloader::new(StorageConfig::default())?),
             http_limit: HttpConcurrencyLimitLayer::new(concurrency.get())?,
             sources: Arc::default(),
@@ -204,7 +223,19 @@ impl BlobDownload {
         source: &str,
         metrics: Option<&open_arrow_sink_core::IoObservers>,
     ) -> Result<bytes::Bytes> {
-        let source_error = |error| Error::backend(crate::SourceDownloadError(error));
+        let source_error = |error| {
+            let failure = crate::SourceDownloadError {
+                url: source.to_owned(),
+                error,
+            };
+            if let Some(report) = &self.downloader.error_reporter
+                && let Err(error) = report(&failure)
+            {
+                // A recording failure is not another recoverable source failure.
+                return Error::backend(error);
+            }
+            Error::backend(failure)
+        };
         let mut reader = self
             .downloader
             .open(source, self.downloader.chunk_bytes, metrics)

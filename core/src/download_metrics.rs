@@ -53,6 +53,9 @@ pub enum DownloadFailurePolicy {
     Fail,
     /// Drop the whole input row, retaining the order of surviving rows.
     SkipRow,
+    /// Drop a row only for a missing source object (HTTP 404 / typed NotFound).
+    /// Requires BlobDownloader::with_error_reporter; other errors still fail.
+    SkipNotFound,
     /// Replace only failed selected blobs with null.
     Null,
 }
