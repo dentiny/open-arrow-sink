@@ -464,7 +464,16 @@ impl BlobMaterializer {
                 let bytes = group
                     .download(uris.value(row), self.metrics.as_ref())
                     .await?;
-                Some(bytes.slice(blob_source_range(values, row, bytes.len())?))
+                let range = blob_source_range(values, row, bytes.len())?;
+                if range == (0..bytes.len()) {
+                    Some(bytes)
+                } else if values.len() == 1 {
+                    // Keep only the requested range: sharing a small slice would
+                    // retain the entire downloaded object in the Arrow array.
+                    Some(group.buffer(&bytes[range])?)
+                } else {
+                    Some(bytes.slice(range))
+                }
             } else {
                 if uris.is_valid(row) {
                     uri = Some(uris.value(row).to_owned());
@@ -474,10 +483,17 @@ impl BlobMaterializer {
             data_validity.push(bytes.is_some());
             materialized.push(bytes.is_some());
             if let Some(bytes) = bytes {
-                payload
-                    .try_reserve_exact(bytes.len())
-                    .map_err(Error::backend)?;
-                payload.extend_from_slice(&bytes);
+                if values.len() == 1 {
+                    // Reclaim the uniquely owned payload instead of copying it.
+                    // Trim spare download capacity before Arrow retains the buffer.
+                    payload = bytes.into();
+                    payload.shrink_to_fit();
+                } else {
+                    payload
+                        .try_reserve_exact(bytes.len())
+                        .map_err(Error::backend)?;
+                    payload.extend_from_slice(&bytes);
+                }
             }
             offsets.push(i64::try_from(payload.len()).map_err(Error::backend)?);
             output_uris.push(uri);
