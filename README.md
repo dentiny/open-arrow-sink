@@ -199,9 +199,10 @@ MIT licensed.
 ### Plan parallel ingestion from source metadata
 
 `layer::ParallelIngestionLayer` chooses an initial writer count before consuming
-input. It reuses the unordered dispatcher's one-batch-per-writer backpressure and
-one shared session commit; no whole-input buffering or background executor is
-introduced.
+input. It keeps one accepted batch per writer and one shared session commit.
+Nonempty writes require the application's Tokio runtime: owned background tasks
+keep I/O moving while the caller reads the next input batch. Commit and explicit
+abort wait for accepted writes; dropping the writer cancels its tasks.
 
 ```rust,ignore
 use std::num::NonZeroUsize;

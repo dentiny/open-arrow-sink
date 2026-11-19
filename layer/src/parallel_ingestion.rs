@@ -43,8 +43,11 @@ pub struct IngestionPlan {
 /// A zero estimate still opens one writer and consumes the stream to EOF.
 ///
 /// The bounded dispatcher keeps at most one batch per writer in flight.
-/// No background tasks are spawned, and encoding is not made CPU-parallel. Upstream read-ahead and backend encoding/upload
-/// buffers need their own limits; this is not a process memory bound.
+/// Nonempty writes require a Tokio runtime. Accepted batches run in background
+/// tasks owned by the writer, so I/O progresses while the caller reads input.
+/// Commit and explicit abort wait for accepted writes; dropping the writer cancels
+/// its tasks. Upstream read-ahead and backend encoding/upload buffers need their
+/// own limits; this is not a process memory bound.
 ///
 /// Automatic mode owns the target; conflicting caller targets are rejected.
 /// Fixed mode preserves caller/backend target settings. Place

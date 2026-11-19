@@ -13,6 +13,7 @@ open-arrow-sink-core.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 open-arrow-sink-test-support.workspace = true
