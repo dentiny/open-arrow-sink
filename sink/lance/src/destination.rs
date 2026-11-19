@@ -54,7 +54,7 @@ impl LanceDestination {
         storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<Option<lance::Dataset>> {
         if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
+            return crate::validation::check_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
                 storage_version,
@@ -68,7 +68,12 @@ impl LanceDestination {
         if mode == WriteMode::Create {
             return Err(Error::AlreadyExists(self.url.to_string()));
         }
-        match crate::validation::validate_existing_dataset(self.dataset_builder(), None, None).await
+        match crate::validation::check_existing_dataset(
+            self.dataset_builder(),
+            /*schema=*/ None,
+            /*storage_version=*/ None,
+        )
+        .await
         {
             Ok(dataset) => Ok(Some(dataset)),
             // Failed or canceled writes can leave files without a committed manifest.

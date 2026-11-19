@@ -86,7 +86,7 @@ pub(crate) fn validate_indexes(schema: &Schema, indexes: &[IndexSpec]) -> Result
     Ok(())
 }
 
-pub(crate) async fn validate_existing_dataset(
+pub(crate) async fn check_existing_dataset(
     builder: lance::dataset::builder::DatasetBuilder,
     schema: Option<&Schema>,
     storage_version: Option<LanceFileVersion>,
