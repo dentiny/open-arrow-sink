@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 - 2026-11-18
+
+- Configure a global per-read `io_request_size` for blob network reads.
+- Drive accepted parallel writes in writer-owned background tasks, preserving at most one accepted batch per physical writer; nonempty parallel writes now require the application's Tokio runtime.
+- Forward unordered Lance blob downloads in completion order while retaining bounded in-flight downloads.
+- Reuse single-row blob payload buffers and avoid an intermediate network buffer copy.
+- Release all 7 public workspace crates at 0.6.0 with matching internal dependency requirements.
+
 ## 0.5.1 - 2026-11-18
 
 - Replace UnorderedWriteLayer with ParallelIngestionLayer for fixed or metadata-driven writer concurrency.
