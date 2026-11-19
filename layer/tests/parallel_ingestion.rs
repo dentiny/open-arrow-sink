@@ -11,7 +11,9 @@ use std::{
 use futures::{FutureExt, stream};
 use open_arrow_sink_core::{Sink, SinkExt};
 use open_arrow_sink_layer::{InputSizeHint, ParallelIngestionLayer};
-use open_arrow_sink_test_support::parallel_sink::{Config, Event, State, TestSink, release};
+use open_arrow_sink_test_support::parallel_sink::{
+    Config, Event, State, TestSink, release, wait_for_write_event,
+};
 use open_arrow_sink_test_support::{int64_batch, unordered_options};
 
 fn nz(value: usize) -> NonZeroUsize {
@@ -91,13 +93,7 @@ async fn write_all_streams_with_backpressure_even_when_size_is_underestimated(
     futures::pin_mut!(ingestion);
     assert!(ingestion.as_mut().now_or_never().is_none());
     assert_eq!(state.lock().unwrap().count(Event::Open), writers);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while state.lock().unwrap().count(Event::WriteStarted) < writers {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("background writers did not start");
+    wait_for_write_event(&state, Event::WriteStarted, writers).await;
     // In-flight batches plus one caller-held batch; the input has not reached EOF.
     assert_eq!(pulled.load(AtomicOrdering::SeqCst), writers + 1);
     release(&state);

@@ -81,8 +81,24 @@ pub struct State {
     pub started_writers: Vec<usize>,
     pub gates: Vec<oneshot::Sender<()>>,
     pub schemas: Vec<SchemaRef>,
+    write_waiters: Vec<(Event, usize, oneshot::Sender<()>)>,
 }
 impl State {
+    fn record_write_event(&mut self, event: Event) {
+        self.events.push(event.clone());
+        let count = self.count(event.clone());
+        let mut index = 0;
+        while index < self.write_waiters.len() {
+            let (expected, target, _) = &self.write_waiters[index];
+            if *expected == event && count >= *target {
+                let (_, _, sender) = self.write_waiters.swap_remove(index);
+                let _ = sender.send(());
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     pub fn shared(config: Config) -> SharedState {
         Arc::new(Mutex::new(Self {
             config,
@@ -220,7 +236,7 @@ impl DataWriter for TestWriter {
         }
         {
             let mut state = self.state.lock().unwrap();
-            state.events.push(Event::WriteStarted);
+            state.record_write_event(Event::WriteStarted);
             state.started_writers.push(self.id);
         }
         if let Some(gate) = self.gate.take() {
@@ -228,13 +244,13 @@ impl DataWriter for TestWriter {
         }
         let mut state = self.state.lock().unwrap();
         if state.config.failures.contains(&Failure::Write) {
-            state.events.push(Event::WriteFailed);
+            state.record_write_event(Event::WriteFailed);
             return Err(Error::Unsupported(format!(
                 "injected write failure for writer {}",
                 self.id
             )));
         }
-        state.events.push(Event::WriteCompleted);
+        state.record_write_event(Event::WriteCompleted);
         self.rows += batch.num_rows() as u64;
         Ok(())
     }
@@ -288,4 +304,18 @@ pub fn release(state: &SharedState) {
     for gate in state.lock().unwrap().gates.drain(..) {
         let _ = gate.send(());
     }
+}
+
+/// Await an observed write event using an explicit fixture notification.
+pub async fn wait_for_write_event(state: &SharedState, event: Event, count: usize) {
+    let receiver = {
+        let mut state = state.lock().unwrap();
+        if state.count(event.clone()) >= count {
+            return;
+        }
+        let (sender, receiver) = oneshot::channel();
+        state.write_waiters.push((event, count, sender));
+        receiver
+    };
+    receiver.await.expect("write event sender dropped");
 }
