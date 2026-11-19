@@ -102,14 +102,32 @@ impl DownloadContext {
 
 /// An error opening or reading a source, distinct from local buffering errors.
 #[derive(Debug)]
-pub struct SourceDownloadError(pub(crate) open_arrow_sink_core::Error);
+pub struct SourceDownloadError {
+    pub(crate) url: String,
+    pub(crate) error: open_arrow_sink_core::Error,
+}
+impl SourceDownloadError {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn error(&self) -> &open_arrow_sink_core::Error {
+        &self.error
+    }
+
+    /// Native OpenDAL HTTP/S3 404s and missing filesystem objects use NotFound.
+    /// Custom downloaders must return a typed NotFound to opt into this policy.
+    pub fn is_not_found(&self) -> bool {
+        matches!(&self.error, open_arrow_sink_core::Error::NotFound(_))
+    }
+}
 impl std::fmt::Display for SourceDownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        write!(f, "source {:?}: {}", self.url, self.error)
     }
 }
 impl std::error::Error for SourceDownloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
+        Some(&self.error)
     }
 }
