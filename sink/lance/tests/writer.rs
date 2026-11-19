@@ -81,6 +81,29 @@ impl open_arrow_sink_test_support::conformance::SinkFixture for ConformanceFixtu
 
 open_arrow_sink_test_support::conformance_tests!(ConformanceFixture);
 
+#[tokio::test]
+async fn overwrite_rejects_corrupt_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("dataset");
+    tokio::fs::create_dir_all(path.join("_versions"))
+        .await
+        .unwrap();
+    let manifest = path.join("_versions/1.manifest");
+    let corrupt = [0; 128];
+    tokio::fs::write(&manifest, corrupt).await.unwrap();
+    assert!(
+        LanceDatasetSink::default()
+            .open(
+                Url::from_directory_path(&path).unwrap(),
+                batch().schema(),
+                options().with_mode(WriteMode::Overwrite),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(tokio::fs::read(manifest).await.unwrap(), corrupt);
+}
+
 #[rstest::rstest]
 #[case::append(WriteMode::Append, 5)]
 #[case::overwrite(WriteMode::Overwrite, 4)]

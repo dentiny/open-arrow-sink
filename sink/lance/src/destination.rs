@@ -54,7 +54,7 @@ impl LanceDestination {
         storage_version: Option<lance_file::version::LanceFileVersion>,
     ) -> Result<Option<lance::Dataset>> {
         if mode == WriteMode::Append {
-            return crate::validation::validate_existing_dataset(
+            return crate::validation::check_existing_dataset(
                 self.dataset_builder(),
                 Some(schema),
                 storage_version,
@@ -68,9 +68,26 @@ impl LanceDestination {
         if mode == WriteMode::Create {
             return Err(Error::AlreadyExists(self.url.to_string()));
         }
-        crate::validation::validate_existing_dataset(self.dataset_builder(), None, None)
-            .await
-            .map(Some)
+        match crate::validation::check_existing_dataset(
+            self.dataset_builder(),
+            /*schema=*/ None,
+            /*storage_version=*/ None,
+        )
+        .await
+        {
+            Ok(dataset) => Ok(Some(dataset)),
+            // Failed or canceled writes can leave files without a committed manifest.
+            // Overwrite follows Lance's insert semantics and creates a new dataset.
+            Err(Error::Backend(error))
+                if matches!(
+                    error.downcast_ref::<lance::Error>(),
+                    Some(lance::Error::DatasetNotFound { .. } | lance::Error::NotFound { .. })
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
     /// Bind native parameters to this destination's storage and commit policy.
     pub fn bind_write_params(&self, mut params: WriteParams) -> WriteParams {

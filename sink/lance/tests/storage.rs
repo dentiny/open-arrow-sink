@@ -148,7 +148,7 @@ async fn duplicate_index_reports_already_exists() {
 }
 
 #[tokio::test]
-async fn shared_operator_abort_preserves_output() {
+async fn shared_operator_abort_preserves_output_and_allows_overwrite() {
     let storage = storage();
     let sink = LanceDatasetSink::new(storage.clone());
     let url = fixture_url(&storage, "aborted/");
@@ -184,6 +184,26 @@ async fn shared_operator_abort_preserves_output() {
             .unwrap(),
         "keep"
     );
+    // A retry must ignore retained fragments that were never published.
+    assert!(
+        sink.dataset_builder(url.clone())
+            .unwrap()
+            .load()
+            .await
+            .is_err()
+    );
+    write_batches(
+        &sink,
+        url.clone(),
+        &[batch()],
+        write_options().with_mode(open_arrow_sink_core::WriteMode::Overwrite),
+    )
+    .await;
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    assert_eq!(dataset.version_id(), 1);
+    assert_eq!(dataset.scan().try_into_batch().await.unwrap(), batch());
+    let after = open_arrow_sink_test_support::sorted_list(&storage, &directory).await;
+    assert!(retained.iter().all(|path| after.contains(path)));
 }
 
 #[tokio::test]
