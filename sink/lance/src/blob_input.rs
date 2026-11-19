@@ -215,8 +215,6 @@ impl BlobMaterializer {
     ) -> Result<()> {
         let mut next = 0;
         let mut skipped = 0;
-        // Lance sessions only support Ordering::Unordered. Forward completed groups
-        // immediately so one slow source does not hold up the SDK's input queue.
         let mut active = FuturesUnordered::new();
         let mut ready: VecDeque<RecordBatch> = VecDeque::new();
         loop {
