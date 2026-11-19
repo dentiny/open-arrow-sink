@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2 - 2026-11-19
+
+- Allow Lance overwrite to recover destinations containing uncommitted files without a manifest. Preserve Create/Append validation and propagate other dataset errors.
+- Release all 7 public workspace crates at 0.6.2 with matching internal dependency requirements.
+
 ## 0.6.1 - 2026-11-19
 
 - Support skipping missing Lance source blobs with explicit failure reporting and download metrics.
