@@ -13,7 +13,7 @@ use arrow_array::{
 use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_cast::cast;
 use arrow_schema::DataType;
-use futures::{StreamExt, future::BoxFuture, stream::FuturesOrdered};
+use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
     DownloadRecovery, ExternalBlobMode, IoObservers, RecordBatch, Result, SchemaRef, WriteOptions,
 };
@@ -215,7 +215,7 @@ impl BlobMaterializer {
     ) -> Result<()> {
         let mut next = 0;
         let mut skipped = 0;
-        let mut active = FuturesOrdered::new();
+        let mut active = FuturesUnordered::new();
         let mut ready: VecDeque<RecordBatch> = VecDeque::new();
         loop {
             while active.len() + ready.len() < self.downloader.in_flight_limit() {
@@ -224,7 +224,7 @@ impl BlobMaterializer {
                 }
                 let range = next_range(batch, plan, next, self.mode);
                 next = range.end;
-                active.push_back(self.materialize_batch(batch, range, plan));
+                active.push(self.materialize_batch(batch, range, plan));
             }
             if active.is_empty() && ready.is_empty() {
                 if let Some(config) = self.recovery.as_ref() {
