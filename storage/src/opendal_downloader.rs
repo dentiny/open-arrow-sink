@@ -119,8 +119,11 @@ impl Downloader for OpenDalDownloader {
             };
             (operator, path.as_str().to_owned())
         };
-        let mut reader = operator
-            .reader(&path)
+        let mut builder = operator.reader_with(&path);
+        if let Some(request_size) = context.request_size() {
+            builder = builder.chunk(request_size.get());
+        }
+        let mut reader = builder
             .await
             .map_err(|error| error::map_error("read", &path, error))?
             .into_stream(..)

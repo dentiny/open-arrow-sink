@@ -27,6 +27,7 @@ pub struct BlobDownloader {
     stream_slots: Arc<Semaphore>,
     concurrency: NonZeroUsize,
     chunk_bytes: usize,
+    request_size: Option<NonZeroUsize>,
 }
 
 impl BlobDownloader {
@@ -37,6 +38,7 @@ impl BlobDownloader {
         validation::validate_http_concurrency(concurrency.get())?;
         Ok(Self {
             chunk_bytes: CHUNK_BYTES,
+            request_size: None,
             backend: Arc::new(OpenDalDownloader::new(StorageConfig::default())?),
             http_limit: HttpConcurrencyLimitLayer::new(concurrency.get())?,
             sources: Arc::default(),
@@ -44,6 +46,14 @@ impl BlobDownloader {
             stream_slots: Arc::new(Semaphore::new(concurrency.get())),
             concurrency,
         })
+    }
+
+    /// Set the storage read request chunk target, independently of output chunks.
+    /// The default OpenDAL downloader uses bounded range reads when configured.
+    /// Small objects and final ranges can be smaller; this is not a payload limit.
+    pub fn with_request_size(mut self, request_size: NonZeroUsize) -> Self {
+        self.request_size = Some(request_size);
+        self
     }
 
     /// Replace download I/O without replacing concurrency control.
@@ -147,6 +157,7 @@ impl BlobDownloader {
     ) -> DownloadContext {
         DownloadContext {
             chunk_bytes,
+            request_size: self.request_size,
             http_limit: self.http_limit.clone(),
             sources: self.sources.clone(),
             primary: self.primary.clone(),
@@ -232,6 +243,7 @@ impl std::fmt::Debug for BlobDownloader {
         f.debug_struct("BlobDownloader")
             .field("concurrency", &self.concurrency)
             .field("chunk_bytes", &self.chunk_bytes)
+            .field("request_size", &self.request_size)
             .finish_non_exhaustive()
     }
 }
