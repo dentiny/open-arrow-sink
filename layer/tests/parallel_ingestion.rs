@@ -91,7 +91,13 @@ async fn write_all_streams_with_backpressure_even_when_size_is_underestimated(
     futures::pin_mut!(ingestion);
     assert!(ingestion.as_mut().now_or_never().is_none());
     assert_eq!(state.lock().unwrap().count(Event::Open), writers);
-    assert_eq!(state.lock().unwrap().count(Event::WriteStarted), writers);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.lock().unwrap().count(Event::WriteStarted) < writers {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background writers did not start");
     // In-flight batches plus one caller-held batch; the input has not reached EOF.
     assert_eq!(pulled.load(AtomicOrdering::SeqCst), writers + 1);
     release(&state);

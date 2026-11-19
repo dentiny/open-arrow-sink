@@ -14,6 +14,17 @@ fn sink(state: &SharedState) -> impl Sink<Request = ()> {
     TestSink(state.clone()).layer(ParallelIngestionLayer::fixed(NonZeroUsize::new(2).unwrap()))
 }
 
+// Observe runtime-driven work without polling the public writer again.
+async fn wait_for(state: &SharedState, event: Event, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.lock().unwrap().count(event.clone()) < count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background writer did not progress");
+}
+
 async fn open(state: &SharedState) -> Box<dyn open_arrow_sink_core::Writer> {
     sink(state)
         .open((), batch().schema(), options())
@@ -29,7 +40,7 @@ async fn preopens_writers_and_bounds_concurrent_batches() {
     assert_eq!(state.lock().unwrap().count(Event::Open), 2);
     writer.write(batch.clone()).await.unwrap();
     writer.write(batch.clone()).await.unwrap();
-    assert_eq!(state.lock().unwrap().count(Event::WriteStarted), 2);
+    wait_for(&state, Event::WriteStarted, 2).await;
     assert_eq!(state.lock().unwrap().count(Event::WriteCompleted), 0);
     {
         let third = writer.write(batch);
@@ -167,14 +178,16 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
     let mut writer = open(&state).await;
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
+    wait_for(&state, Event::WriteStarted, 2).await;
     // Free the writer that actually received the first batch.
     {
         let mut state_guard = state.lock().unwrap();
         state_guard.release_first();
     }
-    assert!(writer.write(batch()).now_or_never().unwrap().is_ok());
+    wait_for(&state, Event::WriteCompleted, 1).await;
+    writer.write(batch()).await.unwrap();
+    wait_for(&state, Event::WriteCompleted, 2).await;
     assert_eq!(state.lock().unwrap().count(Event::WriteStarted), 3);
-    assert_eq!(state.lock().unwrap().count(Event::WriteCompleted), 2);
     release(&state);
     writer.commit().await.unwrap();
 }
@@ -183,6 +196,7 @@ async fn available_writer_progresses_without_waiting_for_slow_writer() {
 async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     let state = State::failing([Failure::Write]);
     let mut writer = open(&state).await;
+    writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
     release(&state);
     assert!(writer.write(batch()).await.is_err());
@@ -265,11 +279,14 @@ async fn finalization_drains_all_writes_and_preserves_first_error(
     writer.write(batch()).await.unwrap();
     writer.write(batch()).await.unwrap();
 
+    wait_for(&state, Event::WriteStarted, 2).await;
     // Fail the first scheduled write while the other is still blocked.
     let first_id = {
         let mut state = state.lock().unwrap();
         state.release_first()
     };
+    // The released task must observe the injected failure before it is removed.
+    wait_for(&state, Event::WriteFailed, 1).await;
     let finalization = async move {
         if abort {
             writer.abort().await

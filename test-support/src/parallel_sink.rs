@@ -18,6 +18,7 @@ pub enum Event {
     Open,
     WriteStarted,
     WriteCompleted,
+    WriteFailed,
     Finish,
     Abort,
     RequestedOrdering(Ordering),
@@ -227,6 +228,7 @@ impl DataWriter for TestWriter {
         }
         let mut state = self.state.lock().unwrap();
         if state.config.failures.contains(&Failure::Write) {
+            state.events.push(Event::WriteFailed);
             return Err(Error::Unsupported(format!(
                 "injected write failure for writer {}",
                 self.id

@@ -1,8 +1,8 @@
-use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use open_arrow_sink_core::{
-    DataWriter, GuardedWriter, RecordBatch, Result, SchemaRef, SessionCommitter, Writer,
+    DataWriter, Error, GuardedWriter, RecordBatch, Result, SchemaRef, SessionCommitter, Writer,
     async_trait, validation,
 };
+use tokio::{runtime::Handle, task::JoinSet};
 
 /// Bounded dispatcher and lifecycle for parallel ingestion.
 pub(crate) fn parallel_writer<T: Send + 'static>(
@@ -13,7 +13,7 @@ pub(crate) fn parallel_writer<T: Send + 'static>(
         schema,
         idle: session.writers,
         committer: Some(session.committer),
-        pending: FuturesUnordered::new(),
+        pending: JoinSet::new(),
     })))
 }
 
@@ -22,13 +22,12 @@ struct WriteCompletion<T> {
     result: Result<()>,
 }
 
-type PendingWrite<T> = BoxFuture<'static, WriteCompletion<T>>;
-
 struct ParallelWriter<T: Send + 'static> {
     schema: SchemaRef,
     idle: Vec<Box<dyn DataWriter<Output = T>>>,
     committer: Option<Box<dyn SessionCommitter<T>>>,
-    pending: FuturesUnordered<PendingWrite<T>>,
+    // Dropping the set cancels its tasks, including a cancelled commit/abort.
+    pending: JoinSet<WriteCompletion<T>>,
 }
 
 impl<T: Send + 'static> ParallelWriter<T> {
@@ -39,16 +38,19 @@ impl<T: Send + 'static> ParallelWriter<T> {
     }
 
     fn drain_ready(&mut self) -> Result<()> {
-        while let Some(Some(completed)) = self.pending.next().now_or_never() {
-            self.complete(completed)?;
+        while let Some(completed) = self.pending.try_join_next() {
+            self.complete(completed.map_err(Error::backend)?)?;
         }
         Ok(())
     }
 
     async fn drain_all(&mut self) -> Result<()> {
         let mut first_error = None;
-        while let Some(completed) = self.pending.next().await {
-            if let Err(error) = self.complete(completed) {
+        while let Some(completed) = self.pending.join_next().await {
+            if let Err(error) = completed
+                .map_err(Error::backend)
+                .and_then(|done| self.complete(done))
+            {
                 first_error.get_or_insert(error);
             }
         }
@@ -83,19 +85,28 @@ impl<T: Send + 'static> Writer for ParallelWriter<T> {
         validation::validate_batch(&self.schema, &batch)?;
         self.drain_ready()?;
         if batch.num_rows() > 0 {
+            let runtime = Handle::try_current().map_err(|_| {
+                Error::InvalidConfig("parallel ingestion requires a Tokio runtime".into())
+            })?;
             if self.idle.is_empty() {
-                let completed = self.pending.next().await.expect("writer set is nonempty");
-                self.complete(completed)?;
+                let completed = self
+                    .pending
+                    .join_next()
+                    .await
+                    .expect("writer set is nonempty");
+                self.complete(completed.map_err(Error::backend)?)?;
             }
             let mut writer = self.idle.pop().expect("an idle writer is available");
-            self.pending.push(
+            // Spawn only after reserving a writer: no extra batch queue, and at most
+            // one accepted batch per writer continues while the caller reads input.
+            self.pending.spawn_on(
                 async move {
                     let result = writer.write(batch).await;
                     WriteCompletion { writer, result }
-                }
-                .boxed(),
+                },
+                &runtime,
             );
-            // Poll all pending writers, including the newly accepted batch.
+            // Surface any already completed failure before accepting more input.
             self.drain_ready()?;
         }
         Ok(())
