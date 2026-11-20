@@ -277,3 +277,39 @@ It may run concurrently and should not block. Reporter errors fail the conversio
 The library does not store an unbounded list of failures. Custom downloaders must
 return `Error::NotFound` for missing objects; error-message strings are not parsed.
 The older broad `SkipRow`/`Null` policies retain their existing behavior.
+
+## Store extracted paper text with LZ4
+
+A producer can move S2ORC v2's `body.text` to a top-level Arrow `text` column
+using open-arrow-access's `ColumnEvolution::extract_nested_field`. Keep
+`body.annotations` and `bibliography` separately; the reference list is not
+another copy of the body text. Extract before opening the sink so that its
+schema is the final output schema, and remove the original nested text to
+avoid storing it twice.
+
+Configure compression on the resulting string column:
+
+```rust,ignore
+use open_arrow_sink::{CompressionOptions, CompressionSpec, WriteOptions};
+
+let options = WriteOptions::default().with_compression(CompressionOptions {
+    columns: [("text".into(), CompressionSpec::Lz4Raw)].into(),
+    ..Default::default()
+});
+// sink.open(destination, extracted_schema, options).await?;
+// writer.write(extracted_batch).await?;
+```
+
+The Lance sink accepts `Utf8`/`LargeUtf8` text directly. No URL, Blob selection,
+PDF download or manual string-to-binary compression is involved. The column
+remains a string when read; the codec is a storage option. Other columns retain
+their existing compression policy. Lance's native encoder selects the physical
+layout and may use a native codec fallback for some layouts, so requesting LZ4
+is not a guarantee that every physical buffer uses LZ4. No compression ratio or
+throughput improvement is implied without measurements on the actual corpus.
+
+The two libraries remain independent: extraction is an upstream Arrow
+transformation, and the sink only needs the final batches and schema. The
+`extracted_large_text_lz4_round_trips_without_blob_conversion` integration test
+covers nullable Unicode/empty `LargeUtf8` text, preserved body annotations and
+bibliography, and both single and parallel writers.

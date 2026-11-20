@@ -363,3 +363,95 @@ async fn compression_survives_rolling_and_round_trips() {
     .unwrap();
     assert_eq!(actual_values, expected_values);
 }
+
+#[rstest::rstest]
+#[case::single_writer(false)]
+#[case::parallel_writers(true)]
+#[tokio::test]
+async fn extracted_large_text_lz4_round_trips_without_blob_conversion(#[case] parallel: bool) {
+    use arrow_array::{Array, LargeStringArray};
+    use arrow_schema::{Field, Schema};
+
+    // This is the Arrow output of an upstream extraction: body.text has moved
+    // to text; body retains annotations and bibliography remains independent.
+    let text = Arc::new(LargeStringArray::from(vec![
+        Some("Introduction 方法 and results. ".repeat(4096)),
+        None,
+        Some(String::new()),
+    ]));
+    let annotations = StructArray::from(vec![(
+        Arc::new(Field::new("paragraph_count", DataType::Int64, true)),
+        Arc::new(Int64Array::from(vec![Some(2), None, Some(0)])) as ArrayRef,
+    )]);
+    let body = StructArray::from(vec![(
+        Arc::new(Field::new(
+            "annotations",
+            annotations.data_type().clone(),
+            true,
+        )),
+        Arc::new(annotations) as ArrayRef,
+    )]);
+    let bibliography = StructArray::from(vec![(
+        Arc::new(Field::new("text", DataType::LargeUtf8, true)),
+        Arc::new(LargeStringArray::from(vec!["Separate reference list"; 3])) as ArrayRef,
+    )]);
+    let input = RecordBatch::try_from_iter([
+        ("text", text as ArrayRef),
+        ("body", Arc::new(body) as ArrayRef),
+        ("bibliography", Arc::new(bibliography) as ArrayRef),
+    ])
+    .unwrap();
+    let policy = CompressionOptions {
+        columns: [("text".into(), CompressionSpec::Lz4Raw)].into(),
+        ..Default::default()
+    };
+    let sink = LanceDatasetSink::default();
+    let sink: Box<dyn Sink<Request = Url>> = if parallel {
+        Box::new(
+            sink.layer(open_arrow_sink_layer::ParallelIngestionLayer::fixed(
+                std::num::NonZeroUsize::new(2).unwrap(),
+            )),
+        )
+    } else {
+        Box::new(sink)
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("papers.lance");
+    let mut writer = sink
+        .open(
+            Url::from_directory_path(&path).unwrap(),
+            input.schema(),
+            options()
+                .with_compression(policy)
+                .with_storage_version("2.2".into()),
+        )
+        .await
+        .unwrap();
+    writer.write(input.clone()).await.unwrap();
+    let summary = writer.commit().await.unwrap();
+    assert_eq!(summary.rows_committed, 3);
+    assert_eq!(summary.rows_failed_blobs, 0);
+    let dataset = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+    let schema = Schema::from(dataset.schema());
+    assert_eq!(
+        schema.field_with_name("text").unwrap().data_type(),
+        &DataType::LargeUtf8
+    );
+    assert_eq!(
+        schema.field_with_name("text").unwrap().metadata()["lance-encoding:compression"],
+        "lz4"
+    );
+    assert!(
+        !schema
+            .field_with_name("bibliography")
+            .unwrap()
+            .metadata()
+            .contains_key("lance-encoding:compression")
+    );
+    let actual = dataset.scan().try_into_batch().await.unwrap();
+    // Writes may reorder batches; this input has one batch. Compare values
+    // independently of the backend's encoding metadata.
+    for (actual, expected) in actual.columns().iter().zip(input.columns()) {
+        assert_eq!(actual.to_data(), expected.to_data());
+    }
+}
