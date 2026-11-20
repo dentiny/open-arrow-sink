@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4 - 2026-11-20
+
+- Release all 7 public workspace crates at 0.6.4 with matching internal dependency requirements.
+- No source changes since 0.6.3.
+
 ## 0.6.3 - 2026-11-19
 
 - Share one prepared Lance dataset across fragment writers to avoid repeated dataset preparation.
