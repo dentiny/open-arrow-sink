@@ -176,11 +176,13 @@ impl ParallelSink for LanceDatasetSink {
             .prepare(&schemas.logical, options.mode, storage_version)
             .await?;
         crate::validation::validate_index_requests(existing.as_ref(), &options).await?;
+        let existing = existing.map(Arc::new);
         let writers = (0..count.get())
             .map(|_| {
                 Box::new(crate::parallel::FragmentWriter::new(
                     schemas.clone(),
                     &destination,
+                    existing.clone(),
                     params.clone(),
                     &options,
                 )) as Box<dyn DataWriter<Output = Self::Output>>

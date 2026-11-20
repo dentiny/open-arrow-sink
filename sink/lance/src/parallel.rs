@@ -26,10 +26,11 @@ impl FragmentWriter {
     pub(crate) fn new(
         schemas: crate::write_options::LanceSchemas,
         destination: &LanceDestination,
+        existing: Option<std::sync::Arc<lance::Dataset>>,
         params: WriteParams,
         options: &WriteOptions,
     ) -> Self {
-        let worker = FragmentTask::new(schemas.logical.clone(), destination, params);
+        let worker = FragmentTask::new(schemas.logical.clone(), destination, existing, params);
         let blob_plan = crate::blob_input::BlobInputPlan::new(schemas.logical.clone());
         Self {
             schemas,
