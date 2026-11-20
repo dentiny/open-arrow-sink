@@ -2,7 +2,7 @@
 use crate::{LanceFragments, destination::LanceDestination, error::worker_stopped};
 use datafusion_physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::stream;
-use lance::dataset::{InsertBuilder, WriteParams, transaction::Transaction};
+use lance::dataset::{InsertBuilder, WriteDestination, WriteParams, transaction::Transaction};
 use open_arrow_sink_core::{Error, RecordBatch, Result, SchemaRef};
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -14,7 +14,12 @@ pub(crate) struct FragmentTask {
     task: Option<JoinHandle<lance::Result<Transaction>>>,
 }
 impl FragmentTask {
-    pub fn new(schema: SchemaRef, destination: &LanceDestination, params: WriteParams) -> Self {
+    pub fn new(
+        schema: SchemaRef,
+        destination: &LanceDestination,
+        existing: Option<std::sync::Arc<lance::Dataset>>,
+        params: WriteParams,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         // EOF only finishes fragments. Manifest publication belongs to the committer.
         let batches = stream::unfold(receiver, |mut receiver| async move {
@@ -25,7 +30,12 @@ impl FragmentTask {
         let params = destination.bind_write_params(params);
         let uri = destination.url.to_string();
         let task = tokio::spawn(async move {
-            InsertBuilder::new(uri.as_str())
+            // Share the snapshot validated when opening the write session.
+            let destination = existing.map_or(
+                WriteDestination::Uri(uri.as_str()),
+                WriteDestination::Dataset,
+            );
+            InsertBuilder::new(destination)
                 .with_params(&params)
                 .execute_uncommitted_stream(stream)
                 .await
@@ -89,6 +99,78 @@ impl Drop for FragmentTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::append(lance::dataset::WriteMode::Append)]
+    #[case::overwrite(lance::dataset::WriteMode::Overwrite)]
+    #[tokio::test]
+    async fn fragment_workers_share_the_prepared_dataset_version(
+        #[case] mode: lance::dataset::WriteMode,
+    ) {
+        use open_arrow_sink_storage::{BlobDownloader, StorageResolver};
+        use open_arrow_sink_test_support::{
+            int64_batch, memory_warehouse, unordered_options, url, write_batches,
+        };
+        use std::sync::Arc;
+
+        let storage = memory_warehouse();
+        let sink = crate::LanceDatasetSink::new(storage.clone());
+        let url = url(&storage, "shared-snapshot/");
+        let batch = int64_batch("value", vec![Some(1)]);
+        write_batches(
+            &sink,
+            url.clone(),
+            std::slice::from_ref(&batch),
+            unordered_options(),
+        )
+        .await;
+        let destination = LanceDestination::new(
+            storage,
+            url,
+            Arc::new(StorageResolver::default()),
+            Arc::new(BlobDownloader::with_defaults().unwrap()),
+            None,
+        )
+        .unwrap();
+        let existing = Arc::new(destination.dataset_builder().load().await.unwrap());
+        let read_version = existing.version().version;
+        let params = WriteParams {
+            mode: lance::dataset::WriteMode::Append,
+            ..Default::default()
+        };
+        // Another writer advances latest after this session's preparation.
+        let advanced = InsertBuilder::new(existing.clone())
+            .with_params(&destination.bind_write_params(params.clone()))
+            .execute(vec![batch.clone()])
+            .await
+            .unwrap();
+        assert!(advanced.version().version > read_version);
+        for _ in 0..2 {
+            let mut worker = FragmentTask::new(
+                batch.schema(),
+                &destination,
+                Some(existing.clone()),
+                WriteParams {
+                    mode,
+                    ..params.clone()
+                },
+            );
+            worker.write(batch.clone()).await.unwrap();
+            let output = worker.finish().await.unwrap();
+            assert_eq!(output.transaction.read_version, read_version);
+        }
+        // Fragment workers never publish their transactions themselves.
+        assert_eq!(
+            destination
+                .dataset_builder()
+                .load()
+                .await
+                .unwrap()
+                .version()
+                .version,
+            advanced.version().version
+        );
+    }
 
     #[tokio::test]
     async fn closed_input_returns_the_native_worker_error() {
