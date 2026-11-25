@@ -264,6 +264,8 @@ The Lance sink rejects a declared kind that conflicts with the field type before
 opening destination storage. `DownloadBlobLayer` marks user-selected URL leaves
 as `uri`; already annotated source fields need no selection layer. Nested struct
 and list fields use the same contract. Unmarked fields remain ordinary columns.
+Input annotations are consumed when converting to Lance native Blob fields; they
+are not persisted as instructions on later materialized binary reads.
 
 ## Missing source objects
 

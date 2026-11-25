@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Distinguish blob payload bytes (`open-arrow-sink:blob=bytes`) from source URIs (`uri`), validate their Arrow types, and retain legacy `true` inference. DownloadBlobLayer emits `uri`; ingest/reference policy remains configurable. Enable absolute external URIs when Reference is explicitly selected.
+- Distinguish blob payload bytes (`open-arrow-sink:blob=bytes`) from source URIs (`uri`), validate their Arrow types, and retain legacy `true` inference. Consume input annotations when converting to native Blob fields so materialized binary reads do not retain stale URI instructions. DownloadBlobLayer emits `uri`; ingest/reference policy remains configurable. Enable absolute external URIs when Reference is explicitly selected.
 
 - Accept blob-marked Binary and BinaryView payloads alongside LargeBinary, preserving slices, nulls and arbitrary bytes while normalizing to Lance's logical blob data type.
 

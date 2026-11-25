@@ -8,7 +8,8 @@ use lance::{
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
 use open_arrow_sink_core::{
-    BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode, WriteOptions, is_blob_field,
+    BLOB_METADATA_KEY, BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode,
+    WriteOptions, is_blob_field,
 };
 
 /// ```text
@@ -18,7 +19,6 @@ use open_arrow_sink_core::{
 ///
 /// logical schema:
 ///   payload: Struct<data: LargeBinary, uri: Utf8> (nullable)
-///     open-arrow-sink:blob = "bytes"
 ///     ARROW:extension:name = "lance.blob.v2"
 /// ```
 #[derive(Clone)]
@@ -119,6 +119,7 @@ fn convert_blob_field(
 /// Marked bytes/URLs acquire Lance's logical struct type. Existing native Blob
 /// fields retain their shape (including optional range fields); both receive only
 /// explicitly requested threshold overrides, preserving other metadata.
+/// Consume the input marker: its kind no longer describes the native Blob type.
 fn logical_blob_field(
     field: &Field,
     config: Option<&BlobHandleConfig>,
@@ -133,6 +134,9 @@ fn logical_blob_field(
         },
     );
     let mut metadata = field.metadata().clone();
+    if marked {
+        metadata.remove(BLOB_METADATA_KEY);
+    }
     metadata.extend(native.metadata().clone());
     let ty = if marked {
         native.data_type()
