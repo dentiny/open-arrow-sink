@@ -69,6 +69,7 @@ impl CommitHandler for IndexedCommitHandler {
             naming_scheme,
             e_tag: None,
             identity: None,
+            last_modified: None,
         };
         let result = async {
             let mut dataset = self

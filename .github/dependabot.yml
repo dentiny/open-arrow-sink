@@ -9,3 +9,4 @@ updates:
       - dependency-name: "lance*"
       - dependency-name: "parquet*"
       - dependency-name: "datafusion*"
+      - dependency-name: "iceberg"

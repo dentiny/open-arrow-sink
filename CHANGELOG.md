@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade Arrow/Parquet to 59.2 and DataFusion to 55; pin all Lance crates to `fc8f59e53233a46f0d73604d66254142802389c9` and Iceberg to its last Arrow 59 upstream revision `b879b9626754501f025516ce0f0e9535fa6fd414`. Require Rust 1.98.
+
 ## 0.6.5 - 2026-11-24
 
 - Correct the parallel-writer regression test to expect abort to report a remaining in-flight write failure while still stopping both writers.
