@@ -4192,7 +4192,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "open-arrow-sink"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "open-arrow-sink-core",
  "open-arrow-sink-iceberg",
@@ -4204,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-core"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4217,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-iceberg"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "bytes",
@@ -4237,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-lance"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4268,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-layer"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -4283,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-parquet"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "bytes",
@@ -4301,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-storage"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "async-stream",
  "bytes",
@@ -4324,7 +4324,7 @@ dependencies = [
 
 [[package]]
 name = "open-arrow-sink-test-support"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "arrow-array",
  "arrow-ord",

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.5 - 2026-11-24
+
+- Release all seven public workspace crates with aligned internal dependency requirements.
+
 - Distinguish blob payload bytes (`open-arrow-sink:blob=bytes`) from source URIs (`uri`), validate their Arrow types, and retain legacy `true` inference. Consume input annotations when converting to native Blob fields so materialized binary reads do not retain stale URI instructions. DownloadBlobLayer emits `uri`; ingest/reference policy remains configurable. Enable absolute external URIs when Reference is explicitly selected.
 
 - Accept blob-marked Binary and BinaryView payloads alongside LargeBinary, preserving slices, nulls and arbitrary bytes while normalizing to Lance's logical blob data type.
