@@ -191,7 +191,8 @@ async fn observed_write_failure_is_terminal_and_abort_keeps_all_writers() {
     release(&state);
     assert!(writer.write(batch()).await.is_err());
     assert!(writer.write(batch()).await.is_err());
-    writer.abort().await.unwrap();
+    // Abort reports the other in-flight write failure and still stops both writers.
+    assert!(writer.abort().await.is_err());
     assert_eq!(state.lock().unwrap().count(Event::Abort), 2);
 }
 

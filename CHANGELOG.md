@@ -4,6 +4,8 @@
 
 ## 0.6.5 - 2026-11-24
 
+- Correct the parallel-writer regression test to expect abort to report a remaining in-flight write failure while still stopping both writers.
+
 - Release all seven public workspace crates with aligned internal dependency requirements.
 
 - Distinguish blob payload bytes (`open-arrow-sink:blob=bytes`) from source URIs (`uri`), validate their Arrow types, and retain legacy `true` inference. Consume input annotations when converting to native Blob fields so materialized binary reads do not retain stale URI instructions. DownloadBlobLayer emits `uri`; ingest/reference policy remains configurable. Enable absolute external URIs when Reference is explicitly selected.
