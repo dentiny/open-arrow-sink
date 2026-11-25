@@ -14,11 +14,11 @@ use open_arrow_sink_core::{
 /// ```text
 /// input schema:
 ///   payload: LargeBinary (nullable)
-///     open-arrow-sink:blob = "true"
+///     open-arrow-sink:blob = "bytes"
 ///
 /// logical schema:
 ///   payload: Struct<data: LargeBinary, uri: Utf8> (nullable)
-///     open-arrow-sink:blob = "true"
+///     open-arrow-sink:blob = "bytes"
 ///     ARROW:extension:name = "lance.blob.v2"
 /// ```
 #[derive(Clone)]
@@ -64,6 +64,8 @@ pub(crate) fn write_params(
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
         },
+        // Reference explicitly opts into storing absolute source URIs.
+        allow_external_blob_outside_bases: blob.external_blob_mode == ExternalBlobMode::Reference,
         data_storage_version: storage_version,
         mode: match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
