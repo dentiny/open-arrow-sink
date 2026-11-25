@@ -250,6 +250,23 @@ automatic target, size hints do not estimate file counts; the fallback and maxim
 writer settings determine concurrency. There is one public parallel write layer
 for both automatic planning and explicit concurrency.
 
+## Blob input annotations
+
+Arrow field metadata `open-arrow-sink:blob` declares the input's role:
+
+| Value | Arrow input types | Handling |
+| --- | --- | --- |
+| `bytes` | Binary, LargeBinary, BinaryView | Store existing payload bytes without downloading |
+| `uri` | Utf8, LargeUtf8, Utf8View | Download by default; retain external URI with `ExternalBlobMode::Reference` |
+| `true` (legacy) | Either family above | Infer the role from the Arrow type |
+
+The Lance sink rejects a declared kind that conflicts with the field type before
+opening destination storage. `DownloadBlobLayer` marks user-selected URL leaves
+as `uri`; already annotated source fields need no selection layer. Nested struct
+and list fields use the same contract. Unmarked fields remain ordinary columns.
+Input annotations are consumed when converting to Lance native Blob fields; they
+are not persisted as instructions on later materialized binary reads.
+
 ## Missing source objects
 
 Downloads fail by default (`DownloadFailurePolicy::Fail`). For a conversion that

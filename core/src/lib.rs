@@ -38,13 +38,23 @@ pub use blob::{BlobChunk, BlobHandleConfig, ExternalBlobMode};
 /// Field metadata marking blob inputs: binary payloads or explicitly selected URL strings.
 pub const BLOB_METADATA_KEY: &str = "open-arrow-sink:blob";
 
-/// Metadata value enabling native blob handling for a field.
+/// Existing binary payload bytes; no source download is needed.
+pub const BLOB_BYTES_VALUE: &str = "bytes";
+
+/// A source URI consumed according to the configured ingest/reference policy.
+pub const BLOB_URI_VALUE: &str = "uri";
+
+/// Legacy metadata value enabling type-inferred blob handling.
 pub const BLOB_METADATA_VALUE: &str = "true";
 
 /// Whether a field explicitly opts into native blob handling.
-/// Missing metadata and values other than the exact string `"true"` are disabled.
+/// Recognizes explicit `bytes`/`uri` markers and legacy `true`. Backends validate
+/// the declared kind against the field type. Missing/other values stay disabled.
 pub fn is_blob_field(field: &arrow_schema::Field) -> bool {
-    field.metadata().get(BLOB_METADATA_KEY).map(String::as_str) == Some(BLOB_METADATA_VALUE)
+    matches!(
+        field.metadata().get(BLOB_METADATA_KEY).map(String::as_str),
+        Some(BLOB_BYTES_VALUE | BLOB_URI_VALUE | BLOB_METADATA_VALUE)
+    )
 }
 
 pub use session::{DataWriter, SessionCommitter, WriteSession};

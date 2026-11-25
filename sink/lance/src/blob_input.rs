@@ -89,7 +89,12 @@ fn can_batch_row(
 ) -> bool {
     plan.columns.iter().all(|(index, field)| {
         let array = batch.column(*index);
-        if array.is_null(row) || array.as_any().is::<LargeBinaryArray>() {
+        if array.is_null(row)
+            || matches!(
+                array.data_type(),
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+            )
+        {
             true
         } else if field.is_blob && matches!(array.data_type(), DataType::Struct(_)) {
             let blob = array.as_any().downcast_ref::<StructArray>().unwrap();

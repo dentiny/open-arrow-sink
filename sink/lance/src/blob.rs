@@ -26,8 +26,14 @@ pub(crate) fn convert_blob_leaf(array: &ArrayRef, field: &Field) -> Result<Array
     let DataType::Struct(fields) = field.data_type() else {
         unreachable!("logical blob field is a struct")
     };
-    let (data, uris) = if array.data_type() == &DataType::LargeBinary {
-        (array.clone(), new_null_array(&DataType::Utf8, array.len()))
+    let (data, uris) = if matches!(
+        array.data_type(),
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+    ) {
+        (
+            cast(array, &DataType::LargeBinary).map_err(Error::backend)?,
+            new_null_array(&DataType::Utf8, array.len()),
+        )
     } else {
         (
             new_null_array(&DataType::LargeBinary, array.len()),

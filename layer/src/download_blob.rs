@@ -8,9 +8,9 @@ use std::{collections::HashSet, sync::Arc};
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use open_arrow_sink_core::{
-    BLOB_METADATA_KEY, BLOB_METADATA_VALUE, DownloadFailurePolicy, DownloadMetrics,
-    DownloadRecovery, Error, Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions,
-    WriteSession, Writer, validation,
+    BLOB_METADATA_KEY, BLOB_URI_VALUE, DownloadFailurePolicy, DownloadMetrics, DownloadRecovery,
+    Error, Layer, Result, SchemaRef, Sink, SinkCapability, WriteOptions, WriteSession, Writer,
+    validation,
 };
 
 use crate::{
@@ -178,7 +178,7 @@ fn mark_blob_field(field: &Field, path: &[String]) -> Option<Field> {
         }
         ty if path.is_empty() && ty.is_string() => {
             let mut metadata = field.metadata().clone();
-            metadata.insert(BLOB_METADATA_KEY.into(), BLOB_METADATA_VALUE.into());
+            metadata.insert(BLOB_METADATA_KEY.into(), BLOB_URI_VALUE.into());
             return Some(field.clone().with_metadata(metadata));
         }
         _ => return None,

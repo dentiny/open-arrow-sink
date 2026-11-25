@@ -8,17 +8,17 @@ use lance::{
     dataset::{ExternalBlobMode as LanceBlobMode, WriteMode as LanceWriteMode, WriteParams},
 };
 use open_arrow_sink_core::{
-    BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode, WriteOptions, is_blob_field,
+    BLOB_METADATA_KEY, BlobHandleConfig, ExternalBlobMode, Result, SchemaRef, WriteMode,
+    WriteOptions, is_blob_field,
 };
 
 /// ```text
 /// input schema:
 ///   payload: LargeBinary (nullable)
-///     open-arrow-sink:blob = "true"
+///     open-arrow-sink:blob = "bytes"
 ///
 /// logical schema:
 ///   payload: Struct<data: LargeBinary, uri: Utf8> (nullable)
-///     open-arrow-sink:blob = "true"
 ///     ARROW:extension:name = "lance.blob.v2"
 /// ```
 #[derive(Clone)]
@@ -64,6 +64,8 @@ pub(crate) fn write_params(
             ExternalBlobMode::Reference => LanceBlobMode::Reference,
             ExternalBlobMode::Ingest => LanceBlobMode::Ingest,
         },
+        // Reference explicitly opts into storing absolute source URIs.
+        allow_external_blob_outside_bases: blob.external_blob_mode == ExternalBlobMode::Reference,
         data_storage_version: storage_version,
         mode: match options.mode {
             WriteMode::Create => LanceWriteMode::Create,
@@ -117,6 +119,7 @@ fn convert_blob_field(
 /// Marked bytes/URLs acquire Lance's logical struct type. Existing native Blob
 /// fields retain their shape (including optional range fields); both receive only
 /// explicitly requested threshold overrides, preserving other metadata.
+/// Consume the input marker: its kind no longer describes the native Blob type.
 fn logical_blob_field(
     field: &Field,
     config: Option<&BlobHandleConfig>,
@@ -131,6 +134,9 @@ fn logical_blob_field(
         },
     );
     let mut metadata = field.metadata().clone();
+    if marked {
+        metadata.remove(BLOB_METADATA_KEY);
+    }
     metadata.extend(native.metadata().clone());
     let ty = if marked {
         native.data_type()

@@ -1,7 +1,8 @@
 //! Configuration, destination, transaction, and writer-state validation.
 use arrow_schema::{DataType, Schema};
 use open_arrow_sink_core::{
-    Error, IndexSpec, IndexType, Result, SinkCapability, WriteOptions, is_blob_field, validation,
+    BLOB_BYTES_VALUE, BLOB_METADATA_KEY, BLOB_URI_VALUE, Error, IndexSpec, IndexType, Result,
+    SinkCapability, WriteOptions, is_blob_field, validation,
 };
 
 use lance::index::DatasetIndexExt;
@@ -120,13 +121,25 @@ pub(crate) async fn check_existing_dataset(
 pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
     fn check(field: &arrow_schema::Field) -> Result<()> {
         if is_blob_field(field) {
-            if !matches!(
+            let bytes = matches!(
                 field.data_type(),
-                DataType::LargeBinary | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-            ) {
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+            );
+            let uri = matches!(
+                field.data_type(),
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            );
+            let kind = field.metadata()[BLOB_METADATA_KEY].as_str();
+            let valid = match kind {
+                BLOB_BYTES_VALUE => bytes,
+                BLOB_URI_VALUE => uri,
+                _ => bytes || uri, // Legacy `true` keeps type inference.
+            };
+            if !valid {
                 return Err(Error::InvalidInput(format!(
-                    "blob-marked field must be binary or URL text: {}",
-                    field.name()
+                    "blob annotation {kind:?} does not match field {} ({})",
+                    field.name(),
+                    field.data_type()
                 )));
             }
             return Ok(());
