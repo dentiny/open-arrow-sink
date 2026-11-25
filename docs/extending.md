@@ -46,6 +46,11 @@ accepting logical blob values through ordinary batch writes; see
 the backend SDK and let it select inline, packed, or dedicated storage. Do not
 write blob objects or construct physical blob descriptors in this library.
 
+Blob-marked `Binary`, `LargeBinary` and `BinaryView` inputs are payload bytes.
+The Lance adapter normalizes them to its logical LargeBinary data field,
+preserving nulls, slices and arbitrary non-UTF-8 bytes. This also lets source
+readers retain zero-copy BinaryView buffers until the write boundary.
+
 `DownloadBlobLayer` marks selected URL fields for blob ingestion, using the same
 interface for top-level columns and dotted paths through structs and lists. The backend
 owns downloads, resource limits, and blob layout; the layer does not download

@@ -256,3 +256,44 @@ async fn sliced_nested_blobs_preserve_sibling_columns_across_writes() {
         );
     }
 }
+
+#[rstest::rstest]
+#[case(DataType::Binary)]
+#[case(DataType::BinaryView)]
+#[tokio::test]
+async fn writes_binary_payload_types_without_treating_them_as_urls(#[case] data_type: DataType) {
+    let data: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+        Some(b"outside slice".as_slice()),
+        None,
+        Some(b"".as_slice()),
+        Some(b"\x00\xff\xfe".as_slice()),
+    ]));
+    let data = arrow_cast::cast(&data, &data_type).unwrap().slice(1, 3);
+    let field = Field::new("blob", data_type, true)
+        .with_metadata([(BLOB_METADATA_KEY.into(), "true".into())].into());
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![data]).unwrap();
+    let storage = storage();
+    let url = fixture_url(&storage, "binary-types/");
+    let sink = LanceDatasetSink::new(storage);
+    let mut writer = sink
+        .open(url.clone(), batch.schema(), options())
+        .await
+        .unwrap();
+    writer.write(batch).await.unwrap();
+    writer.commit().await.unwrap();
+    let dataset = sink.dataset_builder(url).unwrap().load().await.unwrap();
+    let output = dataset
+        .scan()
+        .blob_handling(BlobHandling::AllBinary)
+        .try_into_batch()
+        .await
+        .unwrap();
+    let mut values = output
+        .column(0)
+        .as_binary::<i64>()
+        .iter()
+        .map(|v| v.map(<[u8]>::to_vec))
+        .collect::<Vec<_>>();
+    values.sort();
+    assert_eq!(values, vec![None, Some(vec![]), Some(vec![0, 255, 254])]);
+}

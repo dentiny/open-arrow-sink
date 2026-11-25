@@ -122,7 +122,12 @@ pub(crate) fn validate_blob_schema(schema: &Schema) -> Result<()> {
         if is_blob_field(field) {
             if !matches!(
                 field.data_type(),
-                DataType::LargeBinary | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+                DataType::Binary
+                    | DataType::LargeBinary
+                    | DataType::BinaryView
+                    | DataType::Utf8
+                    | DataType::LargeUtf8
+                    | DataType::Utf8View
             ) {
                 return Err(Error::InvalidInput(format!(
                     "blob-marked field must be binary or URL text: {}",

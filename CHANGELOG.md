@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Accept blob-marked Binary and BinaryView payloads alongside LargeBinary, preserving slices, nulls and arbitrary bytes while normalizing to Lance's logical blob data type.
+
 ## 0.6.4 - 2026-11-20
 
 - Release all 7 public workspace crates at 0.6.4 with matching internal dependency requirements.
