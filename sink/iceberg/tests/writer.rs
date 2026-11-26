@@ -4,7 +4,8 @@ use arrow_array::{
 use futures::TryStreamExt;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::{
-    Literal, NestedField, PrimitiveType, Schema, Struct, Transform, Type, UnboundPartitionSpec,
+    Literal, NestedField, PrimitiveType, Schema, Struct, Transform, Type, UnboundPartitionField,
+    UnboundPartitionSpec,
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
 use open_arrow_sink_core::{PartitionOptions, PartitionType, SchemaRef, Sink, WriteOptions};
@@ -380,9 +381,23 @@ async fn identity_partitions_round_trip_and_record_metadata() {
     let table = TestTable::new(TableSpec {
         partition: Some(
             UnboundPartitionSpec::builder()
-                .add_partition_field(1, "id_partition", Transform::Identity)
+                .add_partition_field(
+                    UnboundPartitionField::builder()
+                        .source_ids(vec![1])
+                        .name("id_partition")
+                        .transform(Transform::Identity)
+                        .build()
+                        .unwrap(),
+                )
                 .unwrap()
-                .add_partition_field(2, "value_partition", Transform::Identity)
+                .add_partition_field(
+                    UnboundPartitionField::builder()
+                        .source_ids(vec![2])
+                        .name("value_partition")
+                        .transform(Transform::Identity)
+                        .build()
+                        .unwrap(),
+                )
                 .unwrap()
                 .build(),
         ),
@@ -440,7 +455,14 @@ async fn partition_writer(
     Box<dyn open_arrow_sink_core::Writer>,
 ) {
     let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(1, "id_partition", transform)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![1])
+                .name("id_partition")
+                .transform(transform)
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .build();
     let table = TestTable::new(TableSpec {
@@ -516,7 +538,14 @@ async fn temporal_partitions_round_trip_and_record_metadata(
     #[case] expected_keys: [i32; 4],
 ) {
     let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(2, "time_partition", transform)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("time_partition")
+                .transform(transform)
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .build();
     let table = TestTable::new(TableSpec {
@@ -558,7 +587,14 @@ async fn numeric_partitions_round_trip_and_record_metadata(
     #[case] keys: Vec<Option<Literal>>,
 ) {
     let spec = UnboundPartitionSpec::builder()
-        .add_partition_field(2, "value_partition", transform)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("value_partition")
+                .transform(transform)
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .build();
     let table = TestTable::new(TableSpec {

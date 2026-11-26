@@ -133,7 +133,10 @@ async fn downloaded_payloads_use_sdk_layout_and_round_trip() {
     let first = packed[0].as_ref().unwrap();
     let second = packed[1].as_ref().unwrap();
     assert_eq!(first.data_path(), second.data_path());
-    assert_eq!(second.position() - first.position(), 17 * 1024 * 1024);
+    assert_eq!(
+        second.position().abs_diff(first.position()),
+        17 * 1024 * 1024
+    );
     let actual = dataset
         .scan()
         .blob_handling(BlobHandling::AllBinary)

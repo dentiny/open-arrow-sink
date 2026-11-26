@@ -13,6 +13,7 @@ resolver = "2"
 [workspace.package]
 version = "0.6.5"
 edition = "2024"
+rust-version = "1.98"
 license = "MIT"
 repository = "https://github.com/dentiny/open-arrow-sink"
 
@@ -33,37 +34,37 @@ opendal = { version = "0.59.5", default-features = false, features = [
   "layers-timeout",
 ] }
 hex = "0.4"
-lance = { version = "14.0.3", default-features = false }
-lance-encoding = { version = "14.0.3", default-features = false }
-lance-file = { version = "14.0.3", default-features = false }
-lance-index = { version = "14.0.3", default-features = false }
-lance-io = { version = "14.0.3", default-features = false }
-lance-linalg = { version = "14.0.3", default-features = false }
-lance-table = { version = "14.0.3", default-features = false }
+lance = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-encoding = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-file = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-index = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-io = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-linalg = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
+lance-table = { git = "https://github.com/lance-format/lance.git", rev = "fc8f59e53233a46f0d73604d66254142802389c9", default-features = false }
 object_store = { version = "0.14.2", default-features = false }
 open-arrow-sink-test-support = { path = "test-support" }
 async-stream = "0.3"
 bytes = "1"
 serde = "1"
 typetag = "0.2"
-iceberg = "0.11"
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "b879b9626754501f025516ce0f0e9535fa6fd414" }
 uuid = "1"
 more-asserts = "0.3"
 rstest = { version = "0.28", default-features = false }
 tempfile = "3"
-arrow-array = "58.4"
-arrow-cast = "58.4"
-arrow-buffer = "58.4"
-arrow-ord = "58.4"
-arrow-select = "58.4"
+arrow-array = "59.2.0"
+arrow-cast = "59.2.0"
+arrow-buffer = "59.2.0"
+arrow-ord = "59.2.0"
+arrow-select = "59.2.0"
 axum = { version = "0.8", default-features = false, features = [
   "http1",
   "tokio",
 ] }
-arrow-schema = "58.4"
+arrow-schema = "59.2.0"
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
-parquet = { version = "58.4", default-features = false }
+parquet = { version = "59.2.0", default-features = false }
 tokio = "1"
 thiserror = "2"
 open-arrow-sink-storage = { path = "storage", version = "0.6.5" }
@@ -75,6 +76,7 @@ open-arrow-sink-parquet = { path = "sink/parquet", version = "0.6.5" }
 name = "open-arrow-sink"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Composable, independent Arrow RecordBatch sinks"
